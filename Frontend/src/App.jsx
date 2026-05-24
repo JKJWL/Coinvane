@@ -175,7 +175,25 @@ function KpiCard({ label, value, icon: Icon, color, negative, theme, darkMode, f
 }
 
 // ─── Sheet (bottom sheet on mobile, centered modal on desktop) ───────────────
+// Tracks whether viewport is ≥ lg (1024px). Updates on resize.
+function useIsDesktop() {
+  const [isDesktop, setIsDesktop] = useState(() =>
+    typeof window !== "undefined"
+      ? window.matchMedia("(min-width: 1024px)").matches
+      : false
+  );
+  useEffect(() => {
+    const mql = window.matchMedia("(min-width: 1024px)");
+    const handler = (e) => setIsDesktop(e.matches);
+    mql.addEventListener("change", handler);
+    return () => mql.removeEventListener("change", handler);
+  }, []);
+  return isDesktop;
+}
+
 function Sheet({ open, onClose, title, theme, children }) {
+  const isDesktop = useIsDesktop();
+
   useEffect(() => {
     if (!open) return;
     const h = e => { if (e.key === "Escape") onClose(); };
@@ -187,34 +205,63 @@ function Sheet({ open, onClose, title, theme, children }) {
     };
   }, [open, onClose]);
 
+  // The inner panel content — shared between mobile drawer and desktop modal
+  const panel = (
+    <>
+      {!isDesktop && (
+        <div className="flex justify-center pt-3 pb-1">
+          <div className={`w-10 h-1.5 rounded-full ${theme.textSubtle === "text-slate-500" ? "bg-slate-300" : "bg-slate-700"} opacity-50`} />
+        </div>
+      )}
+      <div className={`sticky top-0 ${theme.surface} px-5 py-3 flex items-center justify-between border-b ${theme.border} z-10`}>
+        <h3 className="font-semibold text-base">{title}</h3>
+        <button onClick={onClose} className={`p-1.5 rounded-full ${theme.hover}`}>
+          <X className={`w-5 h-5 ${theme.textSubtle}`} />
+        </button>
+      </div>
+      <div className={`p-5 ${isDesktop ? "" : "pb-[calc(20px+env(safe-area-inset-bottom))]"}`}>
+        {children}
+      </div>
+    </>
+  );
+
   return (
     <AnimatePresence>
       {open && (
         <>
+          {/* Backdrop */}
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}
             className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[60]"
             onClick={onClose} />
-          <motion.div
-            initial={{ y: "100%", opacity: 0.8 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: "100%", opacity: 0.8 }}
-            transition={{ type: "spring", damping: 32, stiffness: 320 }}
-            className={`fixed left-0 right-0 bottom-0 z-[61] ${theme.surface} ${theme.text} rounded-t-3xl shadow-2xl max-h-[92vh] overflow-y-auto lg:left-1/2 lg:right-auto lg:-translate-x-1/2 lg:bottom-auto lg:top-1/2 lg:-translate-y-1/2 lg:rounded-3xl lg:w-full lg:max-w-md`}
-          >
-            <div className="lg:hidden flex justify-center pt-3 pb-1">
-              <div className={`w-10 h-1.5 rounded-full ${theme.textSubtle === "text-slate-500" ? "bg-slate-300" : "bg-slate-700"} opacity-50`} />
+
+          {isDesktop ? (
+            // ── Desktop: flex-centered modal, scale+fade animation ──
+            // Wrapping div handles centering so framer-motion's transform
+            // (scale) doesn't fight CSS translate-based centering.
+            <div className="fixed inset-0 z-[61] flex items-center justify-center p-6 pointer-events-none">
+              <motion.div
+                initial={{ scale: 0.94, opacity: 0 }}
+                animate={{ scale: 1,    opacity: 1 }}
+                exit={{    scale: 0.94, opacity: 0 }}
+                transition={{ type: "spring", damping: 26, stiffness: 320 }}
+                className={`pointer-events-auto w-full max-w-md max-h-[85vh] overflow-y-auto rounded-3xl shadow-2xl ${theme.surface} ${theme.text}`}
+              >
+                {panel}
+              </motion.div>
             </div>
-            <div className={`sticky top-0 ${theme.surface} px-5 py-3 flex items-center justify-between border-b ${theme.border} z-10`}>
-              <h3 className="font-semibold text-base">{title}</h3>
-              <button onClick={onClose} className={`p-1.5 rounded-full ${theme.hover}`}>
-                <X className={`w-5 h-5 ${theme.textSubtle}`} />
-              </button>
-            </div>
-            <div className="p-5 pb-[calc(20px+env(safe-area-inset-bottom))]">
-              {children}
-            </div>
-          </motion.div>
+          ) : (
+            // ── Mobile: bottom drawer, slide-up animation (UNCHANGED) ──
+            <motion.div
+              initial={{ y: "100%", opacity: 0.8 }}
+              animate={{ y: 0,      opacity: 1 }}
+              exit={{    y: "100%", opacity: 0.8 }}
+              transition={{ type: "spring", damping: 32, stiffness: 320 }}
+              className={`fixed left-0 right-0 bottom-0 z-[61] ${theme.surface} ${theme.text} rounded-t-3xl shadow-2xl max-h-[92vh] overflow-y-auto`}
+            >
+              {panel}
+            </motion.div>
+          )}
         </>
       )}
     </AnimatePresence>
