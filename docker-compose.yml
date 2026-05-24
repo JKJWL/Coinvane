@@ -1,0 +1,98 @@
+services:
+  mariadb:
+    image: mariadb:11
+    container_name: ledger-db
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MARIADB_DATABASE: ${DB_NAME}
+      MARIADB_USER: ${DB_USER}
+      MARIADB_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    ports:
+      - "127.0.0.1:3306:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ledger-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build: ./Backend
+    container_name: ledger-api
+    restart: unless-stopped
+    depends_on:
+      mariadb: { condition: service_healthy }
+      redis:   { condition: service_healthy }
+    environment: &backend_env
+      NODE_ENV: production
+      PORT: 4000
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: ${JWT_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      PLAID_CLIENT_ID: ${PLAID_CLIENT_ID}
+      PLAID_SECRET: ${PLAID_SECRET}
+      PLAID_ENV: ${PLAID_ENV}
+      PLAID_REDIRECT_URI: ${PLAID_REDIRECT_URI}
+      PLAID_WEBHOOK_URL: ${PLAID_WEBHOOK_URL}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      ALLOWED_EMAILS: ${ALLOWED_EMAILS}
+      CORS_ORIGIN: ${CORS_ORIGIN}
+      APP_URL: ${APP_URL}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASS: ${SMTP_PASS}
+      SMTP_FROM: ${SMTP_FROM}
+      SIGNUP_MODE: ${SIGNUP_MODE}
+    ports:
+      - "127.0.0.1:4000:4000"
+
+  worker:
+    build: ./Backend
+    container_name: ledger-worker
+    restart: unless-stopped
+    depends_on:
+      mariadb: { condition: service_healthy }
+      redis:   { condition: service_healthy }
+    command: ["node", "src/worker.js"]
+    environment: *backend_env
+
+  frontend:
+    build:
+      context: ./Frontend
+      args:
+        VITE_API_URL: /api
+        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID}
+    container_name: ledger-web
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      # Bind to localhost only. A reverse proxy (Caddy/nginx) on the host
+      # terminates HTTPS and proxies 443 → 127.0.0.1:8080. If you want this
+      # publicly accessible WITHOUT a reverse proxy, change to "8080:80".
+      - "127.0.0.1:8080:80"
+
+volumes:
+  mariadb_data:
+  redis_data:
