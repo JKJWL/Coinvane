@@ -46,11 +46,16 @@ const app = Fastify({
 // ── Security headers ─────────────────────────────────────────────
 await app.register(helmet, {
   // CSP is handled at nginx (frontend) since it owns the document.
-  // For API JSON responses, CSP is moot. We turn it off here so it doesn't
-  // get added in error responses where it isn't needed.
+  // For API JSON responses, CSP is moot.
   contentSecurityPolicy: false,
   // Plaid Link loads in an iframe — don't break it.
   crossOriginEmbedderPolicy: false,
+  // Plaid Link + Google Sign-In open popups that postMessage back to us.
+  // "same-origin" (helmet default) blocks those messages. We need
+  // "same-origin-allow-popups" so trusted popups can still communicate.
+  crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
+  // Allow cross-origin embedding of resources (Google/Plaid SDKs)
+  crossOriginResourcePolicy: { policy: "cross-origin" },
   // Strict referrer policy
   referrerPolicy: { policy: "strict-origin-when-cross-origin" },
   // HSTS — assume HTTPS termination at the reverse proxy
