@@ -49,4 +49,80 @@ export default async function (app) {
     summary.netWorth = summary.cash + summary.investment + summary.credit + summary.loan;
     return summary;
   });
+
+  /**
+   * Net worth history (?range=wtd|mtd|ytd|1m|3m|1y|all)
+   *
+   * Reconstructs historical net worth from current balances by walking
+   * transactions backward. For each day in the range:
+   *   net_worth(day) = current_net_worth - sum(transactions after that day)
+   *
+   * Approximation: assumes the *current* account balances are correct and
+   * that transactions are the only thing changing them. For Plaid-linked
+   * accounts this is a close approximation; for manual accounts it's exact
+   * (since manual transactions adjust the balance directly).
+   */
+  app.get("/networth-history", async (req) => {
+    const range = String(req.query.range || "mtd").toLowerCase();
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+
+    let start;
+    if (range === "wtd") {
+      start = new Date(now);
+      start.setDate(now.getDate() - now.getDay()); // last Sunday
+    } else if (range === "mtd") {
+      start = new Date(now.getFullYear(), now.getMonth(), 1);
+    } else if (range === "ytd") {
+      start = new Date(now.getFullYear(), 0, 1);
+    } else if (range === "1m") {
+      start = new Date(now); start.setMonth(now.getMonth() - 1);
+    } else if (range === "3m") {
+      start = new Date(now); start.setMonth(now.getMonth() - 3);
+    } else if (range === "1y") {
+      start = new Date(now); start.setFullYear(now.getFullYear() - 1);
+    } else if (range === "all") {
+      const oldest = await queryOne(
+        "SELECT MIN(date) AS d FROM transactions WHERE user_id = ?", [req.user.id]
+      );
+      start = oldest?.d ? new Date(oldest.d) : new Date(now.getFullYear(), 0, 1);
+    } else {
+      start = new Date(now.getFullYear(), now.getMonth(), 1);
+    }
+
+    const sum = await queryOne(
+      "SELECT COALESCE(SUM(balance), 0) AS net FROM accounts WHERE user_id = ?",
+      [req.user.id]
+    );
+    const currentNet = Number(sum?.net) || 0;
+
+    // Pull all transactions in the window; we walk forward from start.
+    const startStr = start.toISOString().slice(0, 10);
+    const txns = await query(
+      `SELECT date, SUM(amount) AS delta
+       FROM transactions
+       WHERE user_id = ? AND date >= ?
+       GROUP BY date ORDER BY date ASC`,
+      [req.user.id, startStr]
+    );
+
+    // Build a date -> delta map
+    const deltaByDate = new Map();
+    for (const t of txns) deltaByDate.set(String(t.date), Number(t.delta) || 0);
+
+    // Total delta from start..today
+    const totalDelta = Array.from(deltaByDate.values()).reduce((a, b) => a + b, 0);
+    let runningNet = currentNet - totalDelta; // net worth at start
+
+    const points = [];
+    const cursor = new Date(start);
+    while (cursor <= now) {
+      const k = cursor.toISOString().slice(0, 10);
+      runningNet += deltaByDate.get(k) || 0;
+      points.push({ date: k, net: Number(runningNet.toFixed(2)) });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    return { range, start: startStr, points, current: currentNet };
+  });
 }

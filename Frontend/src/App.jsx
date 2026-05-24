@@ -552,55 +552,159 @@ function SidebarGroup({ type, label, icon: Icon, accounts, theme }) {
   );
 }
 
-// ─── Mobile Hero (Mint-style gradient + sparkline + delta) ───────────────────
-function MobileHero({ net, cashflow }) {
-  const cfData = (cashflow || []).slice(-12);
-  let cumulative = 0;
-  const points = cfData.map(c => {
-    cumulative += Number(c.income || 0) - Number(c.spending || 0);
-    return cumulative;
-  });
-  while (points.length < 2) points.push(0);
-  const min = Math.min(...points), max = Math.max(...points), range = (max - min) || 1;
-  const pathD = points.map((p, i) => {
-    const x = (i / (points.length - 1)) * 100;
-    const y = 100 - ((p - min) / range) * 80 - 10;
-    return `${i === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
-  }).join(" ");
-  const last = points[points.length - 1] || 0;
-  const prev = points[points.length - 2] || 0;
-  const delta = last - prev;
+// ─── Net Worth Chart (with WTD/MTD/YTD/1M/3M/1Y/ALL selector) ────────────────
+const NET_PERIODS = [
+  { id: "wtd", label: "WTD" },
+  { id: "mtd", label: "MTD" },
+  { id: "ytd", label: "YTD" },
+  { id: "1m",  label: "1M"  },
+  { id: "3m",  label: "3M"  },
+  { id: "1y",  label: "1Y"  },
+  { id: "all", label: "ALL" },
+];
+
+function NetWorthChart({ theme, darkMode, variant = "hero" }) {
+  // variant "hero"  → mobile-style gradient card
+  // variant "card"  → desktop surface card
+  const [range, setRange] = useState("mtd");
+  const [data, setData] = useState({ points: [], current: 0 });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api.getNetWorthHistory(range)
+      .then(r => { if (!cancelled) { setData(r); setLoading(false); } })
+      .catch(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [range]);
+
+  const points = data.points || [];
+  const first = points[0]?.net ?? 0;
+  const last = points[points.length - 1]?.net ?? data.current ?? 0;
+  const delta = last - first;
   const deltaUp = delta >= 0;
+  const min = points.length ? Math.min(...points.map(p => p.net)) : 0;
+  const max = points.length ? Math.max(...points.map(p => p.net)) : 0;
+  const padding = Math.max((max - min) * 0.1, 100);
 
-  return (
-    <div className="relative rounded-3xl bg-gradient-to-br from-emerald-400 via-emerald-500 to-emerald-700 p-6 text-white shadow-xl shadow-emerald-500/30 overflow-hidden">
-      <svg viewBox="0 0 100 100" preserveAspectRatio="none"
-        className="absolute inset-x-0 bottom-0 w-full h-28 pointer-events-none">
-        <defs>
-          <linearGradient id="heroFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#fff" stopOpacity="0.35" />
-            <stop offset="100%" stopColor="#fff" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        <path d={`${pathD} L 100 110 L 0 110 Z`} fill="url(#heroFill)" />
-        <path d={pathD} fill="none" stroke="#fff" strokeOpacity="0.85" strokeWidth="1.2"
-          strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-      </svg>
+  const isHero = variant === "hero";
 
-      <div className="relative">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.14em] opacity-90">Net Worth</div>
-        <div className="text-[42px] leading-none font-bold mt-2 tracking-tight">
-          <AnimatedNumber value={net} format={fmt} />
-        </div>
-        <div className="flex items-center gap-2 mt-4">
-          <div className="flex items-center gap-0.5 px-2 py-0.5 rounded-full text-xs font-semibold bg-white/25 backdrop-blur-sm">
-            <ArrowUpRight className={`w-3.5 h-3.5 ${deltaUp ? "" : "rotate-90"}`} />
-            {deltaUp ? "+" : ""}{fmtShort(delta)}
-          </div>
-          <span className="text-xs opacity-85">this month</span>
-        </div>
-      </div>
+  // Period chip pill row
+  const chips = (
+    <div className={`flex items-center gap-1 p-1 rounded-full overflow-x-auto no-scrollbar ${
+      isHero ? "bg-white/15 backdrop-blur-sm" : (darkMode ? "bg-slate-800" : "bg-slate-100")
+    }`}>
+      {NET_PERIODS.map(p => {
+        const active = range === p.id;
+        return (
+          <button key={p.id} onClick={() => setRange(p.id)}
+            className={`px-2.5 py-1 rounded-full text-[11px] font-semibold whitespace-nowrap transition ${
+              active
+                ? (isHero ? "bg-white text-emerald-700" : "bg-emerald-500 text-white")
+                : (isHero ? "text-white/85" : theme.textMuted)
+            }`}>
+            {p.label}
+          </button>
+        );
+      })}
     </div>
+  );
+
+  const tipStyle = {
+    borderRadius: "12px",
+    border: `1px solid ${theme.tooltipBorder}`,
+    backgroundColor: theme.tooltipBg,
+    color: darkMode ? "#f1f5f9" : "#0f172a",
+    fontSize: 12,
+  };
+
+  if (isHero) {
+    return (
+      <div className="relative rounded-3xl bg-gradient-to-br from-emerald-400 via-emerald-500 to-emerald-700 p-5 text-white shadow-xl shadow-emerald-500/30 overflow-hidden">
+        <div className="relative">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] opacity-90">Net Worth</div>
+          <div className="text-[40px] leading-none font-bold mt-1.5 tracking-tight">
+            <AnimatedNumber value={last} format={fmt} />
+          </div>
+          <div className="flex items-center gap-2 mt-2.5">
+            <div className="flex items-center gap-0.5 px-2 py-0.5 rounded-full text-xs font-semibold bg-white/25 backdrop-blur-sm">
+              <ArrowUpRight className={`w-3.5 h-3.5 ${deltaUp ? "" : "rotate-90"}`} />
+              {deltaUp ? "+" : ""}{fmtShort(delta)}
+            </div>
+            <span className="text-xs opacity-85">over {range.toUpperCase()}</span>
+          </div>
+        </div>
+        <div className="relative h-24 -mx-5 -mb-5 mt-4">
+          {points.length > 1 ? (
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={points} margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
+                <defs>
+                  <linearGradient id="heroNetFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%"   stopColor="#fff" stopOpacity={0.45} />
+                    <stop offset="100%" stopColor="#fff" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <YAxis hide domain={[min - padding, max + padding]} />
+                <Area type="monotone" dataKey="net" stroke="#fff" strokeWidth={2}
+                      fill="url(#heroNetFill)" isAnimationActive={!loading} />
+              </AreaChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="h-full flex items-center justify-center text-xs opacity-70">
+              {loading ? "Loading…" : "Not enough history yet"}
+            </div>
+          )}
+        </div>
+        <div className="relative mt-3">{chips}</div>
+      </div>
+    );
+  }
+
+  // Desktop card variant
+  return (
+    <motion.div variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0 } }}
+      className={`${theme.surface} rounded-2xl border ${theme.border} p-5`}>
+      <div className="flex items-start justify-between mb-3 gap-4 flex-wrap">
+        <div>
+          <h3 className="font-semibold">Net Worth</h3>
+          <div className="text-3xl font-bold mt-1">
+            <AnimatedNumber value={last} format={fmt} />
+          </div>
+          <div className={`text-xs mt-1 flex items-center gap-1.5 ${deltaUp ? "text-emerald-500" : "text-rose-500"}`}>
+            <ArrowUpRight className={`w-3.5 h-3.5 ${deltaUp ? "" : "rotate-90"}`} />
+            <span className="font-semibold">{deltaUp ? "+" : ""}{fmt(delta)}</span>
+            <span className={theme.textSubtle}>over {range.toUpperCase()}</span>
+          </div>
+        </div>
+        {chips}
+      </div>
+      <div className="h-52">
+        {points.length > 1 ? (
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={points}>
+              <defs>
+                <linearGradient id="netFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%"   stopColor="#10b981" stopOpacity={0.35} />
+                  <stop offset="100%" stopColor="#10b981" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke={theme.chartAxis}
+                     tickFormatter={d => d.slice(5)} minTickGap={40} />
+              <YAxis tick={{ fontSize: 11 }} stroke={theme.chartAxis}
+                     tickFormatter={fmtShort} domain={[min - padding, max + padding]} />
+              <Tooltip contentStyle={tipStyle} formatter={v => fmt(v)} />
+              <Area type="monotone" dataKey="net" stroke="#10b981" strokeWidth={2}
+                    fill="url(#netFill)" isAnimationActive={!loading} />
+            </AreaChart>
+          </ResponsiveContainer>
+        ) : (
+          <div className={`h-full flex items-center justify-center text-sm ${theme.textSubtle}`}>
+            {loading ? "Loading…" : "Not enough history yet — sync more transactions"}
+          </div>
+        )}
+      </div>
+    </motion.div>
   );
 }
 
@@ -754,10 +858,15 @@ function OverviewTab({ theme, darkMode, onNavigate }) {
   return (
     <motion.div initial="hidden" animate="visible" variants={{ visible: { transition: { staggerChildren: 0.06 } } }} className="space-y-4 lg:space-y-6">
 
-      {/* Net Worth hero — mobile only (Mint-style with sparkline) */}
+      {/* Net Worth hero — mobile (interactive chart with period selector) */}
       <motion.div variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0 } }} className="lg:hidden">
-        <MobileHero net={net} cashflow={cashflow} />
+        <NetWorthChart theme={theme} darkMode={darkMode} variant="hero" />
       </motion.div>
+
+      {/* Net Worth chart — desktop (card with period selector) */}
+      <div className="hidden lg:block">
+        <NetWorthChart theme={theme} darkMode={darkMode} variant="card" />
+      </div>
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -1095,12 +1204,12 @@ function AccountsTab({ theme, darkMode, toast }) {
           <div>
             <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Account Name</label>
             <input required value={addForm.name} onChange={e => setAddForm({ ...addForm, name: e.target.value })}
-              placeholder="UICCU Checking" className={inputCls} />
+              placeholder="My Checking" className={inputCls} />
           </div>
           <div>
             <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Institution</label>
             <input value={addForm.institution} onChange={e => setAddForm({ ...addForm, institution: e.target.value })}
-              placeholder="University of Illinois Community Credit Union" className={inputCls} />
+              placeholder="Bank or institution name" className={inputCls} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -1144,7 +1253,11 @@ function TransactionsTab({ theme, darkMode, toast }) {
   const { transactions, accounts, categories, refreshAll } = useData();
   const [search, setSearch] = useState("");
   const [showAdd, setShowAdd] = useState(false);
-  const [detail, setDetail] = useState(null); // currently-tapped transaction
+  const [showFilters, setShowFilters] = useState(false);
+  const [catFilter, setCatFilter] = useState("");      // category filter
+  const [acctFilter, setAcctFilter] = useState("all"); // account filter (id | "all")
+  const [sort, setSort] = useState("date_desc");       // sort key
+  const [detail, setDetail] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const today = new Date().toISOString().slice(0, 10);
   const [form, setForm] = useState({
@@ -1167,12 +1280,73 @@ function TransactionsTab({ theme, darkMode, toast }) {
     } finally { setDeleting(false); }
   };
 
-  const filtered = useMemo(() =>
-    transactions.filter(t =>
-      !search ||
-      (t.merchant || "").toLowerCase().includes(search.toLowerCase()) ||
-      (t.category || "").toLowerCase().includes(search.toLowerCase())
-    ), [transactions, search]);
+  // ── Filter + sort pipeline ─────────────────────────────────────
+  const filtered = useMemo(() => {
+    let rows = transactions.filter(t => {
+      if (search) {
+        const q = search.toLowerCase();
+        if (!(t.merchant || "").toLowerCase().includes(q) &&
+            !(t.category || "").toLowerCase().includes(q)) return false;
+      }
+      if (catFilter && t.category !== catFilter) return false;
+      if (acctFilter !== "all" && String(t.accountId) !== String(acctFilter)) return false;
+      return true;
+    });
+    const cmp = {
+      date_desc:  (a, b) => (b.date || "").localeCompare(a.date || "") || b.id - a.id,
+      date_asc:   (a, b) => (a.date || "").localeCompare(b.date || "") || a.id - b.id,
+      amount_asc: (a, b) => Number(a.amount) - Number(b.amount), // most negative first → biggest expense
+      amount_desc:(a, b) => Number(b.amount) - Number(a.amount), // most positive first → biggest income
+    }[sort] || ((a, b) => 0);
+    return [...rows].sort(cmp);
+  }, [transactions, search, catFilter, acctFilter, sort]);
+
+  // Group by date for the rendered list. Order of groups follows the sort.
+  const grouped = useMemo(() => {
+    const groups = [];
+    let currentKey = null;
+    for (const t of filtered) {
+      const k = t.date || "—";
+      if (k !== currentKey) {
+        groups.push({ date: k, items: [] });
+        currentKey = k;
+      }
+      groups[groups.length - 1].items.push(t);
+    }
+    return groups;
+  }, [filtered]);
+
+  const fmtGroupDate = (d) => {
+    if (!d || d === "—") return "Undated";
+    const dt = new Date(d);
+    if (isNaN(dt)) return d;
+    const today = new Date();   today.setHours(0,0,0,0);
+    const yest = new Date(today); yest.setDate(today.getDate() - 1);
+    const dtTrim = new Date(dt); dtTrim.setHours(0,0,0,0);
+    if (dtTrim.getTime() === today.getTime()) return "Today";
+    if (dtTrim.getTime() === yest.getTime())  return "Yesterday";
+    const sameYear = dt.getFullYear() === today.getFullYear();
+    return dt.toLocaleDateString(undefined, {
+      weekday: "short", month: "short", day: "numeric",
+      year: sameYear ? undefined : "numeric",
+    });
+  };
+
+  const groupTotal = (items) =>
+    items.reduce((s, t) => s + Number(t.amount), 0);
+
+  // Group accounts by institution for the filter dropdown
+  const accountsByBank = useMemo(() => {
+    const map = new Map();
+    for (const a of accounts) {
+      const bank = a.institution || "Manual";
+      if (!map.has(bank)) map.set(bank, []);
+      map.get(bank).push(a);
+    }
+    return [...map.entries()];
+  }, [accounts]);
+
+  const activeFilterCount = (catFilter ? 1 : 0) + (acctFilter !== "all" ? 1 : 0) + (sort !== "date_desc" ? 1 : 0);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -1202,7 +1376,8 @@ function TransactionsTab({ theme, darkMode, toast }) {
     : Object.keys(CAT_COLORS);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
+      {/* Search + filters + add */}
       <div className="flex items-center gap-2">
         <div className={`flex items-center gap-3 px-4 py-2.5 ${theme.surface} border ${theme.border} rounded-xl flex-1`}>
           <Search className={`w-4 h-4 ${theme.textSubtle} flex-shrink-0`} />
@@ -1213,40 +1388,117 @@ function TransactionsTab({ theme, darkMode, toast }) {
             <button onClick={() => setSearch("")}><X className={`w-4 h-4 ${theme.textSubtle}`} /></button>
           )}
         </div>
+        <motion.button whileTap={{ scale: 0.94 }} onClick={() => setShowFilters(!showFilters)}
+          className={`relative p-2.5 rounded-xl border ${theme.border} ${theme.surface} flex-shrink-0`}>
+          <Settings className={`w-5 h-5 ${activeFilterCount > 0 ? "text-emerald-500" : theme.textSubtle}`} />
+          {activeFilterCount > 0 && (
+            <span className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+              {activeFilterCount}
+            </span>
+          )}
+        </motion.button>
         <motion.button whileTap={{ scale: 0.94 }} onClick={() => setShowAdd(true)}
           className="bg-emerald-500 hover:bg-emerald-600 text-white p-2.5 rounded-xl shadow-sm shadow-emerald-500/30 flex-shrink-0">
           <Plus className="w-5 h-5" />
         </motion.button>
       </div>
-      <div className={`${theme.surface} rounded-2xl border ${theme.border} overflow-hidden`}>
-        {filtered.length === 0 ? (
-          <div className={`px-5 py-12 text-center text-sm ${theme.textSubtle}`}>
-            {search ? "No matching transactions" : "No transactions yet — connect a bank to get started."}
-          </div>
-        ) : (
-          filtered.map((t, i) => {
-            const Icon = CAT_ICONS[t.category] || Briefcase;
-            const color = CAT_COLORS[t.category] || "#64748b";
-            return (
-              <motion.button key={t.id}
-                whileTap={{ scale: 0.985 }}
-                onClick={() => setDetail(t)}
-                className={`w-full flex items-center gap-3 px-4 py-3.5 text-left ${i < filtered.length - 1 ? `border-b ${theme.border}` : ""} ${theme.hover} transition-colors`}>
-                <div className={`w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
-                  <Icon className="w-4 h-4" style={{ color }} />
+
+      {/* Filter row (collapsible) */}
+      <AnimatePresence initial={false}>
+        {showFilters && (
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }}
+            className={`${theme.surface} border ${theme.border} rounded-2xl overflow-hidden`}>
+            <div className="p-4 space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Account</label>
+                  <select value={acctFilter} onChange={e => setAcctFilter(e.target.value)} className={inputCls}>
+                    <option value="all">All accounts</option>
+                    {accountsByBank.map(([bank, accts]) => (
+                      <optgroup key={bank} label={bank}>
+                        {accts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                      </optgroup>
+                    ))}
+                  </select>
                 </div>
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm truncate">{t.merchant}</div>
-                  <div className={`text-xs ${theme.textSubtle}`}>{t.date} · {t.category} · {t.accountName || "—"}</div>
+                <div>
+                  <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Category</label>
+                  <select value={catFilter} onChange={e => setCatFilter(e.target.value)} className={inputCls}>
+                    <option value="">All categories</option>
+                    {catList.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
                 </div>
-                <div className={`font-semibold text-sm flex-shrink-0 ${Number(t.amount) >= 0 ? "text-emerald-500" : ""}`}>
-                  {Number(t.amount) >= 0 ? "+" : "−"}{fmt(Math.abs(Number(t.amount)))}
+                <div>
+                  <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Sort by</label>
+                  <select value={sort} onChange={e => setSort(e.target.value)} className={inputCls}>
+                    <option value="date_desc">Newest first</option>
+                    <option value="date_asc">Oldest first</option>
+                    <option value="amount_asc">Highest expense</option>
+                    <option value="amount_desc">Highest income</option>
+                  </select>
                 </div>
-              </motion.button>
-            );
-          })
+              </div>
+              {activeFilterCount > 0 && (
+                <button onClick={() => { setCatFilter(""); setAcctFilter("all"); setSort("date_desc"); }}
+                  className={`text-xs font-medium ${theme.textSubtle} hover:text-emerald-500`}>
+                  Clear filters
+                </button>
+              )}
+            </div>
+          </motion.div>
         )}
-      </div>
+      </AnimatePresence>
+
+      {/* Grouped transaction list */}
+      {grouped.length === 0 ? (
+        <div className={`${theme.surface} rounded-2xl border ${theme.border} px-5 py-12 text-center text-sm ${theme.textSubtle}`}>
+          {search || activeFilterCount > 0
+            ? "No matching transactions"
+            : "No transactions yet — connect a bank to get started."}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {grouped.map(group => {
+            const total = groupTotal(group.items);
+            return (
+              <div key={group.date}>
+                <div className="flex items-center justify-between px-1 pb-1.5">
+                  <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider`}>
+                    {fmtGroupDate(group.date)}
+                  </div>
+                  <div className={`text-[11px] font-semibold ${total >= 0 ? "text-emerald-500" : theme.textSubtle}`}>
+                    {total >= 0 ? "+" : "−"}{fmt(Math.abs(total))}
+                  </div>
+                </div>
+                <div className={`${theme.surface} rounded-2xl border ${theme.border} overflow-hidden`}>
+                  {group.items.map((t, i) => {
+                    const Icon = CAT_ICONS[t.category] || Briefcase;
+                    const color = CAT_COLORS[t.category] || "#64748b";
+                    return (
+                      <motion.button key={t.id}
+                        whileTap={{ scale: 0.985 }}
+                        onClick={() => setDetail(t)}
+                        className={`w-full flex items-center gap-3 px-4 py-3 text-left ${i < group.items.length - 1 ? `border-b ${theme.border}` : ""} ${theme.hover} transition-colors`}>
+                        <div className={`w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+                          <Icon className="w-4 h-4" style={{ color }} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium text-sm truncate">{t.merchant}</div>
+                          <div className={`text-xs ${theme.textSubtle} truncate`}>{t.category} · {t.accountName || "—"}</div>
+                        </div>
+                        <div className={`font-semibold text-sm flex-shrink-0 ${Number(t.amount) >= 0 ? "text-emerald-500" : ""}`}>
+                          {Number(t.amount) >= 0 ? "+" : "−"}{fmt(Math.abs(Number(t.amount)))}
+                        </div>
+                      </motion.button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Add transaction sheet */}
       <Sheet open={showAdd} onClose={() => setShowAdd(false)} title="Add Transaction" theme={theme}>
@@ -1366,80 +1618,275 @@ function DetailRow({ label, value, theme }) {
 }
 
 // ─── Budgets Tab ──────────────────────────────────────────────────────────────
+const BUDGET_PERIODS = [
+  { id: "weekly",      label: "Weekly",       desc: "Resets every Sunday" },
+  { id: "biweekly",    label: "Bi-weekly",    desc: "Resets every 2 weeks" },
+  { id: "semimonthly", label: "Twice a month",desc: "Resets on the 1st & 15th" },
+  { id: "monthly",     label: "Monthly",      desc: "Resets on the 1st" },
+  { id: "yearly",      label: "Yearly",       desc: "Resets January 1" },
+  { id: "custom",      label: "Custom…",      desc: "Choose your own interval" },
+];
+
+function fmtPeriodLabel(period, days) {
+  if (period === "custom" && days) return `Every ${days}d`;
+  return BUDGET_PERIODS.find(p => p.id === period)?.label || "Monthly";
+}
+
 function BudgetsTab({ theme, darkMode, toast }) {
-  const { budgets, categories, refreshAll } = useData();
-  const [form, setForm] = useState({ category: "", amount: "", custom: "" });
-  const usedCats = useMemo(() => new Set(budgets.map(b => b.category)), [budgets]);
-  const availableCats = useMemo(() => {
-    const all = (categories && categories.length > 0)
+  const { budgets, categories, accounts, refreshAll } = useData();
+  const [showAdd, setShowAdd] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({
+    kind: "category",   // "category" or "creditcard"
+    category: "",
+    custom: "",
+    accountId: "",
+    amount: "",
+    period: "monthly",
+    periodDays: 30,
+    periodStart: new Date().toISOString().slice(0, 10),
+  });
+
+  const isCustomCat = form.category === "__custom__";
+  const isCustomPeriod = form.period === "custom";
+  const isCC = form.kind === "creditcard";
+
+  const allCats = useMemo(() =>
+    (categories && categories.length > 0)
       ? categories.map(c => c.name)
-      : Object.keys(CAT_COLORS);
-    return all.filter(c => !usedCats.has(c));
-  }, [categories, usedCats]);
-  const isCustom = form.category === "__custom__";
+      : Object.keys(CAT_COLORS),
+    [categories]
+  );
+
+  const creditCards = useMemo(() =>
+    accounts.filter(a => a.type === "credit"),
+    [accounts]
+  );
+
+  const resetForm = () => setForm({
+    kind: "category", category: "", custom: "", accountId: "",
+    amount: "", period: "monthly", periodDays: 30,
+    periodStart: new Date().toISOString().slice(0, 10),
+  });
+
   const submit = async (e) => {
     e.preventDefault();
-    const finalCat = isCustom ? form.custom.trim() : form.category;
-    if (!finalCat) return toast?.("Pick a category", "error");
+    setAdding(true);
     try {
-      await api.createBudget({ category: finalCat, amount: Number(form.amount) });
-      setForm({ category: "", amount: "", custom: "" }); refreshAll();
+      const payload = {
+        amount: Number(form.amount),
+        period: form.period,
+        period_start: isCustomPeriod ? form.periodStart : null,
+        period_days:  isCustomPeriod ? Number(form.periodDays) : null,
+      };
+      if (isCC) {
+        if (!form.accountId) { toast?.("Pick a credit card", "error"); return; }
+        const acct = accounts.find(a => String(a.id) === String(form.accountId));
+        payload.account_id = Number(form.accountId);
+        payload.category = `card:${acct?.name || form.accountId}`;
+      } else {
+        const finalCat = isCustomCat ? form.custom.trim() : form.category;
+        if (!finalCat) { toast?.("Pick a category", "error"); return; }
+        payload.category = finalCat;
+      }
+      await api.createBudget(payload);
       toast?.("Budget created", "success");
-    } catch { toast?.("Failed to create budget", "error"); }
+      setShowAdd(false);
+      resetForm();
+      refreshAll();
+    } catch (e) {
+      toast?.("Failed: " + (e.message || ""), "error");
+    } finally { setAdding(false); }
   };
-  const inputCls = `px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+
+  const inputCls = `w-full px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+
   return (
     <div className="space-y-4">
-      <form onSubmit={submit} className={`${theme.surface} border ${theme.border} rounded-2xl p-4 space-y-2`}>
-        <div className="flex flex-wrap gap-2">
-          <select required value={form.category} onChange={e => setForm({ ...form, category: e.target.value })}
-            className={`flex-1 min-w-40 ${inputCls}`}>
-            <option value="">Pick category…</option>
-            {availableCats.map(c => <option key={c} value={c}>{c}</option>)}
-            <option value="__custom__">+ Custom…</option>
-          </select>
-          <input type="number" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })}
-            placeholder="Amount" required min="0" step="0.01"
-            className={`w-32 ${inputCls}`} />
-          <motion.button whileTap={{ scale: 0.97 }} type="submit"
-            className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold">Save</motion.button>
-        </div>
-        {isCustom && (
-          <input value={form.custom} onChange={e => setForm({ ...form, custom: e.target.value })}
-            placeholder="Custom category name" required autoFocus
-            className={`w-full ${inputCls}`} />
-        )}
-      </form>
-      <div className="grid md:grid-cols-2 gap-4">
-        {budgets.map(b => {
-          const pct = Math.min(100, (Number(b.spent) / Number(b.amount)) * 100);
-          const over = pct >= 100;
-          const Icon = CAT_ICONS[b.category] || Briefcase;
-          const color = CAT_COLORS[b.category] || "#64748b";
-          return (
-            <motion.div key={b.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-              className={`${theme.surface} border ${theme.border} rounded-2xl p-5`}>
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ backgroundColor: `${color}20` }}>
-                    <Icon className="w-4 h-4" style={{ color }} />
-                  </div>
-                  <div className="font-semibold text-sm">{b.category}</div>
-                </div>
-                <button onClick={async () => { await api.deleteBudget(b.id); refreshAll(); toast?.("Budget removed"); }}>
-                  <Trash2 className={`w-4 h-4 ${theme.textSubtle} hover:text-rose-500 transition-colors`} />
-                </button>
-              </div>
-              <div className={`flex justify-between text-sm mb-2 ${theme.textMuted}`}>
-                <span>{fmt(b.spent)}</span>
-                <span className="font-medium">{fmt(b.amount)}</span>
-              </div>
-              <ProgressBar value={pct} color={over ? "bg-rose-500" : pct > 80 ? "bg-amber-500" : "bg-emerald-500"} darkMode={darkMode} />
-              {over && <div className="text-xs text-rose-500 mt-1.5 font-medium">Over budget by {fmt(Number(b.spent) - Number(b.amount))}</div>}
-            </motion.div>
-          );
-        })}
+      <div className="flex items-center justify-between">
+        <p className={`text-sm ${theme.textSubtle}`}>
+          {budgets.length} budget{budgets.length !== 1 ? "s" : ""}
+        </p>
+        <motion.button whileTap={{ scale: 0.95 }} onClick={() => setShowAdd(true)}
+          className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-1.5 shadow-sm shadow-emerald-500/30">
+          <Plus className="w-4 h-4" /> New Budget
+        </motion.button>
       </div>
+
+      {budgets.length === 0 ? (
+        <div className={`${theme.surface} border-2 border-dashed ${darkMode ? "border-slate-700" : "border-slate-300"} rounded-2xl p-12 text-center`}>
+          <PieChartIcon className={`w-12 h-12 ${theme.textSubtle} mx-auto mb-3`} />
+          <p className={`${theme.textMuted} mb-4 text-sm`}>
+            No budgets yet. Track spending by category or cap credit-card usage.
+          </p>
+          <motion.button whileTap={{ scale: 0.97 }} onClick={() => setShowAdd(true)}
+            className="bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm font-semibold">
+            Create your first budget
+          </motion.button>
+        </div>
+      ) : (
+        <div className="grid md:grid-cols-2 gap-4">
+          {budgets.map(b => {
+            const pct = Math.min(100, (Number(b.spent) / Number(b.amount)) * 100);
+            const over = pct >= 100;
+            const isCardBudget = !!b.accountId;
+            const displayName = isCardBudget
+              ? (b.accountName || "Credit Card")
+              : b.category;
+            const Icon = isCardBudget ? CreditCard : (CAT_ICONS[b.category] || Briefcase);
+            const color = isCardBudget ? "#f43f5e" : (CAT_COLORS[b.category] || "#64748b");
+            return (
+              <motion.div key={b.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+                className={`${theme.surface} border ${theme.border} rounded-2xl p-5`}>
+                <div className="flex items-start justify-between mb-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${color}20` }}>
+                      <Icon className="w-4 h-4" style={{ color }} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-semibold text-sm truncate">{displayName}</div>
+                      <div className={`text-[11px] ${theme.textSubtle} flex items-center gap-1.5 mt-0.5`}>
+                        <span>{fmtPeriodLabel(b.period, b.period_days || b.periodDays)}</span>
+                        {isCardBudget && <span className="text-rose-500">· Card usage</span>}
+                      </div>
+                    </div>
+                  </div>
+                  <button onClick={async () => {
+                    if (!window.confirm(`Delete budget "${displayName}"?`)) return;
+                    await api.deleteBudget(b.id); refreshAll(); toast?.("Budget removed");
+                  }}>
+                    <Trash2 className={`w-4 h-4 ${theme.textSubtle} hover:text-rose-500 transition-colors`} />
+                  </button>
+                </div>
+                <div className={`flex justify-between text-sm mb-2 ${theme.textMuted}`}>
+                  <span>{fmt(b.spent)}</span>
+                  <span className="font-medium">{fmt(b.amount)}</span>
+                </div>
+                <ProgressBar value={pct} color={over ? "bg-rose-500" : pct > 80 ? "bg-amber-500" : "bg-emerald-500"} darkMode={darkMode} />
+                {over
+                  ? <div className="text-xs text-rose-500 mt-1.5 font-medium">Over by {fmt(Number(b.spent) - Number(b.amount))}</div>
+                  : <div className={`text-xs ${theme.textSubtle} mt-1.5`}>{fmt(Number(b.amount) - Number(b.spent))} left</div>
+                }
+              </motion.div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* New budget sheet */}
+      <Sheet open={showAdd} onClose={() => { setShowAdd(false); resetForm(); }} title="New Budget" theme={theme}>
+        <form onSubmit={submit} className="space-y-4">
+          {/* Kind toggle */}
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Type</label>
+            <div className={`flex p-1 rounded-xl ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+              <button type="button" onClick={() => setForm({ ...form, kind: "category" })}
+                className={`flex-1 py-2 rounded-lg text-sm font-semibold transition ${
+                  !isCC ? (darkMode ? "bg-slate-900 shadow text-emerald-400" : "bg-white shadow text-emerald-600") : theme.textMuted
+                }`}>
+                Category
+              </button>
+              <button type="button" onClick={() => setForm({ ...form, kind: "creditcard" })}
+                disabled={creditCards.length === 0}
+                className={`flex-1 py-2 rounded-lg text-sm font-semibold transition disabled:opacity-40 ${
+                  isCC ? (darkMode ? "bg-slate-900 shadow text-rose-400" : "bg-white shadow text-rose-600") : theme.textMuted
+                }`}>
+                Credit Card
+              </button>
+            </div>
+            {isCC && creditCards.length === 0 && (
+              <p className={`text-xs ${theme.textSubtle} mt-1.5`}>No credit card accounts yet.</p>
+            )}
+            {!isCC && (
+              <p className={`text-xs ${theme.textSubtle} mt-1.5`}>Credit card transactions are excluded from category budgets.</p>
+            )}
+          </div>
+
+          {/* Target picker */}
+          {isCC ? (
+            <div>
+              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Credit card</label>
+              <select required value={form.accountId} onChange={e => setForm({ ...form, accountId: e.target.value })} className={inputCls}>
+                <option value="">Pick a card…</option>
+                {creditCards.map(a => (
+                  <option key={a.id} value={a.id}>{a.name}{a.institution ? ` · ${a.institution}` : ""}</option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <div>
+              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Category</label>
+              <select required value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} className={inputCls}>
+                <option value="">Pick category…</option>
+                {allCats.map(c => <option key={c} value={c}>{c}</option>)}
+                <option value="__custom__">+ Custom…</option>
+              </select>
+              {isCustomCat && (
+                <input value={form.custom} onChange={e => setForm({ ...form, custom: e.target.value })}
+                  placeholder="Custom category name" required autoFocus
+                  className={`${inputCls} mt-2`} />
+              )}
+            </div>
+          )}
+
+          {/* Amount */}
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Amount</label>
+            <input type="number" min="0" step="0.01" required value={form.amount}
+              onChange={e => setForm({ ...form, amount: e.target.value })}
+              placeholder="0.00" className={inputCls} />
+          </div>
+
+          {/* Period */}
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Reset every</label>
+            <div className="grid grid-cols-2 gap-2">
+              {BUDGET_PERIODS.map(p => {
+                const active = form.period === p.id;
+                return (
+                  <button type="button" key={p.id} onClick={() => setForm({ ...form, period: p.id })}
+                    className={`px-3 py-2 rounded-xl text-xs font-semibold text-left border transition ${
+                      active
+                        ? (darkMode ? "border-emerald-500 bg-emerald-500/10 text-emerald-400" : "border-emerald-500 bg-emerald-50 text-emerald-700")
+                        : `${theme.border} ${theme.textMuted}`
+                    }`}>
+                    <div>{p.label}</div>
+                    <div className={`text-[10px] font-normal mt-0.5 ${active ? "" : theme.textSubtle}`}>{p.desc}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {isCustomPeriod && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Every N days</label>
+                <input type="number" min="1" step="1" required value={form.periodDays}
+                  onChange={e => setForm({ ...form, periodDays: e.target.value })}
+                  className={inputCls} />
+              </div>
+              <div>
+                <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Starting on</label>
+                <input type="date" required value={form.periodStart}
+                  onChange={e => setForm({ ...form, periodStart: e.target.value })}
+                  className={inputCls} />
+              </div>
+            </div>
+          )}
+
+          <div className="flex gap-2 pt-2">
+            <button type="button" onClick={() => { setShowAdd(false); resetForm(); }}
+              className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.surface} border ${theme.border}`}>
+              Cancel
+            </button>
+            <motion.button whileTap={{ scale: 0.97 }} type="submit" disabled={adding}
+              className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
+              {adding ? "Saving…" : "Create budget"}
+            </motion.button>
+          </div>
+        </form>
+      </Sheet>
     </div>
   );
 }
@@ -1789,7 +2236,7 @@ function MobileBanksSection({ theme, darkMode, toast }) {
         </div>
         {manualAccounts.length === 0 ? (
           <p className={`text-xs ${theme.textSubtle} text-center py-3`}>
-            No manual accounts. Use "Add" for banks Plaid doesn't support (e.g. UICCU).
+            No manual accounts. Use "Add" for banks Plaid doesn't support.
           </p>
         ) : (
           <div className={`rounded-xl border ${theme.border} divide-y ${theme.divide}`}>
@@ -1814,12 +2261,12 @@ function MobileBanksSection({ theme, darkMode, toast }) {
           <div>
             <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Account Name</label>
             <input required value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
-              placeholder="UICCU Checking" className={inputCls} />
+              placeholder="My Checking" className={inputCls} />
           </div>
           <div>
             <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Institution</label>
             <input value={form.institution} onChange={e => setForm({ ...form, institution: e.target.value })}
-              placeholder="University of Illinois Community Credit Union" className={inputCls} />
+              placeholder="Bank or institution name" className={inputCls} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>

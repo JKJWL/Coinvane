@@ -53,6 +53,7 @@ export const api = {
   updateAccount: (id, data) => request("PATCH", `/accounts/${id}`, data),
   deleteAccount: (id) => request("DELETE", `/accounts/${id}`),
   getAccountSummary: () => request("GET", "/accounts/summary"),
+  getNetWorthHistory: (range = "mtd") => request("GET", `/accounts/networth-history?range=${encodeURIComponent(range)}`),
 
   // transactions
   getTransactions: (params = {}) => {

@@ -92,11 +92,21 @@ const SCHEMA = [
     user_id INT NOT NULL,
     category VARCHAR(64) NOT NULL,
     amount DECIMAL(14,2) NOT NULL,
-    period ENUM('monthly','weekly','yearly') DEFAULT 'monthly',
+    period VARCHAR(32) DEFAULT 'monthly',
+    period_start DATE NULL,
+    period_days INT NULL,
+    account_id INT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    UNIQUE KEY uq_user_cat (user_id, category)
+    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+    UNIQUE KEY uq_user_cat_account (user_id, category, account_id)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // ── Budget table upgrades for existing installs ────────────────
+  `ALTER TABLE budgets MODIFY COLUMN period VARCHAR(32) DEFAULT 'monthly'`,
+  `ALTER TABLE budgets ADD COLUMN IF NOT EXISTS period_start DATE NULL`,
+  `ALTER TABLE budgets ADD COLUMN IF NOT EXISTS period_days INT NULL`,
+  `ALTER TABLE budgets ADD COLUMN IF NOT EXISTS account_id INT NULL`,
 
   `CREATE TABLE IF NOT EXISTS goals (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -213,10 +223,23 @@ const DEFAULT_CATEGORIES = [
   ["Other", "#6b7280", "Briefcase"],
 ];
 
+// "Soft" statements that may fail on a fresh DB (e.g. dropping an index
+// that doesn't exist). We swallow the error so re-runs stay idempotent.
+const SOFT_SCHEMA = [
+  // Swap the old single-column unique key for the new composite one on budgets.
+  // The composite key was created by the CREATE TABLE; if the old index also
+  // exists (from a pre-upgrade install), drop it.
+  `ALTER TABLE budgets DROP INDEX uq_user_cat`,
+];
+
 async function run() {
   console.log("Running migrations...");
   for (const stmt of SCHEMA) {
     await query(stmt);
+  }
+  for (const stmt of SOFT_SCHEMA) {
+    try { await query(stmt); }
+    catch (e) { /* expected on fresh DBs */ }
   }
   console.log("Schema OK.");
 
