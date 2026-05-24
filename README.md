@@ -1,5 +1,10 @@
 # Ledger
 
+> Self-hosted personal finance · React PWA · Plaid · Google SSO · zero-knowledge
+> at-rest encryption · single-binary deploy via Docker Compose
+>
+> Source: <https://github.com/JKJWL/Ledger>
+
 A self-hosted personal finance app with bank sync via Plaid, Google Sign-In auth,
 end-to-end encrypted secrets, and a mobile-first PWA that you can install on your
 iPhone home screen and use behind your own VPN or on the public internet.
@@ -11,11 +16,34 @@ without paying a subscription or handing your financial data to a third party.
 
 ## Features
 
-- **Bank sync** — connect any institution Plaid supports (most US banks, brokerages, credit unions)
-- **Manual accounts** — for banks Plaid doesn't support (e.g. smaller credit unions); balances auto-adjust when you record transactions
+### Accounts & transactions
+- **Bank sync** — connect any institution Plaid supports (most US banks, brokerages, credit unions). Auto-sync every 6 hours, plus webhook-driven near-real-time updates.
+- **Manual accounts** — for banks Plaid doesn't support; balances auto-adjust when you record transactions
+- **Transactions** — date-grouped activity feed with filter by account / category, sort options, tap-to-edit
+- **Per-merchant rules** — recategorise a transaction and choose "all future from this merchant"; the rule is saved per-user and applied to every subsequent sync
+
+### Budgets
+- **Six reset periods** — weekly, bi-weekly, twice-a-month, monthly, yearly, or a custom interval (every N days from a date you pick)
+- **Two budget types** — category-based (default) or credit-card-account-based; credit-card transactions are excluded from category budgets to avoid double-counting (swipe + payment)
+- **Drag to reorder** — touch and mouse both work, order persists across devices
+- **Edit any budget** — amount and reset cadence are editable after creation
+- **Suggested categories** — new-budget form suggests categories you spend on but haven't budgeted yet
+- **Income tracker** — pinned at top, no limit; sums positive transactions over the period you choose
+- **Credit usage tracker** — only appears when a credit account is linked; per-card breakdown
+- **Zero-based-budget summary** — dual-color bar at the bottom showing income vs allocated, with "X left to budget" indicator
+
+### Goals
+- **Savings goals** with target / progress
+- **Contribute** button + quick-add chips ($25 / $50 / $100 / $250 / $500)
+
+### Net worth
+- **Net Worth chart** with WTD / MTD / YTD / 1M / 3M / 1Y / ALL toggle (mobile gradient hero + desktop full chart)
 - **Spending pulse** — Mint-style monthly breakdown by category
-- **Budgets + Goals** — track spending caps and savings targets
-- **Investments** — holdings, gains/losses, brokerage syncing via Plaid
+
+### Investments
+- **Holdings, gains/losses** — brokerage syncing via Plaid
+
+### Misc
 - **Notes** — free-form notes, content encrypted at rest
 - **Mobile PWA** — install to iPhone home screen, full-screen, frosted iOS-style nav, Dynamic Island safe
 - **Multi-device** — your dark mode, settings, and data sync between devices
@@ -49,7 +77,7 @@ without paying a subscription or handing your financial data to a third party.
 ### 1. Clone and bootstrap
 
 ```bash
-git clone <your-fork-url> ledger
+git clone https://github.com/JKJWL/Ledger.git ledger
 cd ledger
 ./bootstrap.sh
 ```
@@ -186,7 +214,7 @@ You should see "certificate obtained successfully" within a minute.
 
 ```bash
 cd /home/ledger
-git clone <your-repo> ledger
+git clone https://github.com/JKJWL/Ledger.git ledger
 cd ledger
 ./bootstrap.sh
 docker compose build
@@ -332,19 +360,31 @@ This app is designed to be exposed to the public internet safely.
 
 ## Updating
 
+Standard upgrade flow after `git pull`:
+
 ```bash
 cd ~/ledger
 git pull
-docker compose build
+docker compose build --no-cache backend frontend
 docker compose up -d
-docker compose exec backend npm run migrate   # if schema changed
+docker compose exec backend npm run migrate
 ```
 
-Frontend rebuilds with `--no-cache` are sometimes needed if you change Vite env vars:
-```bash
-docker compose build --no-cache frontend
-docker compose up -d frontend
-```
+A few notes:
+
+- **`--no-cache` is recommended** on every upgrade. Docker's layer cache can
+  silently reuse stale `RUN npm install` or `RUN npm run build` steps and ship
+  you the wrong bundle. Caching what's actually safe to cache costs about 30
+  seconds of build time; not catching a stale layer costs hours of debugging.
+- **`npm run migrate` is idempotent** and safe to re-run after any pull. It
+  uses `CREATE TABLE IF NOT EXISTS` and `ALTER TABLE ... ADD COLUMN IF NOT
+  EXISTS`, so running it when nothing changed is a no-op. Just always run it.
+- **Vite env vars are build-time.** If you ever change `VITE_GOOGLE_CLIENT_ID`
+  (or add new `VITE_*` vars), you MUST rebuild the frontend (`--no-cache`) —
+  restarting the container alone won't pick the change up.
+- **Hard-refresh after deploy** (Cmd/Ctrl + Shift + R) — service worker / PWA
+  caches are aggressive. On iPhone PWA, remove and re-add the home-screen icon
+  to fully bust the cache.
 
 ---
 
@@ -471,9 +511,22 @@ generate one with strong randoms.
 
 ---
 
+## Contributing & forks
+
+This is a single-tenant personal-finance app, not a SaaS — the assumption is
+that each person runs their own copy. PRs and issues are welcome at
+<https://github.com/JKJWL/Ledger>, but the project is intentionally scoped
+small: drive-by feature requests that don't fit a one-person/one-household use
+case may be politely declined.
+
+If you fork it, all you need to update is your `.env` and your Caddyfile —
+nothing in the source assumes a particular domain or owner.
+
+---
+
 ## License
 
-MIT, or whatever you prefer — this is your fork.
+MIT — see `LICENSE` (or treat this as MIT if you fork before that file exists).
 
 ---
 
@@ -483,3 +536,4 @@ MIT, or whatever you prefer — this is your fork.
 - [Fastify](https://fastify.dev) — HTTP framework
 - [Caddy](https://caddyserver.com) — drop-in HTTPS reverse proxy
 - [Tailwind](https://tailwindcss.com) + [Framer Motion](https://www.framer.com/motion/) + [Recharts](https://recharts.org) — UI
+- [Google Identity Services](https://developers.google.com/identity/gsi/web/guides/overview) — passwordless SSO
