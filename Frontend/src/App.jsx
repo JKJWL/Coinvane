@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { motion, AnimatePresence, animate as framerAnimate } from "framer-motion";
+import { motion, AnimatePresence, Reorder, animate as framerAnimate } from "framer-motion";
 import {
   Home, Receipt, PieChart as PieChartIcon, Target, TrendingUp, FileText,
   Settings, Bell, Search, X, RefreshCw, LogOut, Users,
@@ -7,7 +7,8 @@ import {
   Repeat, Utensils, Car, ShoppingBag, Heart, Briefcase, Coffee,
   Film, Zap, GraduationCap, Gift, Music, Book, Plane,
   ChevronDown, Check, Trash2, Shield, AlertCircle, AlertTriangle,
-  Pin, Calendar, Link2, Mail, CheckCircle2, Plus
+  Pin, Calendar, Link2, Mail, CheckCircle2, Plus,
+  Pencil, GripVertical, Sparkles, TrendingDown
 } from "lucide-react";
 import {
   PieChart, Pie, Cell, ResponsiveContainer, AreaChart, Area,
@@ -1306,6 +1307,8 @@ function TransactionsTab({ theme, darkMode, toast }) {
   const [sort, setSort] = useState("date_desc");       // sort key
   const [detail, setDetail] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  // Category-edit flow: 'pick' = pick new category, 'scope' = ask just-this/all-future
+  const [catEdit, setCatEdit] = useState(null); // { stage, newCategory }
   const today = new Date().toISOString().slice(0, 10);
   const [form, setForm] = useState({
     date: today, merchant: "", amount: "", category: "Other",
@@ -1325,6 +1328,27 @@ function TransactionsTab({ theme, darkMode, toast }) {
     } catch (e) {
       toast?.("Failed: " + (e.message || ""), "error");
     } finally { setDeleting(false); }
+  };
+
+  // Feature 3 — apply scope choice from the cat-edit "scope" stage
+  const applyCategoryChange = async (scope) => {
+    if (!detail || !catEdit?.newCategory) return;
+    try {
+      if (scope === "all") {
+        // Save a per-user rule + retroactively recategorise every matching txn
+        await api.recategorizeMerchant(detail.merchant, catEdit.newCategory);
+        toast?.(`All "${detail.merchant}" transactions updated`, "success");
+      } else {
+        // Just this one
+        await api.updateTransaction(detail.id, { category: catEdit.newCategory });
+        toast?.("Category updated", "success");
+      }
+      setCatEdit(null);
+      setDetail(null);
+      refreshAll();
+    } catch (e) {
+      toast?.("Failed: " + (e.message || ""), "error");
+    }
   };
 
   // ── Filter + sort pipeline ─────────────────────────────────────
@@ -1615,11 +1639,87 @@ function TransactionsTab({ theme, darkMode, toast }) {
       </Sheet>
 
       {/* Transaction detail / delete sheet */}
-      <Sheet open={!!detail} onClose={() => setDetail(null)} title="Transaction" theme={theme}>
+      <Sheet open={!!detail} onClose={() => { setDetail(null); setCatEdit(null); }} title="Transaction" theme={theme}>
         {detail && (() => {
           const Icon = CAT_ICONS[detail.category] || Briefcase;
           const color = CAT_COLORS[detail.category] || "#64748b";
           const isIncome = Number(detail.amount) >= 0;
+
+          // Stage 2: ask scope after a new category is picked
+          if (catEdit?.stage === "scope") {
+            const NewIcon = CAT_ICONS[catEdit.newCategory] || Briefcase;
+            const newColor = CAT_COLORS[catEdit.newCategory] || "#64748b";
+            return (
+              <div className="space-y-4">
+                <div className="text-center py-2">
+                  <div className="flex items-center justify-center gap-2 mb-3">
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+                      <Icon className="w-4 h-4" style={{ color }} />
+                    </div>
+                    <ArrowUpRight className={`w-4 h-4 ${theme.textSubtle} rotate-45`} />
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+                      <NewIcon className="w-4 h-4" style={{ color: newColor }} />
+                    </div>
+                  </div>
+                  <p className="text-sm font-medium">Change <span className="font-semibold">{detail.merchant}</span> to <span className="font-semibold">{catEdit.newCategory}</span>?</p>
+                  <p className={`text-xs ${theme.textSubtle} mt-1`}>
+                    Apply this change to which transactions?
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <motion.button whileTap={{ scale: 0.97 }} onClick={() => applyCategoryChange("one")}
+                    className={`w-full p-3.5 rounded-2xl border ${theme.border} text-left ${theme.hover}`}>
+                    <div className="font-semibold text-sm">Just this one</div>
+                    <div className={`text-xs ${theme.textSubtle} mt-0.5`}>Only this transaction is recategorised.</div>
+                  </motion.button>
+                  <motion.button whileTap={{ scale: 0.97 }} onClick={() => applyCategoryChange("all")}
+                    className="w-full p-3.5 rounded-2xl border border-emerald-500 bg-emerald-500/10 text-left">
+                    <div className="font-semibold text-sm text-emerald-600 dark:text-emerald-400">All transactions from {detail.merchant}</div>
+                    <div className={`text-xs ${theme.textSubtle} mt-0.5`}>Saves a rule so future syncs auto-apply this category too.</div>
+                  </motion.button>
+                </div>
+                <button type="button" onClick={() => setCatEdit(null)}
+                  className={`w-full py-2.5 rounded-xl text-sm font-medium ${theme.textSubtle}`}>
+                  Cancel
+                </button>
+              </div>
+            );
+          }
+
+          // Stage 1: pick a new category
+          if (catEdit?.stage === "pick") {
+            return (
+              <div className="space-y-3">
+                <p className={`text-sm ${theme.textSubtle}`}>Pick a new category for {detail.merchant}</p>
+                <div className="grid grid-cols-2 gap-2 max-h-[55vh] overflow-y-auto">
+                  {catList.map(c => {
+                    const CIcon = CAT_ICONS[c] || Briefcase;
+                    const cColor = CAT_COLORS[c] || "#64748b";
+                    const isCurrent = c === detail.category;
+                    return (
+                      <button key={c} type="button" disabled={isCurrent}
+                        onClick={() => setCatEdit({ stage: "scope", newCategory: c })}
+                        className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border text-sm text-left ${theme.hover} ${
+                          isCurrent ? "opacity-50" : ""
+                        } ${theme.border}`}>
+                        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
+                             style={{ backgroundColor: `${cColor}20` }}>
+                          <CIcon className="w-3.5 h-3.5" style={{ color: cColor }} />
+                        </div>
+                        <span className="font-medium truncate">{c}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <button type="button" onClick={() => setCatEdit(null)}
+                  className={`w-full py-2.5 rounded-xl text-sm font-medium ${theme.textSubtle}`}>
+                  Cancel
+                </button>
+              </div>
+            );
+          }
+
+          // Default: detail view
           return (
             <div className="space-y-4">
               <div className="flex flex-col items-center text-center py-4">
@@ -1633,7 +1733,15 @@ function TransactionsTab({ theme, darkMode, toast }) {
               </div>
               <div className={`${darkMode ? "bg-slate-800/50" : "bg-slate-50"} rounded-2xl divide-y ${theme.divide}`}>
                 <DetailRow label="Date"     value={detail.date} theme={theme} />
-                <DetailRow label="Category" value={detail.category} theme={theme} />
+                {/* Category row tappable to change */}
+                <button type="button" onClick={() => setCatEdit({ stage: "pick" })}
+                  className={`w-full flex items-center justify-between px-4 py-3 ${theme.hover} transition-colors`}>
+                  <span className={`text-sm ${theme.textSubtle}`}>Category</span>
+                  <span className="flex items-center gap-1.5 text-sm font-medium">
+                    {detail.category}
+                    <Pencil className={`w-3.5 h-3.5 ${theme.textSubtle}`} />
+                  </span>
+                </button>
                 <DetailRow label="Account"  value={detail.accountName || "—"} theme={theme} />
                 {detail.note && <DetailRow label="Note" value={detail.note} theme={theme} />}
               </div>
@@ -1679,12 +1787,219 @@ function fmtPeriodLabel(period, days) {
   return BUDGET_PERIODS.find(p => p.id === period)?.label || "Monthly";
 }
 
+// ── Income tracker card (pinned at top, always shown) ───────────────────────
+function IncomeTracker({ tracker, theme, darkMode, onConfigure }) {
+  const total = Number(tracker?.total || 0);
+  const period = tracker?.period || "monthly";
+  return (
+    <motion.button
+      whileTap={{ scale: 0.99 }}
+      onClick={onConfigure}
+      className="w-full text-left relative rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-700 p-5 text-white shadow-sm shadow-emerald-500/30 overflow-hidden">
+      <div className="flex items-start justify-between">
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] opacity-90 flex items-center gap-1.5">
+            <ArrowUpRight className="w-3.5 h-3.5 rotate-180" /> Income
+          </div>
+          <div className="text-3xl font-bold mt-1 tracking-tight">
+            <AnimatedNumber value={total} format={fmt} duration={0.6} />
+          </div>
+          <div className="text-xs opacity-85 mt-1">
+            {fmtPeriodLabel(period, tracker?.periodDays)} · tap to change
+          </div>
+        </div>
+        <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center">
+          <DollarSign className="w-5 h-5" />
+        </div>
+      </div>
+    </motion.button>
+  );
+}
+
+// ── Credit usage tracker (only when credit accounts exist) ─────────────────
+function CreditTracker({ tracker, theme, darkMode, onConfigure }) {
+  const total = Number(tracker?.total || 0);
+  const period = tracker?.period || "monthly";
+  return (
+    <motion.button
+      whileTap={{ scale: 0.99 }}
+      onClick={onConfigure}
+      className={`w-full text-left ${theme.surface} border ${theme.border} rounded-2xl p-5`}>
+      <div className="flex items-start justify-between">
+        <div className="min-w-0">
+          <div className={`text-[11px] font-semibold uppercase tracking-[0.14em] ${theme.textSubtle} flex items-center gap-1.5`}>
+            <CreditCard className="w-3.5 h-3.5" /> Credit Card Usage
+          </div>
+          <div className="text-2xl font-bold mt-1 tracking-tight text-rose-500">
+            <AnimatedNumber value={total} format={fmt} duration={0.6} />
+          </div>
+          <div className={`text-xs ${theme.textSubtle} mt-1`}>
+            {fmtPeriodLabel(period, tracker?.periodDays)} · tap to change
+          </div>
+          {tracker?.cards?.length > 1 && (
+            <div className="flex flex-wrap gap-1.5 mt-3">
+              {tracker.cards.map(c => (
+                <div key={c.accountId}
+                  className={`text-[10px] font-semibold px-2 py-1 rounded-full ${darkMode ? "bg-rose-500/10 text-rose-400" : "bg-rose-50 text-rose-600"}`}>
+                  {c.accountName}: {fmtShort(c.used)}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className={`w-10 h-10 rounded-full flex items-center justify-center ${darkMode ? "bg-rose-500/15 text-rose-400" : "bg-rose-50 text-rose-500"}`}>
+          <CreditCard className="w-5 h-5" />
+        </div>
+      </div>
+    </motion.button>
+  );
+}
+
+// ── Zero-budget summary at bottom (Feature 6) ──────────────────────────────
+function ZeroBudgetSummary({ zb, theme, darkMode }) {
+  if (!zb) return null;
+  const income = Number(zb.income || 0);
+  const allocated = Number(zb.allocated || 0);
+  const remaining = Number(zb.remaining || 0);
+  // Visual bar: budgeted (red) on left meets income (green) on right
+  const total = Math.max(income, allocated, 1);
+  const incomePct = (income / total) * 100;
+  const allocPct = (allocated / total) * 100;
+  const balanced = Math.abs(remaining) < 1;
+
+  return (
+    <div className={`${theme.surface} border ${theme.border} rounded-2xl p-4 mt-2`}>
+      <div className="flex items-center justify-between mb-2">
+        <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider`}>
+          Zero-based budget
+        </div>
+        {balanced ? (
+          <div className="text-[11px] font-semibold text-emerald-500 flex items-center gap-1">
+            <Check className="w-3 h-3" /> Fully allocated
+          </div>
+        ) : remaining > 0 ? (
+          <div className="text-[11px] font-semibold text-amber-500">
+            {fmt(remaining)} left to budget
+          </div>
+        ) : (
+          <div className="text-[11px] font-semibold text-rose-500">
+            {fmt(Math.abs(remaining))} over-allocated
+          </div>
+        )}
+      </div>
+      {/* Dual bar — budgeted (red) on left, income (green) on right */}
+      <div className={`flex h-2 rounded-full overflow-hidden ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+        <motion.div
+          initial={{ width: 0 }} animate={{ width: `${allocPct / 2}%` }}
+          transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
+          className="bg-rose-500" />
+        <div className="w-px bg-transparent" />
+        <motion.div
+          initial={{ width: 0 }} animate={{ width: `${incomePct / 2}%` }}
+          transition={{ duration: 0.8, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
+          className="bg-emerald-500" />
+      </div>
+      <div className="flex items-center justify-between text-[11px] mt-2">
+        <div className="flex items-center gap-1 text-rose-500 font-semibold">
+          <span className="w-2 h-2 rounded-full bg-rose-500" /> Budgeted {fmt(allocated)}
+        </div>
+        <div className="flex items-center gap-1 text-emerald-500 font-semibold">
+          Income {fmt(income)} <span className="w-2 h-2 rounded-full bg-emerald-500" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Suggested category chips (Feature 2) ───────────────────────────────────
+function SuggestionChips({ suggestions, onPick, theme, darkMode }) {
+  if (!suggestions || suggestions.length === 0) return null;
+  return (
+    <div>
+      <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider flex items-center gap-1.5 mb-2`}>
+        <Sparkles className="w-3 h-3 text-amber-500" /> Suggested
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {suggestions.map(s => {
+          const Icon = CAT_ICONS[s.category] || Briefcase;
+          const color = CAT_COLORS[s.category] || "#64748b";
+          return (
+            <button type="button" key={s.category} onClick={() => onPick(s.category)}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-semibold border ${theme.border} ${theme.hover}`}>
+              <Icon className="w-3.5 h-3.5" style={{ color }} />
+              {s.category}
+              <span className={`${theme.textSubtle} font-medium`}>· {fmtShort(s.total)}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Single budget card (used inside Reorder.Item) ──────────────────────────
+function BudgetCard({ b, theme, darkMode, onEdit, onDelete, dragging }) {
+  const pct = Math.min(100, (Number(b.spent) / Number(b.amount)) * 100);
+  const over = pct >= 100;
+  const isCardBudget = !!b.accountId;
+  const displayName = isCardBudget ? (b.accountName || "Credit Card") : b.category;
+  const Icon = isCardBudget ? CreditCard : (CAT_ICONS[b.category] || Briefcase);
+  const color = isCardBudget ? "#f43f5e" : (CAT_COLORS[b.category] || "#64748b");
+  return (
+    <div className={`${theme.surface} border ${theme.border} rounded-2xl p-5 ${dragging ? "shadow-2xl" : ""}`}>
+      <div className="flex items-start justify-between mb-3 gap-2">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${color}20` }}>
+            <Icon className="w-4 h-4" style={{ color }} />
+          </div>
+          <div className="min-w-0">
+            <div className="font-semibold text-sm truncate">{displayName}</div>
+            <div className={`text-[11px] ${theme.textSubtle} mt-0.5`}>
+              {fmtPeriodLabel(b.period, b.period_days)}
+              {isCardBudget && <span className="text-rose-500"> · Card usage</span>}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <button onPointerDown={e => e.stopPropagation()} onClick={onEdit}
+            className={`p-1.5 rounded-lg ${theme.hover} ${theme.textSubtle}`}>
+            <Pencil className="w-3.5 h-3.5" />
+          </button>
+          <button onPointerDown={e => e.stopPropagation()} onClick={onDelete}
+            className={`p-1.5 rounded-lg ${theme.hover} text-rose-500`}>
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+          <div className={`p-1 ${theme.textSubtle}`} title="Drag to reorder">
+            <GripVertical className="w-4 h-4" />
+          </div>
+        </div>
+      </div>
+      <div className={`flex justify-between text-sm mb-2 ${theme.textMuted}`}>
+        <span>{fmt(b.spent)}</span>
+        <span className="font-medium">{fmt(b.amount)}</span>
+      </div>
+      <ProgressBar value={pct} color={over ? "bg-rose-500" : pct > 80 ? "bg-amber-500" : "bg-emerald-500"} darkMode={darkMode} />
+      {over
+        ? <div className="text-xs text-rose-500 mt-1.5 font-medium">Over by {fmt(Number(b.spent) - Number(b.amount))}</div>
+        : <div className={`text-xs ${theme.textSubtle} mt-1.5`}>{fmt(Number(b.amount) - Number(b.spent))} left</div>
+      }
+    </div>
+  );
+}
+
 function BudgetsTab({ theme, darkMode, toast }) {
-  const { budgets, categories, accounts, refreshAll } = useData();
-  const [showAdd, setShowAdd] = useState(false);
+  const { budgets, categories, accounts, trackers, budgetSuggestions, refreshAll } = useData();
+  const [showAdd, setShowAdd] = useState(false);           // Add/Edit budget sheet
+  const [editing, setEditing] = useState(null);            // budget being edited, or null
   const [adding, setAdding] = useState(false);
+  const [trackerSheet, setTrackerSheet] = useState(null);  // {kind: 'income'|'credit', ...} or null
+  const [savingTracker, setSavingTracker] = useState(false);
+  // Local ordered copy of budgets for drag-reorder
+  const [ordered, setOrdered] = useState(budgets);
+  useEffect(() => { setOrdered(budgets); }, [budgets]);
+
   const [form, setForm] = useState({
-    kind: "category",   // "category" or "creditcard"
+    kind: "category",
     category: "",
     custom: "",
     accountId: "",
@@ -1697,6 +2012,7 @@ function BudgetsTab({ theme, darkMode, toast }) {
   const isCustomCat = form.category === "__custom__";
   const isCustomPeriod = form.period === "custom";
   const isCC = form.kind === "creditcard";
+  const isEditing = !!editing;
 
   const allCats = useMemo(() =>
     (categories && categories.length > 0)
@@ -1716,6 +2032,32 @@ function BudgetsTab({ theme, darkMode, toast }) {
     periodStart: new Date().toISOString().slice(0, 10),
   });
 
+  const resetForm = () => {
+    setEditing(null);
+    setForm({
+      kind: "category", category: "", custom: "", accountId: "",
+      amount: "", period: "monthly", periodDays: 30,
+      periodStart: new Date().toISOString().slice(0, 10),
+    });
+  };
+
+  const openEdit = (b) => {
+    setEditing(b);
+    setForm({
+      kind: b.accountId ? "creditcard" : "category",
+      category: b.category,
+      custom: "",
+      accountId: b.accountId ? String(b.accountId) : "",
+      amount: String(b.amount),
+      period: b.period || "monthly",
+      periodDays: b.period_days || 30,
+      periodStart: b.period_start
+        ? new Date(b.period_start).toISOString().slice(0, 10)
+        : new Date().toISOString().slice(0, 10),
+    });
+    setShowAdd(true);
+  };
+
   const submit = async (e) => {
     e.preventDefault();
     setAdding(true);
@@ -1726,18 +2068,23 @@ function BudgetsTab({ theme, darkMode, toast }) {
         period_start: isCustomPeriod ? form.periodStart : null,
         period_days:  isCustomPeriod ? Number(form.periodDays) : null,
       };
-      if (isCC) {
-        if (!form.accountId) { toast?.("Pick a credit card", "error"); return; }
-        const acct = accounts.find(a => String(a.id) === String(form.accountId));
-        payload.account_id = Number(form.accountId);
-        payload.category = `card:${acct?.name || form.accountId}`;
+      if (isEditing) {
+        await api.updateBudget(editing.id, payload);
+        toast?.("Budget updated", "success");
       } else {
-        const finalCat = isCustomCat ? form.custom.trim() : form.category;
-        if (!finalCat) { toast?.("Pick a category", "error"); return; }
-        payload.category = finalCat;
+        if (isCC) {
+          if (!form.accountId) { toast?.("Pick a credit card", "error"); return; }
+          const acct = accounts.find(a => String(a.id) === String(form.accountId));
+          payload.account_id = Number(form.accountId);
+          payload.category = `card:${acct?.name || form.accountId}`;
+        } else {
+          const finalCat = isCustomCat ? form.custom.trim() : form.category;
+          if (!finalCat) { toast?.("Pick a category", "error"); return; }
+          payload.category = finalCat;
+        }
+        await api.createBudget(payload);
+        toast?.("Budget created", "success");
       }
-      await api.createBudget(payload);
-      toast?.("Budget created", "success");
       setShowAdd(false);
       resetForm();
       refreshAll();
@@ -1746,111 +2093,222 @@ function BudgetsTab({ theme, darkMode, toast }) {
     } finally { setAdding(false); }
   };
 
+  const onReorder = async (next) => {
+    setOrdered(next); // optimistic
+    try {
+      await api.reorderBudgets(next.map(b => b.id));
+    } catch {
+      toast?.("Couldn't save order — refreshing", "error");
+      refreshAll();
+    }
+  };
+
+  const deleteBudget = async (b) => {
+    const displayName = b.accountId ? (b.accountName || "Credit Card") : b.category;
+    if (!window.confirm(`Delete budget "${displayName}"?`)) return;
+    try { await api.deleteBudget(b.id); toast?.("Budget removed", "success"); refreshAll(); }
+    catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+
+  const saveTracker = async (e) => {
+    e.preventDefault();
+    if (!trackerSheet) return;
+    setSavingTracker(true);
+    try {
+      const k = trackerSheet.kind; // 'income' | 'credit'
+      const data = {
+        [`${k}_period`]: trackerSheet.period,
+        [`${k}_period_days`]: trackerSheet.period === "custom" ? Number(trackerSheet.periodDays) : null,
+        [`${k}_period_start`]: trackerSheet.period === "custom" ? trackerSheet.periodStart : null,
+      };
+      await api.updateTrackerSettings(data);
+      toast?.("Saved", "success");
+      setTrackerSheet(null);
+      refreshAll();
+    } catch (e) {
+      toast?.("Failed: " + (e.message || ""), "error");
+    } finally { setSavingTracker(false); }
+  };
+
   const inputCls = `w-full px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <p className={`text-sm ${theme.textSubtle}`}>
           {budgets.length} budget{budgets.length !== 1 ? "s" : ""}
+          {budgets.length > 1 && <span className="ml-1.5 opacity-70">· drag to reorder</span>}
         </p>
-        <motion.button whileTap={{ scale: 0.95 }} onClick={() => setShowAdd(true)}
+        <motion.button whileTap={{ scale: 0.95 }}
+          onClick={() => { resetForm(); setShowAdd(true); }}
           className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-1.5 shadow-sm shadow-emerald-500/30">
           <Plus className="w-4 h-4" /> New Budget
         </motion.button>
       </div>
 
+      {/* Income tracker — pinned at top, always shown */}
+      <IncomeTracker tracker={trackers?.income} theme={theme} darkMode={darkMode}
+        onConfigure={() => setTrackerSheet({
+          kind: "income",
+          period: trackers?.income?.period || "monthly",
+          periodDays: trackers?.income?.periodDays || 30,
+          periodStart: new Date().toISOString().slice(0, 10),
+        })} />
+
+      {/* Credit tracker — only if credit account(s) exist */}
+      {trackers?.credit && (
+        <CreditTracker tracker={trackers.credit} theme={theme} darkMode={darkMode}
+          onConfigure={() => setTrackerSheet({
+            kind: "credit",
+            period: trackers.credit.period || "monthly",
+            periodDays: trackers.credit.periodDays || 30,
+            periodStart: new Date().toISOString().slice(0, 10),
+          })} />
+      )}
+
+      {/* Reorderable budgets */}
       {budgets.length === 0 ? (
         <div className={`${theme.surface} border-2 border-dashed ${darkMode ? "border-slate-700" : "border-slate-300"} rounded-2xl p-12 text-center`}>
           <PieChartIcon className={`w-12 h-12 ${theme.textSubtle} mx-auto mb-3`} />
           <p className={`${theme.textMuted} mb-4 text-sm`}>
             No budgets yet. Track spending by category or cap credit-card usage.
           </p>
-          <motion.button whileTap={{ scale: 0.97 }} onClick={() => setShowAdd(true)}
+          <motion.button whileTap={{ scale: 0.97 }}
+            onClick={() => { resetForm(); setShowAdd(true); }}
             className="bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm font-semibold">
             Create your first budget
           </motion.button>
         </div>
       ) : (
-        <div className="grid md:grid-cols-2 gap-4">
-          {budgets.map(b => {
-            const pct = Math.min(100, (Number(b.spent) / Number(b.amount)) * 100);
-            const over = pct >= 100;
-            const isCardBudget = !!b.accountId;
-            const displayName = isCardBudget
-              ? (b.accountName || "Credit Card")
-              : b.category;
-            const Icon = isCardBudget ? CreditCard : (CAT_ICONS[b.category] || Briefcase);
-            const color = isCardBudget ? "#f43f5e" : (CAT_COLORS[b.category] || "#64748b");
-            return (
-              <motion.div key={b.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-                className={`${theme.surface} border ${theme.border} rounded-2xl p-5`}>
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${color}20` }}>
-                      <Icon className="w-4 h-4" style={{ color }} />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="font-semibold text-sm truncate">{displayName}</div>
-                      <div className={`text-[11px] ${theme.textSubtle} flex items-center gap-1.5 mt-0.5`}>
-                        <span>{fmtPeriodLabel(b.period, b.period_days || b.periodDays)}</span>
-                        {isCardBudget && <span className="text-rose-500">· Card usage</span>}
-                      </div>
-                    </div>
-                  </div>
-                  <button onClick={async () => {
-                    if (!window.confirm(`Delete budget "${displayName}"?`)) return;
-                    await api.deleteBudget(b.id); refreshAll(); toast?.("Budget removed");
-                  }}>
-                    <Trash2 className={`w-4 h-4 ${theme.textSubtle} hover:text-rose-500 transition-colors`} />
-                  </button>
-                </div>
-                <div className={`flex justify-between text-sm mb-2 ${theme.textMuted}`}>
-                  <span>{fmt(b.spent)}</span>
-                  <span className="font-medium">{fmt(b.amount)}</span>
-                </div>
-                <ProgressBar value={pct} color={over ? "bg-rose-500" : pct > 80 ? "bg-amber-500" : "bg-emerald-500"} darkMode={darkMode} />
-                {over
-                  ? <div className="text-xs text-rose-500 mt-1.5 font-medium">Over by {fmt(Number(b.spent) - Number(b.amount))}</div>
-                  : <div className={`text-xs ${theme.textSubtle} mt-1.5`}>{fmt(Number(b.amount) - Number(b.spent))} left</div>
-                }
-              </motion.div>
-            );
-          })}
-        </div>
+        <Reorder.Group axis="y" values={ordered} onReorder={onReorder}
+          className="space-y-3">
+          {ordered.map(b => (
+            <Reorder.Item key={b.id} value={b}
+              whileDrag={{ scale: 1.02, zIndex: 50 }}
+              className="cursor-grab active:cursor-grabbing touch-none">
+              <BudgetCard b={b} theme={theme} darkMode={darkMode}
+                onEdit={() => openEdit(b)}
+                onDelete={() => deleteBudget(b)} />
+            </Reorder.Item>
+          ))}
+        </Reorder.Group>
       )}
 
-      {/* New budget sheet */}
-      <Sheet open={showAdd} onClose={() => { setShowAdd(false); resetForm(); }} title="New Budget" theme={theme}>
-        <form onSubmit={submit} className="space-y-4">
-          {/* Kind toggle */}
-          <div>
-            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Type</label>
-            <div className={`flex p-1 rounded-xl ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
-              <button type="button" onClick={() => setForm({ ...form, kind: "category" })}
-                className={`flex-1 py-2 rounded-lg text-sm font-semibold transition ${
-                  !isCC ? (darkMode ? "bg-slate-900 shadow text-emerald-400" : "bg-white shadow text-emerald-600") : theme.textMuted
-                }`}>
-                Category
-              </button>
-              <button type="button" onClick={() => setForm({ ...form, kind: "creditcard" })}
-                disabled={creditCards.length === 0}
-                className={`flex-1 py-2 rounded-lg text-sm font-semibold transition disabled:opacity-40 ${
-                  isCC ? (darkMode ? "bg-slate-900 shadow text-rose-400" : "bg-white shadow text-rose-600") : theme.textMuted
-                }`}>
-                Credit Card
-              </button>
-            </div>
-            {isCC && creditCards.length === 0 && (
-              <p className={`text-xs ${theme.textSubtle} mt-1.5`}>No credit card accounts yet.</p>
-            )}
-            {!isCC && (
-              <p className={`text-xs ${theme.textSubtle} mt-1.5`}>Credit card transactions are excluded from category budgets.</p>
-            )}
-          </div>
+      {/* Zero-budget summary */}
+      <ZeroBudgetSummary zb={trackers?.zeroBudget} theme={theme} darkMode={darkMode} />
 
-          {/* Target picker */}
-          {isCC ? (
+      {/* Tracker period sheet */}
+      <Sheet open={!!trackerSheet} onClose={() => setTrackerSheet(null)}
+        title={trackerSheet?.kind === "income" ? "Income Tracker" : "Credit Tracker"} theme={theme}>
+        {trackerSheet && (
+          <form onSubmit={saveTracker} className="space-y-4">
+            <p className={`text-xs ${theme.textSubtle}`}>
+              {trackerSheet.kind === "income"
+                ? "Tracks the sum of positive transactions (income) over the period below."
+                : "Tracks the total expenses across all your credit cards over the period below."}
+            </p>
+            <div>
+              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Reset every</label>
+              <div className="grid grid-cols-2 gap-2">
+                {BUDGET_PERIODS.map(p => {
+                  const active = trackerSheet.period === p.id;
+                  return (
+                    <button type="button" key={p.id} onClick={() => setTrackerSheet({ ...trackerSheet, period: p.id })}
+                      className={`px-3 py-2 rounded-xl text-xs font-semibold text-left border transition ${
+                        active
+                          ? (darkMode ? "border-emerald-500 bg-emerald-500/10 text-emerald-400" : "border-emerald-500 bg-emerald-50 text-emerald-700")
+                          : `${theme.border} ${theme.textMuted}`
+                      }`}>
+                      <div>{p.label}</div>
+                      <div className={`text-[10px] font-normal mt-0.5 ${active ? "" : theme.textSubtle}`}>{p.desc}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            {trackerSheet.period === "custom" && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Every N days</label>
+                  <input type="number" min="1" step="1" required value={trackerSheet.periodDays}
+                    onChange={e => setTrackerSheet({ ...trackerSheet, periodDays: e.target.value })}
+                    className={inputCls} />
+                </div>
+                <div>
+                  <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Starting on</label>
+                  <input type="date" required value={trackerSheet.periodStart}
+                    onChange={e => setTrackerSheet({ ...trackerSheet, periodStart: e.target.value })}
+                    className={inputCls} />
+                </div>
+              </div>
+            )}
+            <div className="flex gap-2 pt-2">
+              <button type="button" onClick={() => setTrackerSheet(null)}
+                className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.surface} border ${theme.border}`}>
+                Cancel
+              </button>
+              <motion.button whileTap={{ scale: 0.97 }} type="submit" disabled={savingTracker}
+                className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
+                {savingTracker ? "Saving…" : "Save"}
+              </motion.button>
+            </div>
+          </form>
+        )}
+      </Sheet>
+
+      {/* New / Edit budget sheet */}
+      <Sheet open={showAdd} onClose={() => { setShowAdd(false); resetForm(); }}
+        title={isEditing ? "Edit Budget" : "New Budget"} theme={theme}>
+        <form onSubmit={submit} className="space-y-4">
+          {/* Kind toggle (locked when editing — kind/category/account can't be changed) */}
+          {!isEditing && (
+            <div>
+              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Type</label>
+              <div className={`flex p-1 rounded-xl ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+                <button type="button" onClick={() => setForm({ ...form, kind: "category" })}
+                  className={`flex-1 py-2 rounded-lg text-sm font-semibold transition ${
+                    !isCC ? (darkMode ? "bg-slate-900 shadow text-emerald-400" : "bg-white shadow text-emerald-600") : theme.textMuted
+                  }`}>
+                  Category
+                </button>
+                <button type="button" onClick={() => setForm({ ...form, kind: "creditcard" })}
+                  disabled={creditCards.length === 0}
+                  className={`flex-1 py-2 rounded-lg text-sm font-semibold transition disabled:opacity-40 ${
+                    isCC ? (darkMode ? "bg-slate-900 shadow text-rose-400" : "bg-white shadow text-rose-600") : theme.textMuted
+                  }`}>
+                  Credit Card
+                </button>
+              </div>
+              {isCC && creditCards.length === 0 && (
+                <p className={`text-xs ${theme.textSubtle} mt-1.5`}>No credit card accounts yet.</p>
+              )}
+              {!isCC && (
+                <p className={`text-xs ${theme.textSubtle} mt-1.5`}>Credit card transactions are excluded from category budgets.</p>
+              )}
+            </div>
+          )}
+
+          {/* Suggestions chips (Feature 2) — only for new category-based budgets */}
+          {!isEditing && !isCC && budgetSuggestions.length > 0 && (
+            <SuggestionChips
+              suggestions={budgetSuggestions}
+              onPick={(c) => setForm({ ...form, category: c, custom: "" })}
+              theme={theme} darkMode={darkMode}
+            />
+          )}
+
+          {/* Target picker — only shown when creating (can't change after) */}
+          {isEditing ? (
+            <div className={`${theme.surface} border ${theme.border} rounded-xl px-3 py-2.5`}>
+              <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider`}>
+                {editing.accountId ? "Credit card" : "Category"}
+              </div>
+              <div className="text-sm font-semibold mt-0.5">
+                {editing.accountId ? (editing.accountName || "Credit Card") : editing.category}
+              </div>
+            </div>
+          ) : isCC ? (
             <div>
               <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Credit card</label>
               <select required value={form.accountId} onChange={e => setForm({ ...form, accountId: e.target.value })} className={inputCls}>
@@ -1929,7 +2387,7 @@ function BudgetsTab({ theme, darkMode, toast }) {
             </button>
             <motion.button whileTap={{ scale: 0.97 }} type="submit" disabled={adding}
               className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
-              {adding ? "Saving…" : "Create budget"}
+              {adding ? "Saving…" : (isEditing ? "Save changes" : "Create budget")}
             </motion.button>
           </div>
         </form>
@@ -1944,6 +2402,8 @@ const GOAL_COLORS = ["bg-emerald-500","bg-sky-500","bg-violet-500","bg-amber-500
 function GoalsTab({ theme, darkMode, toast }) {
   const { goals, refreshAll } = useData();
   const [form, setForm] = useState({ name: "", target: "", saved: "" });
+  const [contribFor, setContribFor] = useState(null); // {goal, amount, busy}
+
   const submit = async (e) => {
     e.preventDefault();
     try {
@@ -1952,6 +2412,24 @@ function GoalsTab({ theme, darkMode, toast }) {
       toast?.("Goal created", "success");
     } catch { toast?.("Failed to create goal", "error"); }
   };
+
+  const contribute = async (e) => {
+    e.preventDefault();
+    if (!contribFor) return;
+    const amt = Number(contribFor.amount);
+    if (!Number.isFinite(amt) || amt <= 0) return toast?.("Enter a positive amount", "error");
+    setContribFor({ ...contribFor, busy: true });
+    try {
+      await api.contributeGoal(contribFor.goal.id, amt);
+      toast?.(`Added ${fmt(amt)} to ${contribFor.goal.name}`, "success");
+      setContribFor(null);
+      refreshAll();
+    } catch (e) {
+      toast?.("Failed: " + (e.message || ""), "error");
+      setContribFor({ ...contribFor, busy: false });
+    }
+  };
+
   return (
     <div className="space-y-4">
       <form onSubmit={submit} className={`${theme.surface} border ${theme.border} rounded-2xl p-4 flex flex-wrap gap-2`}>
@@ -1971,19 +2449,32 @@ function GoalsTab({ theme, darkMode, toast }) {
         {goals.map((g, i) => {
           const pct = Math.min(100, (Number(g.saved) / Number(g.target)) * 100);
           const bg = GOAL_COLORS[i % GOAL_COLORS.length];
+          const completed = Number(g.saved) >= Number(g.target);
           return (
             <motion.div key={g.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
               className={`${theme.surface} border ${theme.border} rounded-2xl p-5`}>
               <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <div className={`w-10 h-10 rounded-xl ${bg} flex items-center justify-center`}>
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className={`w-10 h-10 rounded-xl ${bg} flex items-center justify-center flex-shrink-0`}>
                     <Target className="w-5 h-5 text-white" />
                   </div>
-                  <div className="font-semibold">{g.name}</div>
+                  <div className="font-semibold truncate">{g.name}</div>
                 </div>
-                <button onClick={async () => { await api.deleteGoal(g.id); refreshAll(); toast?.("Goal deleted"); }}>
-                  <Trash2 className={`w-4 h-4 ${theme.textSubtle} hover:text-rose-500 transition-colors`} />
-                </button>
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  <motion.button whileTap={{ scale: 0.92 }}
+                    onClick={() => setContribFor({ goal: g, amount: "" })}
+                    disabled={completed}
+                    title={completed ? "Goal already reached" : "Add money"}
+                    className="bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold px-2.5 py-1.5 rounded-lg flex items-center gap-1 disabled:opacity-40">
+                    <Plus className="w-3 h-3" /> Add
+                  </motion.button>
+                  <button onClick={async () => {
+                    if (!window.confirm(`Delete goal "${g.name}"?`)) return;
+                    await api.deleteGoal(g.id); refreshAll(); toast?.("Goal deleted");
+                  }}>
+                    <Trash2 className={`w-4 h-4 ${theme.textSubtle} hover:text-rose-500 transition-colors`} />
+                  </button>
+                </div>
               </div>
               <div className={`flex justify-between text-sm mb-2 ${theme.textMuted}`}>
                 <span>{fmt(g.saved)}</span>
@@ -1991,7 +2482,10 @@ function GoalsTab({ theme, darkMode, toast }) {
               </div>
               <ProgressBar value={pct} color={bg} darkMode={darkMode} />
               <div className={`flex items-center justify-between mt-2`}>
-                <span className={`text-xs ${theme.textSubtle}`}>{Math.round(pct)}% complete</span>
+                <span className={`text-xs ${theme.textSubtle}`}>
+                  {Math.round(pct)}% complete
+                  {!completed && <span className="ml-1">· {fmt(Number(g.target) - Number(g.saved))} to go</span>}
+                </span>
                 {g.deadline && (
                   <span className={`text-xs ${theme.textSubtle} flex items-center gap-1`}>
                     <Calendar className="w-3 h-3" /> {new Date(g.deadline).toLocaleDateString()}
@@ -2002,6 +2496,47 @@ function GoalsTab({ theme, darkMode, toast }) {
           );
         })}
       </div>
+
+      {/* Contribute sheet */}
+      <Sheet open={!!contribFor} onClose={() => setContribFor(null)}
+        title={`Add to ${contribFor?.goal?.name || ""}`} theme={theme}>
+        {contribFor && (
+          <form onSubmit={contribute} className="space-y-4">
+            <div className="text-center py-2">
+              <div className={`text-xs ${theme.textSubtle}`}>Currently saved</div>
+              <div className="text-2xl font-bold mt-1">{fmt(contribFor.goal.saved)}</div>
+              <div className={`text-xs ${theme.textSubtle} mt-0.5`}>of {fmt(contribFor.goal.target)}</div>
+            </div>
+            <div>
+              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Add amount</label>
+              <input type="number" min="0.01" step="0.01" required autoFocus
+                value={contribFor.amount}
+                onChange={e => setContribFor({ ...contribFor, amount: e.target.value })}
+                placeholder="0.00"
+                className={`w-full px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`} />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {[25, 50, 100, 250, 500].map(amt => (
+                <button type="button" key={amt}
+                  onClick={() => setContribFor({ ...contribFor, amount: String(amt) })}
+                  className={`px-3 py-1.5 rounded-full text-xs font-semibold border ${theme.border} ${theme.hover}`}>
+                  +{fmt(amt)}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button type="button" onClick={() => setContribFor(null)}
+                className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.surface} border ${theme.border}`}>
+                Cancel
+              </button>
+              <motion.button whileTap={{ scale: 0.97 }} type="submit" disabled={contribFor.busy}
+                className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
+                {contribFor.busy ? "Adding…" : "Add to goal"}
+              </motion.button>
+            </div>
+          </form>
+        )}
+      </Sheet>
     </div>
   );
 }

@@ -61,9 +61,21 @@ export async function syncTransactions(userId, itemId, accessToken) {
     )).map(a => [a.plaid_account_id, a.id])
   );
 
+  // Load this user's merchant→category rules so their preferences win over
+  // Plaid's classifier. (Per-user; never reads/writes another user's rules.)
+  const ruleMap = new Map(
+    (await query(
+      "SELECT merchant, category FROM merchant_rules WHERE user_id = ?",
+      [userId]
+    )).map(r => [r.merchant.toLowerCase(), r.category])
+  );
+
   for (const t of [...added, ...modified]) {
     const accId = accountMap.get(t.account_id) || null;
-    const cat = t.personal_finance_category?.primary || (t.category?.[0]) || "Other";
+    const merchant = t.merchant_name || t.name || "Unknown";
+    const plaidCat = t.personal_finance_category?.primary || (t.category?.[0]) || "Other";
+    // User-defined rule takes precedence over Plaid's category
+    const finalCat = ruleMap.get(merchant.toLowerCase()) || normalizeCategory(plaidCat);
     await query(
       `INSERT INTO transactions (user_id, account_id, plaid_transaction_id, date, merchant,
                                   category, amount, pending)
@@ -72,8 +84,7 @@ export async function syncTransactions(userId, itemId, accessToken) {
                                 category = VALUES(category), amount = VALUES(amount),
                                 pending = VALUES(pending)`,
       [userId, accId, t.transaction_id, t.date,
-       t.merchant_name || t.name || "Unknown", normalizeCategory(cat),
-       -t.amount, t.pending ? 1 : 0]
+       merchant, finalCat, -t.amount, t.pending ? 1 : 0]
     );
   }
 

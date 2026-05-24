@@ -16,21 +16,26 @@ export function DataProvider({ children, enabled }) {
   const [investSummary, setInvestSummary] = useState(null);
   const [cashflow, setCashflow] = useState([]);
   const [byCategory, setByCategory] = useState([]);
+  const [trackers, setTrackers] = useState({ income: null, credit: null, zeroBudget: null });
+  const [budgetSuggestions, setBudgetSuggestions] = useState([]);
   const [loading, setLoading] = useState(false);
 
   const refreshAll = useCallback(async () => {
     if (!enabled) return;
     setLoading(true);
     try {
-      const [acc, txn, bud, gol, not, cat, ntf, hld, sum, isum, cf, bc] = await Promise.all([
+      const [acc, txn, bud, gol, not, cat, ntf, hld, sum, isum, cf, bc, trk, sug] = await Promise.all([
         api.getAccounts(), api.getTransactions({ limit: 200 }), api.getBudgets(),
         api.getGoals(), api.getNotes(), api.getCategories(), api.getNotifications(),
         api.getHoldings(), api.getAccountSummary(), api.getInvestmentSummary(),
         api.getCashflow(), api.getByCategory(),
+        api.getBudgetTrackers().catch(() => ({ income: null, credit: null, zeroBudget: null })),
+        api.getBudgetSuggestions().catch(() => []),
       ]);
       setAccounts(acc); setTransactions(txn); setBudgets(bud); setGoals(gol);
       setNotes(not); setCategories(cat); setNotifications(ntf); setHoldings(hld);
       setSummary(sum); setInvestSummary(isum); setCashflow(cf); setByCategory(bc);
+      setTrackers(trk); setBudgetSuggestions(sug);
     } finally {
       setLoading(false);
     }
@@ -40,7 +45,9 @@ export function DataProvider({ children, enabled }) {
 
   const value = {
     accounts, transactions, budgets, goals, notes, categories, notifications,
-    holdings, summary, investSummary, cashflow, byCategory, loading,
+    holdings, summary, investSummary, cashflow, byCategory,
+    trackers, budgetSuggestions,
+    loading,
     refreshAll,
     setAccounts, setTransactions, setBudgets, setGoals, setNotes,
     setCategories, setNotifications, setHoldings,

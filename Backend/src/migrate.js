@@ -25,6 +25,14 @@ const SCHEMA = [
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS picture VARCHAR(512)`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS dark_mode BOOLEAN DEFAULT FALSE`,
   `ALTER TABLE users MODIFY COLUMN password_hash VARCHAR(255) NULL`,
+  // Income tracker (Feature 4)
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS income_period VARCHAR(32) DEFAULT 'monthly'`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS income_period_days INT NULL`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS income_period_start DATE NULL`,
+  // Credit usage tracker (Feature 4)
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS credit_period VARCHAR(32) DEFAULT 'monthly'`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS credit_period_days INT NULL`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS credit_period_start DATE NULL`,
 
   `CREATE TABLE IF NOT EXISTS plaid_items (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -96,10 +104,12 @@ const SCHEMA = [
     period_start DATE NULL,
     period_days INT NULL,
     account_id INT NULL,
+    sort_order INT DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-    UNIQUE KEY uq_user_cat_account (user_id, category, account_id)
+    UNIQUE KEY uq_user_cat_account (user_id, category, account_id),
+    INDEX idx_user_sort (user_id, sort_order)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
   // ── Budget table upgrades for existing installs ────────────────
@@ -107,6 +117,21 @@ const SCHEMA = [
   `ALTER TABLE budgets ADD COLUMN IF NOT EXISTS period_start DATE NULL`,
   `ALTER TABLE budgets ADD COLUMN IF NOT EXISTS period_days INT NULL`,
   `ALTER TABLE budgets ADD COLUMN IF NOT EXISTS account_id INT NULL`,
+  `ALTER TABLE budgets ADD COLUMN IF NOT EXISTS sort_order INT DEFAULT 0`,
+
+  // ── Per-merchant category rules (Feature 3) ────────────────────
+  // When the user re-categorises a transaction and chooses "apply to all",
+  // we save a rule here. Sync.js consults this map when inserting new
+  // Plaid transactions; the user's category wins over Plaid's classifier.
+  `CREATE TABLE IF NOT EXISTS merchant_rules (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    merchant VARCHAR(255) NOT NULL,
+    category VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY uq_user_merchant (user_id, merchant)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
   `CREATE TABLE IF NOT EXISTS goals (
     id INT AUTO_INCREMENT PRIMARY KEY,

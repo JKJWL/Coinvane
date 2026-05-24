@@ -118,4 +118,43 @@ export default async function (app) {
       [req.user.id]
     );
   });
+
+  // ── Recategorise all transactions sharing a merchant name + save rule.
+  //    Feature 3 — "apply to all from same name" flow.
+  //    Body: { merchant, category }. Scope is strictly the calling user.
+  app.post("/recategorize-merchant", async (req, reply) => {
+    const { merchant, category } = req.body || {};
+    if (!merchant || !category) {
+      return reply.code(400).send({ error: "merchant and category required" });
+    }
+    // Save rule (per-user)
+    await query(
+      `INSERT INTO merchant_rules (user_id, merchant, category)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE category = VALUES(category)`,
+      [req.user.id, merchant, category]
+    );
+    // Apply retroactively to all matching transactions for THIS user only
+    const r = await query(
+      `UPDATE transactions SET category = ?
+       WHERE user_id = ? AND merchant = ?`,
+      [category, req.user.id, merchant]
+    );
+    return { ok: true, updated: r.affectedRows || 0 };
+  });
+
+  // ── Manage merchant rules ──────────────────────────────────────
+  app.get("/merchant-rules", async (req) => {
+    return query(
+      `SELECT id, merchant, category, created_at AS createdAt
+       FROM merchant_rules WHERE user_id = ? ORDER BY merchant`,
+      [req.user.id]
+    );
+  });
+
+  app.delete("/merchant-rules/:id", async (req) => {
+    await query("DELETE FROM merchant_rules WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]);
+    return { ok: true };
+  });
 }

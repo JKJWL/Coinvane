@@ -74,11 +74,22 @@ export const api = {
   createBudget: (data) => request("POST", "/budgets", data),
   updateBudget: (id, data) => request("PATCH", `/budgets/${id}`, data),
   deleteBudget: (id) => request("DELETE", `/budgets/${id}`),
+  reorderBudgets: (ids) => request("POST", "/budgets/reorder", { ids }),
+  getBudgetTrackers: () => request("GET", "/budgets/trackers"),
+  getBudgetSuggestions: () => request("GET", "/budgets/suggestions"),
+  updateTrackerSettings: (data) => request("PATCH", "/budgets/tracker-settings", data),
 
   getGoals: () => request("GET", "/goals"),
   createGoal: (data) => request("POST", "/goals", data),
   updateGoal: (id, data) => request("PATCH", `/goals/${id}`, data),
+  contributeGoal: (id, amount) => request("POST", `/goals/${id}/contribute`, { amount }),
   deleteGoal: (id) => request("DELETE", `/goals/${id}`),
+
+  // Merchant rule + bulk recategorize (Feature 3)
+  recategorizeMerchant: (merchant, category) =>
+    request("POST", "/transactions/recategorize-merchant", { merchant, category }),
+  getMerchantRules: () => request("GET", "/transactions/merchant-rules"),
+  deleteMerchantRule: (id) => request("DELETE", `/transactions/merchant-rules/${id}`),
 
   getNotes: () => request("GET", "/notes"),
   createNote: (data) => request("POST", "/notes", data),

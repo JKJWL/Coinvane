@@ -39,6 +39,23 @@ export default async function (app) {
     return queryOne("SELECT * FROM goals WHERE id = ?", [req.params.id]);
   });
 
+  // Increment "saved" by a positive amount; cap at target.
+  app.post("/:id/contribute", async (req, reply) => {
+    const { amount } = req.body || {};
+    const add = Number(amount);
+    if (!Number.isFinite(add) || add <= 0) {
+      return reply.code(400).send({ error: "amount must be a positive number" });
+    }
+    const g = await queryOne(
+      "SELECT id, saved, target FROM goals WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    if (!g) return reply.code(404).send({ error: "goal not found" });
+    const newSaved = Math.min(Number(g.target), Number(g.saved) + add);
+    await query("UPDATE goals SET saved = ? WHERE id = ?", [newSaved, g.id]);
+    return queryOne("SELECT * FROM goals WHERE id = ?", [g.id]);
+  });
+
   app.delete("/:id", async (req) => {
     await query("DELETE FROM goals WHERE id = ? AND user_id = ?",
       [req.params.id, req.user.id]);
