@@ -37,7 +37,29 @@ if (isProd && !process.env.CORS_ORIGIN) {
 }
 
 const app = Fastify({
-  logger: { level: isProd ? "info" : "debug" },
+  logger: {
+    level: isProd ? "info" : "debug",
+    // Redact anything that looks like a secret to prevent leakage into logs.
+    // Without this, Plaid SDK errors dump full request headers (including PLAID-SECRET).
+    redact: {
+      paths: [
+        "req.headers.authorization",
+        "req.headers.cookie",
+        'req.headers["x-api-key"]',
+        // Axios/Plaid error shapes — strip request headers & body that may contain secrets
+        'err.config.headers["PLAID-SECRET"]',
+        'err.config.headers["PLAID-CLIENT-ID"]',
+        'err.config.headers.authorization',
+        'err.config.data',
+        'err.request._header',
+        'err.response.config.headers["PLAID-SECRET"]',
+        'err.response.config.headers["PLAID-CLIENT-ID"]',
+        'err.response.config.headers.authorization',
+        'err.response.config.data',
+      ],
+      censor: "[REDACTED]",
+    },
+  },
   trustProxy: true,
   bodyLimit: 512 * 1024, // 512KB — tightened from 2MB
   disableRequestLogging: false,
