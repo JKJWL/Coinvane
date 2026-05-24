@@ -11,12 +11,17 @@ export function setToken(t) {
 export function getToken() { return authToken; }
 
 async function request(method, path, body) {
-  const headers = { "Content-Type": "application/json" };
+  const headers = {};
   if (authToken) headers.Authorization = `Bearer ${authToken}`;
+  // Only declare a JSON body when we actually have one — otherwise Fastify's
+  // body parser sees Content-Type: application/json with an empty body and
+  // rejects with 400 (FST_ERR_CTP_EMPTY_JSON_BODY). Affects POST endpoints
+  // that take no payload, like /plaid/sync and /notifications/read-all.
+  if (body !== undefined) headers["Content-Type"] = "application/json";
   const res = await fetch(`${API_URL}${path}`, {
     method,
     headers,
-    body: body ? JSON.stringify(body) : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (res.status === 401) {
     setToken(null);
