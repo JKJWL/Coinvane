@@ -2026,12 +2026,6 @@ function BudgetsTab({ theme, darkMode, toast }) {
     [accounts]
   );
 
-  const resetForm = () => setForm({
-    kind: "category", category: "", custom: "", accountId: "",
-    amount: "", period: "monthly", periodDays: 30,
-    periodStart: new Date().toISOString().slice(0, 10),
-  });
-
   const resetForm = () => {
     setEditing(null);
     setForm({
