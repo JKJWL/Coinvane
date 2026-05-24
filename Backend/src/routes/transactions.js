@@ -1,5 +1,20 @@
 import { query, queryOne } from "../db.js";
 
+// Update a manual account's balance by the given delta.
+// Plaid-linked accounts are NEVER touched here — their balances come from Plaid sync.
+async function adjustManualAccountBalance(userId, accountId, delta) {
+  if (!accountId || !delta) return;
+  const acc = await queryOne(
+    "SELECT id, plaid_item_id FROM accounts WHERE id = ? AND user_id = ?",
+    [accountId, userId]
+  );
+  if (!acc || acc.plaid_item_id) return; // not ours or Plaid-managed
+  await query(
+    "UPDATE accounts SET balance = balance + ? WHERE id = ?",
+    [delta, accountId]
+  );
+}
+
 export default async function (app) {
   app.addHook("preHandler", app.authenticate);
 
@@ -16,7 +31,7 @@ export default async function (app) {
     params.push(Number(limit), Number(offset));
     return query(
       `SELECT t.id, t.date, t.merchant, t.category, t.amount, t.pending, t.note,
-              a.name AS accountName, a.id AS accountId
+              a.name AS accountName, a.id AS accountId, a.plaid_item_id AS plaidItemId
        FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
        WHERE ${where.join(" AND ")} ORDER BY t.date DESC, t.id DESC LIMIT ? OFFSET ?`,
       params
@@ -33,11 +48,19 @@ export default async function (app) {
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [req.user.id, accountId || null, date, merchant, category || "Other", amount, note || null]
     );
+    // Reflect the change in the linked manual account's balance
+    // (income +, expense −). Plaid accounts are skipped.
+    await adjustManualAccountBalance(req.user.id, accountId, Number(amount));
     return queryOne("SELECT * FROM transactions WHERE id = ?", [r.insertId]);
   });
 
   app.patch("/:id", async (req) => {
     const { merchant, category, amount, note, date } = req.body || {};
+    // If amount changes on a manual account txn, adjust balance by the delta
+    const existing = await queryOne(
+      "SELECT account_id, amount FROM transactions WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
     await query(
       `UPDATE transactions SET
          merchant = COALESCE(?, merchant),
@@ -49,12 +72,24 @@ export default async function (app) {
       [merchant ?? null, category ?? null, amount ?? null, note ?? null, date ?? null,
        req.params.id, req.user.id]
     );
+    if (existing && amount !== undefined && Number(amount) !== Number(existing.amount)) {
+      const delta = Number(amount) - Number(existing.amount);
+      await adjustManualAccountBalance(req.user.id, existing.account_id, delta);
+    }
     return queryOne("SELECT * FROM transactions WHERE id = ?", [req.params.id]);
   });
 
   app.delete("/:id", async (req) => {
+    // Reverse the balance impact before deleting
+    const existing = await queryOne(
+      "SELECT account_id, amount FROM transactions WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
     await query("DELETE FROM transactions WHERE id = ? AND user_id = ?",
       [req.params.id, req.user.id]);
+    if (existing) {
+      await adjustManualAccountBalance(req.user.id, existing.account_id, -Number(existing.amount));
+    }
     return { ok: true };
   });
 

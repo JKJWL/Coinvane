@@ -1144,12 +1144,28 @@ function TransactionsTab({ theme, darkMode, toast }) {
   const { transactions, accounts, categories, refreshAll } = useData();
   const [search, setSearch] = useState("");
   const [showAdd, setShowAdd] = useState(false);
+  const [detail, setDetail] = useState(null); // currently-tapped transaction
+  const [deleting, setDeleting] = useState(false);
   const today = new Date().toISOString().slice(0, 10);
   const [form, setForm] = useState({
     date: today, merchant: "", amount: "", category: "Other",
     account_id: "", note: "", sign: "out",
   });
   const [adding, setAdding] = useState(false);
+
+  const deleteTransaction = async () => {
+    if (!detail) return;
+    if (!window.confirm(`Delete "${detail.merchant}" for ${fmt(Math.abs(Number(detail.amount)))}?`)) return;
+    setDeleting(true);
+    try {
+      await api.deleteTransaction(detail.id);
+      toast?.("Transaction deleted", "success");
+      setDetail(null);
+      refreshAll();
+    } catch (e) {
+      toast?.("Failed: " + (e.message || ""), "error");
+    } finally { setDeleting(false); }
+  };
 
   const filtered = useMemo(() =>
     transactions.filter(t =>
@@ -1212,8 +1228,10 @@ function TransactionsTab({ theme, darkMode, toast }) {
             const Icon = CAT_ICONS[t.category] || Briefcase;
             const color = CAT_COLORS[t.category] || "#64748b";
             return (
-              <div key={t.id}
-                className={`flex items-center gap-3 px-4 py-3.5 ${i < filtered.length - 1 ? `border-b ${theme.border}` : ""} ${theme.hover} transition-colors`}>
+              <motion.button key={t.id}
+                whileTap={{ scale: 0.985 }}
+                onClick={() => setDetail(t)}
+                className={`w-full flex items-center gap-3 px-4 py-3.5 text-left ${i < filtered.length - 1 ? `border-b ${theme.border}` : ""} ${theme.hover} transition-colors`}>
                 <div className={`w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
                   <Icon className="w-4 h-4" style={{ color }} />
                 </div>
@@ -1224,7 +1242,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
                 <div className={`font-semibold text-sm flex-shrink-0 ${Number(t.amount) >= 0 ? "text-emerald-500" : ""}`}>
                   {Number(t.amount) >= 0 ? "+" : "−"}{fmt(Math.abs(Number(t.amount)))}
                 </div>
-              </div>
+              </motion.button>
             );
           })
         )}
@@ -1232,26 +1250,24 @@ function TransactionsTab({ theme, darkMode, toast }) {
 
       {/* Add transaction sheet */}
       <Sheet open={showAdd} onClose={() => setShowAdd(false)} title="Add Transaction" theme={theme}>
-        <form onSubmit={submit} className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Date</label>
-              <input type="date" required value={form.date} onChange={e => setForm({ ...form, date: e.target.value })}
-                className={inputCls} />
+        <form onSubmit={submit} className="space-y-4">
+          <div>
+            <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Type</label>
+            <div className={`flex p-1 rounded-xl ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+              <button type="button" onClick={() => setForm({ ...form, sign: "out" })}
+                className={`flex-1 py-2 rounded-lg text-sm font-semibold transition ${form.sign === "out" ? (darkMode ? "bg-slate-900 shadow text-rose-400" : "bg-white shadow text-rose-600") : theme.textMuted}`}>
+                Expense
+              </button>
+              <button type="button" onClick={() => setForm({ ...form, sign: "in" })}
+                className={`flex-1 py-2 rounded-lg text-sm font-semibold transition ${form.sign === "in" ? (darkMode ? "bg-slate-900 shadow text-emerald-400" : "bg-white shadow text-emerald-600") : theme.textMuted}`}>
+                Income
+              </button>
             </div>
-            <div>
-              <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Type</label>
-              <div className={`flex p-1 rounded-xl ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
-                <button type="button" onClick={() => setForm({ ...form, sign: "out" })}
-                  className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition ${form.sign === "out" ? (darkMode ? "bg-slate-900 shadow text-rose-400" : "bg-white shadow text-rose-600") : theme.textMuted}`}>
-                  Expense
-                </button>
-                <button type="button" onClick={() => setForm({ ...form, sign: "in" })}
-                  className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition ${form.sign === "in" ? (darkMode ? "bg-slate-900 shadow text-emerald-400" : "bg-white shadow text-emerald-600") : theme.textMuted}`}>
-                  Income
-                </button>
-              </div>
-            </div>
+          </div>
+          <div>
+            <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Date</label>
+            <input type="date" required value={form.date} onChange={e => setForm({ ...form, date: e.target.value })}
+              className={inputCls} />
           </div>
           <div>
             <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Merchant / Description</label>
@@ -1298,33 +1314,101 @@ function TransactionsTab({ theme, darkMode, toast }) {
           </div>
         </form>
       </Sheet>
+
+      {/* Transaction detail / delete sheet */}
+      <Sheet open={!!detail} onClose={() => setDetail(null)} title="Transaction" theme={theme}>
+        {detail && (() => {
+          const Icon = CAT_ICONS[detail.category] || Briefcase;
+          const color = CAT_COLORS[detail.category] || "#64748b";
+          const isIncome = Number(detail.amount) >= 0;
+          return (
+            <div className="space-y-4">
+              <div className="flex flex-col items-center text-center py-4">
+                <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-3 ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+                  <Icon className="w-7 h-7" style={{ color }} />
+                </div>
+                <div className="text-xl font-semibold">{detail.merchant}</div>
+                <div className={`text-3xl font-bold mt-2 ${isIncome ? "text-emerald-500" : ""}`}>
+                  {isIncome ? "+" : "−"}{fmt(Math.abs(Number(detail.amount)))}
+                </div>
+              </div>
+              <div className={`${darkMode ? "bg-slate-800/50" : "bg-slate-50"} rounded-2xl divide-y ${theme.divide}`}>
+                <DetailRow label="Date"     value={detail.date} theme={theme} />
+                <DetailRow label="Category" value={detail.category} theme={theme} />
+                <DetailRow label="Account"  value={detail.accountName || "—"} theme={theme} />
+                {detail.note && <DetailRow label="Note" value={detail.note} theme={theme} />}
+              </div>
+              {detail.plaidItemId && (
+                <p className={`text-xs ${theme.textSubtle} text-center`}>
+                  This is a synced transaction. Deleting it here won't remove it from your bank.
+                </p>
+              )}
+              <motion.button whileTap={{ scale: 0.97 }} onClick={deleteTransaction} disabled={deleting}
+                className="w-full bg-rose-500 hover:bg-rose-600 text-white py-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-60">
+                <Trash2 className="w-4 h-4" />
+                {deleting ? "Deleting…" : "Delete transaction"}
+              </motion.button>
+            </div>
+          );
+        })()}
+      </Sheet>
+    </div>
+  );
+}
+
+function DetailRow({ label, value, theme }) {
+  return (
+    <div className="flex items-center justify-between px-4 py-3">
+      <span className={`text-sm ${theme.textSubtle}`}>{label}</span>
+      <span className="text-sm font-medium text-right ml-3 break-words">{value}</span>
     </div>
   );
 }
 
 // ─── Budgets Tab ──────────────────────────────────────────────────────────────
 function BudgetsTab({ theme, darkMode, toast }) {
-  const { budgets, refreshAll } = useData();
-  const [form, setForm] = useState({ category: "", amount: "" });
+  const { budgets, categories, refreshAll } = useData();
+  const [form, setForm] = useState({ category: "", amount: "", custom: "" });
+  const usedCats = useMemo(() => new Set(budgets.map(b => b.category)), [budgets]);
+  const availableCats = useMemo(() => {
+    const all = (categories && categories.length > 0)
+      ? categories.map(c => c.name)
+      : Object.keys(CAT_COLORS);
+    return all.filter(c => !usedCats.has(c));
+  }, [categories, usedCats]);
+  const isCustom = form.category === "__custom__";
   const submit = async (e) => {
     e.preventDefault();
+    const finalCat = isCustom ? form.custom.trim() : form.category;
+    if (!finalCat) return toast?.("Pick a category", "error");
     try {
-      await api.createBudget({ category: form.category, amount: Number(form.amount) });
-      setForm({ category: "", amount: "" }); refreshAll();
+      await api.createBudget({ category: finalCat, amount: Number(form.amount) });
+      setForm({ category: "", amount: "", custom: "" }); refreshAll();
       toast?.("Budget created", "success");
     } catch { toast?.("Failed to create budget", "error"); }
   };
+  const inputCls = `px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
   return (
     <div className="space-y-4">
-      <form onSubmit={submit} className={`${theme.surface} border ${theme.border} rounded-2xl p-4 flex gap-2 flex-wrap`}>
-        <input value={form.category} onChange={e => setForm({ ...form, category: e.target.value })}
-          placeholder="Category" required
-          className={`flex-1 min-w-36 px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`} />
-        <input type="number" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })}
-          placeholder="Amount" required min="0" step="0.01"
-          className={`w-36 px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`} />
-        <motion.button whileTap={{ scale: 0.97 }} type="submit"
-          className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold">Save</motion.button>
+      <form onSubmit={submit} className={`${theme.surface} border ${theme.border} rounded-2xl p-4 space-y-2`}>
+        <div className="flex flex-wrap gap-2">
+          <select required value={form.category} onChange={e => setForm({ ...form, category: e.target.value })}
+            className={`flex-1 min-w-40 ${inputCls}`}>
+            <option value="">Pick category…</option>
+            {availableCats.map(c => <option key={c} value={c}>{c}</option>)}
+            <option value="__custom__">+ Custom…</option>
+          </select>
+          <input type="number" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })}
+            placeholder="Amount" required min="0" step="0.01"
+            className={`w-32 ${inputCls}`} />
+          <motion.button whileTap={{ scale: 0.97 }} type="submit"
+            className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold">Save</motion.button>
+        </div>
+        {isCustom && (
+          <input value={form.custom} onChange={e => setForm({ ...form, custom: e.target.value })}
+            placeholder="Custom category name" required autoFocus
+            className={`w-full ${inputCls}`} />
+        )}
       </form>
       <div className="grid md:grid-cols-2 gap-4">
         {budgets.map(b => {
@@ -1606,6 +1690,170 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
   );
 }
 
+// ─── Mobile Banks & Accounts section (shown inside Settings on mobile) ───────
+function MobileBanksSection({ theme, darkMode, toast }) {
+  const { accounts, refreshAll } = useData();
+  const [items, setItems] = useState([]);
+  const [removingId, setRemovingId] = useState(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ name: "", type: "cash", subtype: "", balance: "", institution: "" });
+
+  const loadItems = useCallback(async () => {
+    try { setItems(await api.listPlaidItems()); } catch {}
+  }, []);
+  useEffect(() => { loadItems(); }, [loadItems]);
+
+  const removeItem = async (item) => {
+    if (!window.confirm(`Disconnect ${item.institutionName || "this bank"}? Accounts and transactions from it will be removed.`)) return;
+    setRemovingId(item.id);
+    try {
+      await api.deletePlaidItem(item.id);
+      toast?.("Bank disconnected", "success");
+      await loadItems(); await refreshAll();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    finally { setRemovingId(null); }
+  };
+
+  const removeAccount = async (acc) => {
+    if (acc.plaidItemId) { toast?.("Disconnect via Connected Banks", "warning"); return; }
+    if (!window.confirm(`Delete ${acc.name}?`)) return;
+    try { await api.deleteAccount(acc.id); refreshAll(); toast?.("Deleted", "success"); }
+    catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+
+  const submitAdd = async (e) => {
+    e.preventDefault();
+    setAdding(true);
+    try {
+      await api.createAccount({
+        name: form.name.trim(),
+        type: form.type,
+        subtype: form.subtype.trim() || undefined,
+        balance: Number(form.balance) || 0,
+        institution: form.institution.trim() || undefined,
+      });
+      toast?.("Account added", "success");
+      setShowAdd(false);
+      setForm({ name: "", type: "cash", subtype: "", balance: "", institution: "" });
+      refreshAll();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    finally { setAdding(false); }
+  };
+
+  const manualAccounts = accounts.filter(a => !a.plaidItemId);
+  const inputCls = `w-full px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+
+  return (
+    <div className={`${theme.surface} border ${theme.border} rounded-2xl p-5 space-y-4`}>
+      <div className="flex items-center justify-between">
+        <h3 className="font-semibold">Banks & Accounts</h3>
+      </div>
+
+      <PlaidLinkButton onSuccess={() => { refreshAll(); loadItems(); }} full />
+
+      {items.length > 0 && (
+        <div>
+          <div className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-2`}>Connected Banks</div>
+          <div className={`rounded-xl border ${theme.border} divide-y ${theme.divide}`}>
+            {items.map(item => (
+              <div key={item.id} className="flex items-center justify-between px-3 py-2.5">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-full bg-emerald-100 dark:bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
+                    <Building2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="font-medium text-sm truncate">{item.institutionName || "Bank"}</div>
+                    <div className={`text-[11px] ${theme.textSubtle} truncate`}>
+                      {item.lastSyncAt ? `Synced ${new Date(item.lastSyncAt).toLocaleDateString()}` : "Not yet synced"}
+                    </div>
+                  </div>
+                </div>
+                <button onClick={() => removeItem(item)} disabled={removingId === item.id}
+                  className={`text-xs font-medium px-2.5 py-1 rounded-lg disabled:opacity-50 ${darkMode ? "text-rose-400 hover:bg-rose-500/10" : "text-rose-600 hover:bg-rose-50"}`}>
+                  {removingId === item.id ? "…" : "Remove"}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <div className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider`}>Manual Accounts</div>
+          <button onClick={() => setShowAdd(true)}
+            className="text-xs font-semibold text-emerald-500 flex items-center gap-1">
+            <Plus className="w-3.5 h-3.5" /> Add
+          </button>
+        </div>
+        {manualAccounts.length === 0 ? (
+          <p className={`text-xs ${theme.textSubtle} text-center py-3`}>
+            No manual accounts. Use "Add" for banks Plaid doesn't support (e.g. UICCU).
+          </p>
+        ) : (
+          <div className={`rounded-xl border ${theme.border} divide-y ${theme.divide}`}>
+            {manualAccounts.map(a => (
+              <div key={a.id} className="flex items-center justify-between px-3 py-2.5">
+                <div className="min-w-0">
+                  <div className="font-medium text-sm truncate">{a.name}</div>
+                  <div className={`text-[11px] ${theme.textSubtle} truncate`}>{a.institution || a.type} · {fmt(a.balance)}</div>
+                </div>
+                <button onClick={() => removeAccount(a)}
+                  className={`text-xs font-medium px-2.5 py-1 rounded-lg ${darkMode ? "text-rose-400 hover:bg-rose-500/10" : "text-rose-600 hover:bg-rose-50"}`}>
+                  Delete
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <Sheet open={showAdd} onClose={() => setShowAdd(false)} title="Add Manual Account" theme={theme}>
+        <form onSubmit={submitAdd} className="space-y-3">
+          <div>
+            <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Account Name</label>
+            <input required value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
+              placeholder="UICCU Checking" className={inputCls} />
+          </div>
+          <div>
+            <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Institution</label>
+            <input value={form.institution} onChange={e => setForm({ ...form, institution: e.target.value })}
+              placeholder="University of Illinois Community Credit Union" className={inputCls} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Type</label>
+              <select value={form.type} onChange={e => setForm({ ...form, type: e.target.value })} className={inputCls}>
+                <option value="cash">Cash / Checking</option>
+                <option value="credit">Credit Card</option>
+                <option value="investment">Investment</option>
+                <option value="loan">Loan</option>
+              </select>
+            </div>
+            <div>
+              <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Balance</label>
+              <input type="number" step="0.01" required value={form.balance}
+                onChange={e => setForm({ ...form, balance: e.target.value })}
+                placeholder="0.00" className={inputCls} />
+            </div>
+          </div>
+          <div className="flex gap-2 pt-2">
+            <button type="button" onClick={() => setShowAdd(false)}
+              className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.surface} border ${theme.border}`}>
+              Cancel
+            </button>
+            <motion.button whileTap={{ scale: 0.97 }} type="submit" disabled={adding}
+              className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
+              {adding ? "Adding…" : "Add account"}
+            </motion.button>
+          </div>
+        </form>
+      </Sheet>
+    </div>
+  );
+}
+
 // ─── Settings Panel ───────────────────────────────────────────────────────────
 function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
   const toast = useToast();
@@ -1647,6 +1895,11 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
           </div>
           <Toggle checked={darkMode} onChange={onToggleDark} />
         </div>
+      </div>
+
+      {/* Mobile-only: Banks & Accounts management lives here (desktop has its own Accounts tab) */}
+      <div className="lg:hidden">
+        <MobileBanksSection theme={theme} darkMode={darkMode} toast={toast} />
       </div>
 
       <div className={`${theme.surface} border ${theme.border} rounded-2xl p-5`}>
@@ -1719,7 +1972,7 @@ function Shell({ user, onLogout, refreshUser }) {
     { id: "transactions", label: "Activity", icon: Receipt     },
     { id: "budgets",      label: "Budgets",  icon: PieChartIcon },
     { id: "goals",        label: "Goals",    icon: Target      },
-    { id: "investments",  label: "Invest",   icon: TrendingUp  },
+    { id: "settings",     label: "Settings", icon: Settings    },
   ];
   const ALL_TABS = [
     { id: "dashboard",    label: "Dashboard",    icon: Home        },
@@ -1783,8 +2036,9 @@ function Shell({ user, onLogout, refreshUser }) {
 
       {/* ── Mobile sticky frosted nav (Mint/iOS style) ── */}
       <div className={`lg:hidden sticky top-0 z-30 backdrop-blur-xl ${darkMode ? "bg-slate-950/70" : "bg-white/70"} border-b ${darkMode ? "border-slate-800/40" : "border-slate-200/50"}`}>
-        <div className="safe-pt">
-          <div className="px-4 h-12 flex items-center justify-between">
+        {/* Dynamic Island spacer — env(safe-area-inset-top) on iPhone 15+ */}
+        <div className="safe-pt" style={{ paddingTop: "max(env(safe-area-inset-top), 12px)" }}>
+          <div className="px-4 h-14 flex items-center justify-between">
             <button onClick={() => navigate("dashboard")} className="flex items-center gap-2">
               <div className="w-7 h-7 rounded-lg bg-emerald-500 flex items-center justify-center shadow-sm shadow-emerald-500/40">
                 <DollarSign className="w-4 h-4 text-white" />
@@ -1792,6 +2046,9 @@ function Shell({ user, onLogout, refreshUser }) {
               <span className="font-bold text-sm">Ledger</span>
             </button>
             <div className="flex items-center gap-0.5">
+              <IconButton theme={theme} onClick={() => navigate("investments")}>
+                <TrendingUp className={`w-5 h-5 ${theme.textMuted}`} />
+              </IconButton>
               <NotificationsBell theme={theme} darkMode={darkMode} />
               <IconButton theme={theme} onClick={onLogout}><LogOut className={`w-5 h-5 ${theme.textMuted}`} /></IconButton>
             </div>
