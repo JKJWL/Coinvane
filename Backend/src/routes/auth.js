@@ -2,7 +2,7 @@ import crypto from "crypto";
 import { OAuth2Client } from "google-auth-library";
 import { query, queryOne } from "../db.js";
 import { enqueueMail } from "../queue.js";
-import { renderInviteEmail } from "../mailer.js";
+import { renderInviteEmail, renderNotificationDigest, isEmailEnabled } from "../mailer.js";
 import { audit } from "../audit.js";
 
 const SIGNUP_MODE = () => process.env.SIGNUP_MODE || "invite";
@@ -47,6 +47,10 @@ function userPayload(u) {
     dark_mode: !!u.dark_mode,
     notification_email: !!u.notification_email,
     notification_push: !!u.notification_push,
+    // Server-side feature flag: tells the frontend whether the email
+    // subsystem is enabled (EMAIL_CONFIG=enabled). The UI greys out the
+    // Email Notifs toggle and shows a warning when this is false.
+    email_enabled: isEmailEnabled(),
   };
 }
 
@@ -140,6 +144,39 @@ export default async function (app) {
     );
     await audit(user.id, "auth.success", req, { email: user.email });
     return { token, user: userPayload(user) };
+  });
+
+  // ── Send a sample email digest to the signed-in user.
+  // Lets the user (and admin during setup) verify SMTP credentials are
+  // configured correctly without waiting for a real notification event.
+  app.post("/me/test-email", {
+    preHandler: [app.authenticate],
+    config: { rateLimit: { max: 3, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
+    if (!isEmailEnabled()) {
+      return reply.code(503).send({ error: "Email is disabled (EMAIL_CONFIG is not enabled on the server)" });
+    }
+    const u = await queryOne("SELECT email, name FROM users WHERE id = ?", [req.user.id]);
+    if (!u) return reply.code(404).send({ error: "user not found" });
+    const sample = [
+      { type: "budget_warning", color: "amber",
+        title: "Approaching limit: Restaurants",
+        body: "82% of your $200.00 budget used this period." },
+      { type: "large_transaction", color: "amber",
+        title: "Large transaction: Whole Foods",
+        body: "$284.16 on " + new Date().toISOString().slice(0, 10) },
+      { type: "goal_milestone", color: "sky",
+        title: "75% to Emergency Fund",
+        body: "$3,750.00 of $5,000.00 saved." },
+    ];
+    const mail = renderNotificationDigest({ userName: u.name, notifications: sample });
+    try {
+      await enqueueMail({ to: u.email, ...mail });
+      return { ok: true, sentTo: u.email };
+    } catch (e) {
+      req.log.warn({ err: e.message }, "test-email failed");
+      return reply.code(500).send({ error: "Could not enqueue mail. Check SMTP env vars." });
+    }
   });
 
   // ── Profile / settings ──────────────────────────────────────────

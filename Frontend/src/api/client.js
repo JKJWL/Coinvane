@@ -39,6 +39,7 @@ export const api = {
   googleLogin: (id_token) => request("POST", "/auth/google", { id_token }),
   me: () => request("GET", "/auth/me"),
   updateMe: (data) => request("PATCH", "/auth/me", data),
+  sendTestEmail: () => request("POST", "/auth/me/test-email"),
 
   // admin
   listUsers: () => request("GET", "/auth/users"),
@@ -77,6 +78,7 @@ export const api = {
   reorderBudgets: (ids) => request("POST", "/budgets/reorder", { ids }),
   getBudgetTrackers: () => request("GET", "/budgets/trackers"),
   getBudgetSuggestions: () => request("GET", "/budgets/suggestions"),
+  getBudgetTransactions: (id) => request("GET", `/budgets/${id}/transactions`),
   updateTrackerSettings: (data) => request("PATCH", "/budgets/tracker-settings", data),
 
   getGoals: () => request("GET", "/goals"),

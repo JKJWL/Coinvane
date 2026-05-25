@@ -1,103 +1,29 @@
 import { query, queryOne } from "../db.js";
+import {
+  currentPeriodBounds as _cpb,
+  isoDate as _iso,
+  spentForBudget as _spent,
+} from "../budget-utils.js";
 
 /**
- * Budget period model
- * ────────────────────
- *   "weekly"       — resets every Sunday
- *   "biweekly"     — resets every 14 days from period_start (defaults to last Sunday)
- *   "semimonthly"  — resets on the 1st and 15th of each month
- *   "monthly"      — resets on the 1st of each month (default)
- *   "yearly"       — resets January 1
- *   "custom"       — resets every period_days days, starting from period_start
+ * Budget period + tracker route. Shared period math lives in budget-utils.js
+ * so the notification engine can use the same logic.
  *
- * Account-based budgets (Feature 5):
- * When account_id is set the budget tracks spending on that account regardless
- * of category. Category budgets EXCLUDE credit-card transactions to avoid
- * double-counting (swipe + payment).
+ * Account-based budgets: when account_id is set the budget sums all expense
+ * on that account regardless of category. Category budgets EXCLUDE credit-
+ * card transactions (avoids double-counting swipe + payment).
  *
- * Income tracker (Feature 4):
- * Per-user, no amount. Sums positive transactions in the chosen period.
- *
- * Credit tracker (Feature 4):
- * Per-user, no amount. Sums |amount| of expenses on credit accounts in the
- * chosen period. Only meaningful when at least one credit account exists.
- *
- * Sort order (Feature 1):
- * Budgets are returned in ascending sort_order. New budgets get next-highest.
+ * Sort order: budgets are returned ASC by sort_order; new budgets get the
+ * next-highest value (pushed to end).
  */
 
 const PERIODS = ["weekly","biweekly","semimonthly","monthly","yearly","custom"];
 
-function currentPeriodBounds(period, periodStart, periodDays, nowDate) {
-  const now = nowDate ? new Date(nowDate) : new Date();
-  now.setHours(0, 0, 0, 0);
-  const y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
-
-  switch (period) {
-    case "weekly": {
-      const dow = now.getDay();
-      const start = new Date(y, m, d - dow);
-      const end = new Date(start); end.setDate(start.getDate() + 7);
-      return { start, end };
-    }
-    case "biweekly": {
-      const anchor = periodStart ? new Date(periodStart) : (() => {
-        const a = new Date(now); a.setDate(d - now.getDay()); return a;
-      })();
-      anchor.setHours(0, 0, 0, 0);
-      const daysSince = Math.floor((now - anchor) / 86400000);
-      const cyclesSince = Math.floor(daysSince / 14);
-      const start = new Date(anchor); start.setDate(anchor.getDate() + cyclesSince * 14);
-      const end = new Date(start); end.setDate(start.getDate() + 14);
-      return { start, end };
-    }
-    case "semimonthly": {
-      if (d >= 15) return { start: new Date(y, m, 15), end: new Date(y, m + 1, 1) };
-      return { start: new Date(y, m, 1), end: new Date(y, m, 15) };
-    }
-    case "yearly":
-      return { start: new Date(y, 0, 1), end: new Date(y + 1, 0, 1) };
-    case "custom": {
-      const len = Math.max(1, Number(periodDays) || 30);
-      const anchor = periodStart ? new Date(periodStart) : new Date(y, m, 1);
-      anchor.setHours(0, 0, 0, 0);
-      const daysSince = Math.floor((now - anchor) / 86400000);
-      const cyclesSince = Math.floor(daysSince / len);
-      const start = new Date(anchor); start.setDate(anchor.getDate() + cyclesSince * len);
-      const end = new Date(start); end.setDate(start.getDate() + len);
-      return { start, end };
-    }
-    case "monthly":
-    default:
-      return { start: new Date(y, m, 1), end: new Date(y, m + 1, 1) };
-  }
-}
-
-function isoDate(d) { return d.toISOString().slice(0, 10); }
-
-async function spentForBudget(userId, b) {
-  const { start, end } = currentPeriodBounds(b.period, b.period_start, b.period_days);
-  if (b.account_id) {
-    const row = await queryOne(
-      `SELECT COALESCE(SUM(ABS(t.amount)), 0) AS spent
-       FROM transactions t
-       WHERE t.user_id = ? AND t.account_id = ? AND t.amount < 0
-         AND t.date >= ? AND t.date < ?`,
-      [userId, b.account_id, isoDate(start), isoDate(end)]
-    );
-    return Number(row.spent) || 0;
-  }
-  const row = await queryOne(
-    `SELECT COALESCE(SUM(ABS(t.amount)), 0) AS spent
-     FROM transactions t
-     LEFT JOIN accounts a ON a.id = t.account_id
-     WHERE t.user_id = ? AND t.category = ? AND t.amount < 0
-       AND t.date >= ? AND t.date < ?
-       AND (a.type IS NULL OR a.type <> 'credit')`,
-    [userId, b.category, isoDate(start), isoDate(end)]
-  );
-  return Number(row.spent) || 0;
-}
+// Use the shared helpers without renaming the local references the rest of
+// the file uses.
+const currentPeriodBounds = _cpb;
+const isoDate = _iso;
+const spentForBudget = _spent;
 
 async function incomeFor(userId, period, periodStart, periodDays) {
   const { start, end } = currentPeriodBounds(period, periodStart, periodDays);
@@ -183,6 +109,14 @@ export default async function (app) {
     );
     income.period = user.income_period || "monthly";
     income.periodDays = user.income_period_days;
+    // ANCHOR date = what the user picked (e.g. "every Tuesday from 2026-01-13").
+    // Distinct from periodStart, which is the CURRENT period's start (e.g.
+    // "this week's Tuesday"). Frontend needs the anchor to pre-fill the
+    // edit form correctly so picking a custom start doesn't keep
+    // re-resetting to today.
+    income.periodAnchor = user.income_period_start
+      ? new Date(user.income_period_start).toISOString().slice(0, 10)
+      : null;
 
     // Only return credit tracker info if user has at least one credit account.
     const hasCC = await queryOne(
@@ -199,6 +133,9 @@ export default async function (app) {
       );
       credit.period = user.credit_period || "monthly";
       credit.periodDays = user.credit_period_days;
+      credit.periodAnchor = user.credit_period_start
+        ? new Date(user.credit_period_start).toISOString().slice(0, 10)
+        : null;
     }
 
     // Zero-based-budget summary: sum of all budget amounts (caps) vs income.
@@ -322,6 +259,48 @@ export default async function (app) {
       `SELECT * FROM budgets WHERE user_id = ? AND category = ? AND (account_id <=> ?)`,
       [req.user.id, category, account_id]
     );
+  });
+
+  // ── GET /:id/transactions — list contributing transactions ──────
+  // Feature 1: tap a budget to see what's contributing to its spent total
+  // in the current period. Honours the same category/account/credit rules
+  // as the spent calculation.
+  app.get("/:id/transactions", async (req, reply) => {
+    const b = await queryOne(
+      `SELECT id, category, period, period_start, period_days, account_id
+       FROM budgets WHERE id = ? AND user_id = ?`,
+      [req.params.id, req.user.id]
+    );
+    if (!b) return reply.code(404).send({ error: "budget not found" });
+
+    const { start, end } = currentPeriodBounds(b.period, b.period_start, b.period_days);
+
+    let rows;
+    if (b.account_id) {
+      rows = await query(
+        `SELECT t.id, t.date, t.merchant, t.category, t.amount, t.pending,
+                a.name AS accountName
+         FROM transactions t
+         LEFT JOIN accounts a ON a.id = t.account_id
+         WHERE t.user_id = ? AND t.account_id = ? AND t.amount < 0
+           AND t.date >= ? AND t.date < ?
+         ORDER BY t.date DESC, t.id DESC`,
+        [req.user.id, b.account_id, isoDate(start), isoDate(end)]
+      );
+    } else {
+      rows = await query(
+        `SELECT t.id, t.date, t.merchant, t.category, t.amount, t.pending,
+                a.name AS accountName
+         FROM transactions t
+         LEFT JOIN accounts a ON a.id = t.account_id
+         WHERE t.user_id = ? AND t.category = ? AND t.amount < 0
+           AND t.date >= ? AND t.date < ?
+           AND (a.type IS NULL OR a.type <> 'credit')
+         ORDER BY t.date DESC, t.id DESC`,
+        [req.user.id, b.category, isoDate(start), isoDate(end)]
+      );
+    }
+    return rows;
   });
 
   // ── PATCH /:id — edit budget (Feature 5) ────────────────────────

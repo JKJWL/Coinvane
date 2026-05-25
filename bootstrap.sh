@@ -73,7 +73,13 @@ PLAID_WEBHOOK_URL=https://${DOMAIN}/api/plaid/webhook
 # ─── Misc ────────────────────────────────────────────────────────
 SIGNUP_MODE=closed
 
-# ─── SMTP (optional — leave SMTP_HOST blank to log emails locally) ─
+# ─── Email subsystem ──────────────────────────────────────────────
+# disabled = no emails sent (default). Set to "enabled" once you've
+# configured + tested the SMTP creds below. UI greys out Email Notifs
+# whenever this is disabled.
+EMAIL_CONFIG=disabled
+
+# SMTP (only used when EMAIL_CONFIG=enabled; leave SMTP_HOST blank for dev logs)
 SMTP_HOST=
 SMTP_PORT=587
 SMTP_USER=

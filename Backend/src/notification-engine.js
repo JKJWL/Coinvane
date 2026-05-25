@@ -1,6 +1,7 @@
 import { query, queryOne } from "./db.js";
 import { enqueueMail } from "./queue.js";
 import { renderNotificationDigest } from "./mailer.js";
+import { spentForBudget, currentPeriodBounds, isoDate } from "./budget-utils.js";
 
 async function insertNotification(userId, n) {
   const dupe = await queryOne(
@@ -19,32 +20,41 @@ async function insertNotification(userId, n) {
 export async function generateNotifications(userId) {
   const created = [];
 
+  // ── Budget overspend / approaching limit ────────────────────────
+  // Uses spentForBudget() which respects each budget's own period (weekly,
+  // biweekly, semimonthly, monthly, yearly, or custom from a start date).
+  // Bug fix: previously hardcoded to "since 1st of month" which gave false
+  // overspend alerts based on transactions from prior periods.
   const budgets = await query(
-    `SELECT b.id, b.category, b.amount,
-            COALESCE((SELECT SUM(ABS(t.amount)) FROM transactions t
-              WHERE t.user_id = b.user_id AND t.category = b.category AND t.amount < 0
-                AND t.date >= DATE_FORMAT(CURDATE(), '%Y-%m-01')), 0) AS spent
-     FROM budgets b WHERE b.user_id = ?`, [userId]
+    `SELECT b.id, b.category, b.amount, b.period, b.period_start, b.period_days,
+            b.account_id, a.name AS accountName
+     FROM budgets b
+     LEFT JOIN accounts a ON a.id = b.account_id
+     WHERE b.user_id = ?`,
+    [userId]
   );
   for (const b of budgets) {
-    const pct = b.spent / Number(b.amount);
+    const spent = await spentForBudget(userId, b);
+    const pct = spent / Number(b.amount);
+    const displayName = b.account_id ? (b.accountName || "Credit Card") : b.category;
     if (pct >= 1) {
       const n = await insertNotification(userId, {
         type: "budget_exceeded", icon: "AlertTriangle", color: "red",
-        title: `Budget exceeded: ${b.category}`,
-        body: `You've spent $${Number(b.spent).toFixed(2)} of your $${Number(b.amount).toFixed(2)} budget.`,
+        title: `Budget exceeded: ${displayName}`,
+        body: `You've spent $${spent.toFixed(2)} of your $${Number(b.amount).toFixed(2)} budget this period.`,
       });
       if (n) created.push(n);
     } else if (pct >= 0.8) {
       const n = await insertNotification(userId, {
         type: "budget_warning", icon: "AlertCircle", color: "amber",
-        title: `Approaching limit: ${b.category}`,
-        body: `${Math.round(pct * 100)}% of your $${Number(b.amount).toFixed(2)} budget used.`,
+        title: `Approaching limit: ${displayName}`,
+        body: `${Math.round(pct * 100)}% of your $${Number(b.amount).toFixed(2)} budget used this period.`,
       });
       if (n) created.push(n);
     }
   }
 
+  // ── Large transaction alert (last 24h) ───────────────────────────
   const big = await query(
     `SELECT merchant, amount, date FROM transactions
      WHERE user_id = ? AND amount < -500
@@ -59,6 +69,7 @@ export async function generateNotifications(userId) {
     if (n) created.push(n);
   }
 
+  // ── Goal progress ────────────────────────────────────────────────
   const goals = await query("SELECT * FROM goals WHERE user_id = ?", [userId]);
   for (const g of goals) {
     const pct = Number(g.saved) / Number(g.target);
@@ -79,6 +90,7 @@ export async function generateNotifications(userId) {
     }
   }
 
+  // ── Email digest (if user opted in) ─────────────────────────────
   if (created.length > 0) {
     const user = await queryOne(
       `SELECT email, name, notification_email FROM users WHERE id = ?`, [userId]

@@ -8,7 +8,8 @@ import {
   Film, Zap, GraduationCap, Gift, Music, Book, Plane,
   ChevronDown, Check, Trash2, Shield, AlertCircle, AlertTriangle,
   Pin, Calendar, Link2, Mail, CheckCircle2, Plus,
-  Pencil, GripVertical, Sparkles, TrendingDown
+  Pencil, GripVertical, Sparkles, TrendingDown,
+  Lock, Unlock, ChevronRight
 } from "lucide-react";
 import {
   PieChart, Pie, Cell, ResponsiveContainer, AreaChart, Area,
@@ -1372,8 +1373,20 @@ function TransactionsTab({ theme, darkMode, toast }) {
     return [...rows].sort(cmp);
   }, [transactions, search, catFilter, acctFilter, sort]);
 
-  // Group by date for the rendered list. Order of groups follows the sort.
+  // Group by date for the rendered list.
+  // BUG FIX: when sorted by amount, transactions aren't ordered by date so
+  // grouping creates many tiny groups with possible duplicate dates (which
+  // collided with React keys → other tabs misrendering). For amount sorts
+  // we render a single flat group with no date header.
+  const isAmountSort = sort === "amount_asc" || sort === "amount_desc";
   const grouped = useMemo(() => {
+    if (filtered.length === 0) return [];
+    if (isAmountSort) {
+      // Single flat group — date headers don't make sense when sorted by $.
+      return [{ date: "__flat__", items: filtered }];
+    }
+    // Date sort: group consecutive same-date rows. Keys use date + index of
+    // the group to avoid duplicates even if dates ever repeat.
     const groups = [];
     let currentKey = null;
     for (const t of filtered) {
@@ -1385,7 +1398,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
       groups[groups.length - 1].items.push(t);
     }
     return groups;
-  }, [filtered]);
+  }, [filtered, isAmountSort]);
 
   const fmtGroupDate = (d) => {
     if (!d || d === "—") return "Undated";
@@ -1530,18 +1543,23 @@ function TransactionsTab({ theme, darkMode, toast }) {
         </div>
       ) : (
         <div className="space-y-3">
-          {grouped.map(group => {
+          {grouped.map((group, gIdx) => {
             const total = groupTotal(group.items);
+            const isFlat = group.date === "__flat__";
             return (
-              <div key={group.date}>
-                <div className="flex items-center justify-between px-1 pb-1.5">
-                  <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider`}>
-                    {fmtGroupDate(group.date)}
+              // Composite key avoids React key collisions even if two groups
+              // ever share a date string (shouldn't happen post-fix but cheap defense).
+              <div key={`${group.date}__${gIdx}`}>
+                {!isFlat && (
+                  <div className="flex items-center justify-between px-1 pb-1.5">
+                    <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider`}>
+                      {fmtGroupDate(group.date)}
+                    </div>
+                    <div className={`text-[11px] font-semibold ${total >= 0 ? "text-emerald-500" : theme.textSubtle}`}>
+                      {total >= 0 ? "+" : "−"}{fmt(Math.abs(total))}
+                    </div>
                   </div>
-                  <div className={`text-[11px] font-semibold ${total >= 0 ? "text-emerald-500" : theme.textSubtle}`}>
-                    {total >= 0 ? "+" : "−"}{fmt(Math.abs(total))}
-                  </div>
-                </div>
+                )}
                 <div className={`${theme.surface} rounded-2xl border ${theme.border} overflow-hidden`}>
                   {group.items.map((t, i) => {
                     const Icon = CAT_ICONS[t.category] || Briefcase;
@@ -1556,7 +1574,9 @@ function TransactionsTab({ theme, darkMode, toast }) {
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="font-medium text-sm truncate">{t.merchant}</div>
-                          <div className={`text-xs ${theme.textSubtle} truncate`}>{t.category} · {t.accountName || "—"}</div>
+                          <div className={`text-xs ${theme.textSubtle} truncate`}>
+                            {isFlat ? `${t.date} · ` : ""}{t.category} · {t.accountName || "—"}
+                          </div>
                         </div>
                         <div className={`font-semibold text-sm flex-shrink-0 ${Number(t.amount) >= 0 ? "text-emerald-500" : ""}`}>
                           {Number(t.amount) >= 0 ? "+" : "−"}{fmt(Math.abs(Number(t.amount)))}
@@ -1938,51 +1958,112 @@ function SuggestionChips({ suggestions, onPick, theme, darkMode }) {
 }
 
 // ── Single budget card (used inside Reorder.Item) ──────────────────────────
-function BudgetCard({ b, theme, darkMode, onEdit, onDelete, dragging }) {
+function BudgetCard({ b, theme, darkMode, onEdit, onDelete, reorderLocked,
+                     expanded, transactions, onToggleExpand }) {
   const pct = Math.min(100, (Number(b.spent) / Number(b.amount)) * 100);
   const over = pct >= 100;
   const isCardBudget = !!b.accountId;
   const displayName = isCardBudget ? (b.accountName || "Credit Card") : b.category;
   const Icon = isCardBudget ? CreditCard : (CAT_ICONS[b.category] || Briefcase);
   const color = isCardBudget ? "#f43f5e" : (CAT_COLORS[b.category] || "#64748b");
+
+  const stopDrag = { onPointerDown: e => e.stopPropagation() };
+  const loading = transactions === "loading";
+  const txns = Array.isArray(transactions) ? transactions : [];
+
   return (
-    <div className={`${theme.surface} border ${theme.border} rounded-2xl p-5 ${dragging ? "shadow-2xl" : ""}`}>
-      <div className="flex items-start justify-between mb-3 gap-2">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${color}20` }}>
-            <Icon className="w-4 h-4" style={{ color }} />
-          </div>
-          <div className="min-w-0">
-            <div className="font-semibold text-sm truncate">{displayName}</div>
-            <div className={`text-[11px] ${theme.textSubtle} mt-0.5`}>
-              {fmtPeriodLabel(b.period, b.period_days)}
-              {isCardBudget && <span className="text-rose-500"> · Card usage</span>}
+    <div className={`${theme.surface} border ${theme.border} rounded-2xl overflow-hidden`}>
+      <div className="p-5">
+        <div className="flex items-start justify-between mb-3 gap-2">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${color}20` }}>
+              <Icon className="w-4 h-4" style={{ color }} />
+            </div>
+            <div className="min-w-0">
+              <div className="font-semibold text-sm truncate">{displayName}</div>
+              <div className={`text-[11px] ${theme.textSubtle} mt-0.5`}>
+                {fmtPeriodLabel(b.period, b.period_days)}
+                {isCardBudget && <span className="text-rose-500"> · Card usage</span>}
+              </div>
             </div>
           </div>
-        </div>
-        <div className="flex items-center gap-1 flex-shrink-0">
-          <button onPointerDown={e => e.stopPropagation()} onClick={onEdit}
-            className={`p-1.5 rounded-lg ${theme.hover} ${theme.textSubtle}`}>
-            <Pencil className="w-3.5 h-3.5" />
-          </button>
-          <button onPointerDown={e => e.stopPropagation()} onClick={onDelete}
-            className={`p-1.5 rounded-lg ${theme.hover} text-rose-500`}>
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
-          <div className={`p-1 ${theme.textSubtle}`} title="Drag to reorder">
-            <GripVertical className="w-4 h-4" />
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button {...stopDrag} onClick={onEdit}
+              className={`p-1.5 rounded-lg ${theme.hover} ${theme.textSubtle}`}
+              title="Edit budget">
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+            <button {...stopDrag} onClick={onDelete}
+              className={`p-1.5 rounded-lg ${theme.hover} text-rose-500`}
+              title="Delete budget">
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+            {!reorderLocked && (
+              <div className={`p-1 ${theme.textSubtle}`} title="Drag to reorder">
+                <GripVertical className="w-4 h-4" />
+              </div>
+            )}
           </div>
         </div>
+        <div className={`flex justify-between text-sm mb-2 ${theme.textMuted}`}>
+          <span>{fmt(b.spent)}</span>
+          <span className="font-medium">{fmt(b.amount)}</span>
+        </div>
+        <ProgressBar value={pct} color={over ? "bg-rose-500" : pct > 80 ? "bg-amber-500" : "bg-emerald-500"} darkMode={darkMode} />
+        <div className="flex items-center justify-between mt-1.5">
+          {over
+            ? <div className="text-xs text-rose-500 font-medium">Over by {fmt(Number(b.spent) - Number(b.amount))}</div>
+            : <div className={`text-xs ${theme.textSubtle}`}>{fmt(Number(b.amount) - Number(b.spent))} left</div>
+          }
+          {/* Show-transactions toggle */}
+          <button {...stopDrag} onClick={onToggleExpand}
+            className={`flex items-center gap-1 text-[11px] font-medium ${theme.textSubtle} hover:text-emerald-500`}>
+            {expanded ? "Hide" : "Show"} transactions
+            <ChevronRight className={`w-3 h-3 transition-transform ${expanded ? "rotate-90" : ""}`} />
+          </button>
+        </div>
       </div>
-      <div className={`flex justify-between text-sm mb-2 ${theme.textMuted}`}>
-        <span>{fmt(b.spent)}</span>
-        <span className="font-medium">{fmt(b.amount)}</span>
-      </div>
-      <ProgressBar value={pct} color={over ? "bg-rose-500" : pct > 80 ? "bg-amber-500" : "bg-emerald-500"} darkMode={darkMode} />
-      {over
-        ? <div className="text-xs text-rose-500 mt-1.5 font-medium">Over by {fmt(Number(b.spent) - Number(b.amount))}</div>
-        : <div className={`text-xs ${theme.textSubtle} mt-1.5`}>{fmt(Number(b.amount) - Number(b.spent))} left</div>
-      }
+
+      {/* Expanded transactions list (Feature 1) */}
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className={`border-t ${theme.border} overflow-hidden`}>
+            {loading ? (
+              <div className={`px-5 py-4 text-xs ${theme.textSubtle} text-center`}>Loading…</div>
+            ) : txns.length === 0 ? (
+              <div className={`px-5 py-4 text-xs ${theme.textSubtle} text-center`}>
+                No transactions in this period yet.
+              </div>
+            ) : (
+              <div className={`divide-y ${theme.divide} max-h-72 overflow-y-auto`}>
+                {txns.map(t => {
+                  const TIcon = CAT_ICONS[t.category] || Briefcase;
+                  const tColor = CAT_COLORS[t.category] || "#64748b";
+                  return (
+                    <div key={t.id} className="flex items-center gap-3 px-5 py-2.5">
+                      <div className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+                        <TIcon className="w-3.5 h-3.5" style={{ color: tColor }} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-xs truncate">{t.merchant}</div>
+                        <div className={`text-[10px] ${theme.textSubtle}`}>{t.date} · {t.accountName || "—"}</div>
+                      </div>
+                      <div className="font-semibold text-xs flex-shrink-0">
+                        −{fmt(Math.abs(Number(t.amount)))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -1994,6 +2075,12 @@ function BudgetsTab({ theme, darkMode, toast }) {
   const [adding, setAdding] = useState(false);
   const [trackerSheet, setTrackerSheet] = useState(null);  // {kind: 'income'|'credit', ...} or null
   const [savingTracker, setSavingTracker] = useState(false);
+  // Reorder is LOCKED by default — user toggles the lock icon to allow drag.
+  // Prevents accidental drags while scrolling on mobile.
+  const [reorderLocked, setReorderLocked] = useState(true);
+  // Per-budget transactions expand state (Feature 1)
+  const [expandedId, setExpandedId] = useState(null);
+  const [budgetTxns, setBudgetTxns] = useState({}); // { [budgetId]: Transaction[] | "loading" }
   // Local ordered copy of budgets for drag-reorder
   const [ordered, setOrdered] = useState(budgets);
   useEffect(() => { setOrdered(budgets); }, [budgets]);
@@ -2005,7 +2092,7 @@ function BudgetsTab({ theme, darkMode, toast }) {
     accountId: "",
     amount: "",
     period: "monthly",
-    periodDays: 30,
+    periodDays: 7,
     periodStart: new Date().toISOString().slice(0, 10),
   });
 
@@ -2030,7 +2117,7 @@ function BudgetsTab({ theme, darkMode, toast }) {
     setEditing(null);
     setForm({
       kind: "category", category: "", custom: "", accountId: "",
-      amount: "", period: "monthly", periodDays: 30,
+      amount: "", period: "monthly", periodDays: 7,
       periodStart: new Date().toISOString().slice(0, 10),
     });
   };
@@ -2104,6 +2191,24 @@ function BudgetsTab({ theme, darkMode, toast }) {
     catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
   };
 
+  // Feature 1: tap a budget → see contributing transactions
+  const toggleExpand = async (b) => {
+    if (expandedId === b.id) {
+      setExpandedId(null);
+      return;
+    }
+    setExpandedId(b.id);
+    if (budgetTxns[b.id]) return; // cached
+    setBudgetTxns(prev => ({ ...prev, [b.id]: "loading" }));
+    try {
+      const rows = await api.getBudgetTransactions(b.id);
+      setBudgetTxns(prev => ({ ...prev, [b.id]: rows }));
+    } catch (e) {
+      setBudgetTxns(prev => ({ ...prev, [b.id]: [] }));
+      toast?.("Failed to load transactions: " + (e.message || ""), "error");
+    }
+  };
+
   const saveTracker = async (e) => {
     e.preventDefault();
     if (!trackerSheet) return;
@@ -2129,16 +2234,37 @@ function BudgetsTab({ theme, darkMode, toast }) {
   return (
     <div className="space-y-3">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <p className={`text-sm ${theme.textSubtle}`}>
+      <div className="flex items-center justify-between gap-2">
+        <p className={`text-sm ${theme.textSubtle} min-w-0 truncate`}>
           {budgets.length} budget{budgets.length !== 1 ? "s" : ""}
-          {budgets.length > 1 && <span className="ml-1.5 opacity-70">· drag to reorder</span>}
+          {budgets.length > 1 && !reorderLocked && (
+            <span className="ml-1.5 text-emerald-500 font-medium">· drag to reorder</span>
+          )}
         </p>
-        <motion.button whileTap={{ scale: 0.95 }}
-          onClick={() => { resetForm(); setShowAdd(true); }}
-          className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-1.5 shadow-sm shadow-emerald-500/30">
-          <Plus className="w-4 h-4" /> New Budget
-        </motion.button>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {/* Lock / unlock reorder */}
+          {budgets.length > 1 && (
+            <motion.button whileTap={{ scale: 0.92 }}
+              onClick={() => setReorderLocked(v => !v)}
+              title={reorderLocked ? "Unlock to reorder budgets" : "Lock to prevent reordering"}
+              className={`p-2 rounded-xl border ${theme.border} ${
+                reorderLocked
+                  ? `${theme.surface} ${theme.textSubtle}`
+                  : (darkMode ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/40"
+                              : "bg-emerald-50 text-emerald-600 border-emerald-200")
+              }`}>
+              {reorderLocked
+                ? <Lock className="w-4 h-4" />
+                : <Unlock className="w-4 h-4" />
+              }
+            </motion.button>
+          )}
+          <motion.button whileTap={{ scale: 0.95 }}
+            onClick={() => { resetForm(); setShowAdd(true); }}
+            className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-1.5 shadow-sm shadow-emerald-500/30">
+            <Plus className="w-4 h-4" /> New Budget
+          </motion.button>
+        </div>
       </div>
 
       {/* Income tracker — pinned at top, always shown */}
@@ -2146,8 +2272,10 @@ function BudgetsTab({ theme, darkMode, toast }) {
         onConfigure={() => setTrackerSheet({
           kind: "income",
           period: trackers?.income?.period || "monthly",
-          periodDays: trackers?.income?.periodDays || 30,
-          periodStart: new Date().toISOString().slice(0, 10),
+          periodDays: trackers?.income?.periodDays || 7,
+          // Use the user's STORED anchor (e.g. "every Tuesday from 2026-01-13"),
+          // not today. Without this the form would reset to today every open.
+          periodStart: trackers?.income?.periodAnchor || new Date().toISOString().slice(0, 10),
         })} />
 
       {/* Credit tracker — only if credit account(s) exist */}
@@ -2156,8 +2284,8 @@ function BudgetsTab({ theme, darkMode, toast }) {
           onConfigure={() => setTrackerSheet({
             kind: "credit",
             period: trackers.credit.period || "monthly",
-            periodDays: trackers.credit.periodDays || 30,
-            periodStart: new Date().toISOString().slice(0, 10),
+            periodDays: trackers.credit.periodDays || 7,
+            periodStart: trackers.credit.periodAnchor || new Date().toISOString().slice(0, 10),
           })} />
       )}
 
@@ -2179,9 +2307,17 @@ function BudgetsTab({ theme, darkMode, toast }) {
           className="space-y-3">
           {ordered.map(b => (
             <Reorder.Item key={b.id} value={b}
+              // dragListener controls whether the item is draggable. When the
+              // user locks reorder, set false so taps/scrolls aren't captured
+              // as drag attempts.
+              dragListener={!reorderLocked}
               whileDrag={{ scale: 1.02, zIndex: 50 }}
-              className="cursor-grab active:cursor-grabbing touch-none">
+              className={reorderLocked ? "" : "cursor-grab active:cursor-grabbing touch-none"}>
               <BudgetCard b={b} theme={theme} darkMode={darkMode}
+                reorderLocked={reorderLocked}
+                expanded={expandedId === b.id}
+                transactions={budgetTxns[b.id]}
+                onToggleExpand={() => toggleExpand(b)}
                 onEdit={() => openEdit(b)}
                 onDelete={() => deleteBudget(b)} />
             </Reorder.Item>
@@ -2358,19 +2494,25 @@ function BudgetsTab({ theme, darkMode, toast }) {
           </div>
 
           {isCustomPeriod && (
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Every N days</label>
-                <input type="number" min="1" step="1" required value={form.periodDays}
-                  onChange={e => setForm({ ...form, periodDays: e.target.value })}
-                  className={inputCls} />
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Every N days</label>
+                  <input type="number" min="1" step="1" required value={form.periodDays}
+                    onChange={e => setForm({ ...form, periodDays: e.target.value })}
+                    className={inputCls} />
+                </div>
+                <div>
+                  <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Starting on</label>
+                  <input type="date" required value={form.periodStart}
+                    onChange={e => setForm({ ...form, periodStart: e.target.value })}
+                    className={inputCls} />
+                </div>
               </div>
-              <div>
-                <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Starting on</label>
-                <input type="date" required value={form.periodStart}
-                  onChange={e => setForm({ ...form, periodStart: e.target.value })}
-                  className={inputCls} />
-              </div>
+              <p className={`text-[11px] ${theme.textSubtle} leading-relaxed`}>
+                Tip: for "every Tuesday", set <strong>7</strong> days starting on a Tuesday.
+                For "every 2 weeks", use <strong>14</strong>.
+              </p>
             </div>
           )}
 
@@ -2631,17 +2773,11 @@ function NotesTab({ theme, darkMode, toast }) {
 // ─── Users Panel ──────────────────────────────────────────────────────────────
 function UsersPanel({ currentUser, theme, darkMode, toast }) {
   const [users, setUsers] = useState([]);
-  const [invitations, setInvitations] = useState([]);
-  const [email, setEmail] = useState("");
   const load = async () => {
-    try { setUsers(await api.listUsers()); setInvitations(await api.listInvitations()); } catch {}
+    try { setUsers(await api.listUsers()); } catch {}
   };
   useEffect(() => { load(); }, []);
-  const invite = async (e) => {
-    e.preventDefault();
-    try { await api.createInvitation(email); setEmail(""); load(); toast?.("Invite sent", "success"); }
-    catch { toast?.("Failed to send invite", "error"); }
-  };
+
   if (currentUser.role !== "admin") {
     return (
       <div className={`${theme.surface} rounded-2xl border ${theme.border} p-6 text-sm ${theme.textSubtle}`}>
@@ -2649,64 +2785,57 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
       </div>
     );
   }
-  const inputCls = `flex-1 px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+
   return (
     <div className="space-y-4">
+      {/* Explainer card — replaces the disabled invite form */}
       <div className={`${theme.surface} rounded-2xl border ${theme.border} p-5`}>
-        <h3 className="font-semibold mb-4">Invite a user</h3>
-        <form onSubmit={invite} className="flex gap-2">
-          <input type="email" value={email} onChange={e => setEmail(e.target.value)} required placeholder="email@example.com" className={inputCls} />
-          <motion.button whileTap={{ scale: 0.97 }} className="bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2">
-            <Mail className="w-4 h-4" /> Send invite
-          </motion.button>
-        </form>
+        <h3 className="font-semibold mb-2">Adding new users</h3>
+        <p className={`text-sm ${theme.textMuted} leading-relaxed`}>
+          New users sign in with their own Google account. To grant access, add
+          their Gmail address to the <code className={`px-1.5 py-0.5 rounded ${darkMode ? "bg-slate-800" : "bg-slate-100"} text-[12px]`}>ALLOWED_EMAILS</code> environment variable on
+          the server (and to the Test Users list in your Google Cloud OAuth
+          consent screen), then restart the backend.
+        </p>
+        <p className={`text-xs ${theme.textSubtle} mt-2`}>
+          Each Google account creates its own isolated user record — fresh data, no shared accounts.
+        </p>
       </div>
+
       <div className={`${theme.surface} rounded-2xl border ${theme.border} p-5`}>
         <h3 className="font-semibold mb-3">Members ({users.length})</h3>
         <div className="space-y-0.5">
           {users.map(u => (
             <div key={u.id} className={`flex items-center justify-between py-2.5 border-b ${theme.border} last:border-0`}>
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center text-white font-semibold text-sm">
-                  {(u.name || u.email)[0].toUpperCase()}
-                </div>
-                <div>
-                  <div className="font-medium text-sm">{u.name || u.email}</div>
-                  <div className={`text-xs ${theme.textSubtle}`}>{u.email} · {u.accountCount} accounts</div>
+              <div className="flex items-center gap-3 min-w-0">
+                {u.picture ? (
+                  <img src={u.picture} alt="" className="w-9 h-9 rounded-full flex-shrink-0" />
+                ) : (
+                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center text-white font-semibold text-sm flex-shrink-0">
+                    {(u.name || u.email)[0].toUpperCase()}
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <div className="font-medium text-sm truncate">{u.name || u.email}</div>
+                  <div className={`text-xs ${theme.textSubtle} truncate`}>{u.email} · {u.accountCount} accounts</div>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                <span className={`text-xs px-2 py-1 rounded-full font-medium flex items-center gap-1 ${u.role === "admin" ? (darkMode ? "bg-violet-500/20 text-violet-400" : "bg-violet-100 text-violet-700") : `${theme.surfaceAlt || ""} ${theme.textMuted}`}`}>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <span className={`text-xs px-2 py-1 rounded-full font-medium flex items-center gap-1 ${u.role === "admin" ? (darkMode ? "bg-violet-500/20 text-violet-400" : "bg-violet-100 text-violet-700") : `${darkMode ? "bg-slate-800" : "bg-slate-100"} ${theme.textMuted}`}`}>
                   {u.role === "admin" && <Shield className="w-3 h-3" />}
                   {u.role}
                 </span>
                 {u.id !== currentUser.id && (
-                  <button onClick={async () => { await api.deleteUser(u.id); load(); toast?.("User removed"); }}>
+                  <button onClick={async () => {
+                    if (!window.confirm(`Remove ${u.name || u.email}? Their data will be deleted.`)) return;
+                    await api.deleteUser(u.id); load(); toast?.("User removed");
+                  }}>
                     <Trash2 className={`w-4 h-4 ${theme.textSubtle} hover:text-rose-500 transition-colors`} />
                   </button>
                 )}
               </div>
             </div>
           ))}
-        </div>
-      </div>
-      <div className={`${theme.surface} rounded-2xl border ${theme.border} p-5`}>
-        <h3 className="font-semibold mb-3">Pending invitations</h3>
-        <div>
-          {invitations.filter(i => !i.accepted).map(i => (
-            <div key={i.id} className={`flex items-center justify-between py-2.5 border-b ${theme.border} last:border-0`}>
-              <div>
-                <div className="text-sm font-medium">{i.email}</div>
-                <div className={`text-xs ${theme.textSubtle}`}>Expires {new Date(i.expires_at).toLocaleDateString()}</div>
-              </div>
-              <button onClick={async () => { await api.deleteInvitation(i.id); load(); toast?.("Invitation deleted"); }}>
-                <Trash2 className={`w-4 h-4 ${theme.textSubtle} hover:text-rose-500 transition-colors`} />
-              </button>
-            </div>
-          ))}
-          {invitations.filter(i => !i.accepted).length === 0 && (
-            <div className={`text-sm ${theme.textSubtle} py-2`}>No pending invitations.</div>
-          )}
         </div>
       </div>
     </div>
@@ -2720,12 +2849,24 @@ function MobileBanksSection({ theme, darkMode, toast }) {
   const [removingId, setRemovingId] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [form, setForm] = useState({ name: "", type: "cash", subtype: "", balance: "", institution: "" });
 
   const loadItems = useCallback(async () => {
     try { setItems(await api.listPlaidItems()); } catch {}
   }, []);
   useEffect(() => { loadItems(); }, [loadItems]);
+
+  const sync = async () => {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      await api.syncPlaid();
+      toast?.("Sync queued", "success");
+      setTimeout(() => { refreshAll(); loadItems(); }, 2000);
+    } catch (e) { toast?.("Sync failed: " + (e.message || ""), "error"); }
+    finally { setTimeout(() => setSyncing(false), 1500); }
+  };
 
   const removeItem = async (item) => {
     if (!window.confirm(`Disconnect ${item.institutionName || "this bank"}? Accounts and transactions from it will be removed.`)) return;
@@ -2771,6 +2912,11 @@ function MobileBanksSection({ theme, darkMode, toast }) {
     <div className={`${theme.surface} border ${theme.border} rounded-2xl p-5 space-y-4`}>
       <div className="flex items-center justify-between">
         <h3 className="font-semibold">Banks & Accounts</h3>
+        <motion.button whileTap={{ scale: 0.95 }} onClick={sync} disabled={syncing || items.length === 0}
+          className={`flex items-center gap-1.5 px-3 py-1.5 ${theme.surface} border ${theme.border} rounded-lg text-xs font-medium disabled:opacity-50`}>
+          <RefreshCw className={`w-3.5 h-3.5 ${syncing ? "animate-spin" : ""}`} />
+          {syncing ? "Syncing…" : "Sync"}
+        </motion.button>
       </div>
 
       <PlaidLinkButton onSuccess={() => { refreshAll(); loadItems(); }} full />
@@ -2948,12 +3094,53 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
       <form onSubmit={save} className={`${theme.surface} border ${theme.border} rounded-2xl p-5 space-y-4`}>
         <h3 className="font-semibold">Profile</h3>
         <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Display name" className={inputCls} />
-        <div className="flex items-center justify-between">
-          <span className="text-sm">Email digest</span>
-          <Toggle checked={form.notification_email} onChange={v => setForm({ ...form, notification_email: v })} />
+
+        {/* EMAIL_CONFIG is the server-side master switch. When disabled,
+            the toggle is locked off and a red warning is shown. */}
+        {!user.email_enabled && (
+          <div className={`text-xs font-semibold text-rose-500 ${darkMode ? "bg-rose-500/10" : "bg-rose-50"} border ${darkMode ? "border-rose-500/20" : "border-rose-100"} rounded-lg px-3 py-2`}>
+            ⚠ Email Config Not Enabled — set <code className="font-mono">EMAIL_CONFIG=enabled</code> in <code className="font-mono">.env</code> and restart the backend to use email notifications.
+          </div>
+        )}
+        <div className={`flex items-center justify-between gap-3 ${!user.email_enabled ? "opacity-50" : ""}`}>
+          <div className="min-w-0">
+            <div className="text-sm font-medium">Email Notifs</div>
+            <div className={`text-xs ${theme.textSubtle} mt-0.5`}>
+              Get a branded email digest of budget alerts, large transactions, and goal milestones.
+            </div>
+          </div>
+          <Toggle
+            checked={form.notification_email && user.email_enabled}
+            onChange={v => {
+              if (!user.email_enabled) {
+                toast?.("Email is disabled on the server", "warning");
+                return;
+              }
+              setForm({ ...form, notification_email: v });
+            }}
+          />
         </div>
+        {user.email_enabled && form.notification_email && (
+          <motion.button type="button" whileTap={{ scale: 0.97 }}
+            onClick={async () => {
+              try {
+                const r = await api.sendTestEmail();
+                toast?.(`Test email sent to ${r.sentTo}`, "success");
+              } catch (e) {
+                toast?.("Failed: " + (e.message || ""), "error");
+              }
+            }}
+            className={`text-xs font-medium ${theme.surface} border ${theme.border} px-3 py-1.5 rounded-lg`}>
+            Send sample email
+          </motion.button>
+        )}
         <div className="flex items-center justify-between">
-          <span className="text-sm">In-app notifications</span>
+          <div>
+            <div className="text-sm font-medium">In-app notifications</div>
+            <div className={`text-xs ${theme.textSubtle} mt-0.5`}>
+              Show alerts in the bell icon menu.
+            </div>
+          </div>
           <Toggle checked={form.notification_push} onChange={v => setForm({ ...form, notification_push: v })} />
         </div>
         <motion.button whileTap={{ scale: 0.97 }} type="submit" className="bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm font-semibold">Save</motion.button>
@@ -2967,9 +3154,27 @@ function Shell({ user, onLogout, refreshUser }) {
   const [tab, setTab] = useState("dashboard");
   const [prevTab, setPrevTab] = useState("dashboard");
   const [darkMode, setDarkModeLocal] = useState(!!user?.dark_mode);
+  const [syncing, setSyncing] = useState(false);
   const toast = useToast();
   const { refreshAll, loading, summary, accounts } = useData();
   const theme = darkMode ? DARK : LIGHT;
+
+  // Trigger a Plaid sync from the header. Enqueues a worker job; data
+  // appears after the worker completes (~5-30 sec depending on bank).
+  const syncBanks = useCallback(async () => {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      await api.syncPlaid();
+      toast?.("Sync queued — refreshing in a moment", "success");
+      setTimeout(() => refreshAll(), 2000);
+    } catch (e) {
+      toast?.("Sync failed: " + (e.message || ""), "error");
+    } finally {
+      // Keep the spinning indicator for a moment so the user sees feedback
+      setTimeout(() => setSyncing(false), 1500);
+    }
+  }, [syncing, refreshAll, toast]);
 
   // Keep local state in sync if user is refreshed from server
   useEffect(() => { setDarkModeLocal(!!user?.dark_mode); }, [user?.dark_mode]);
@@ -3071,6 +3276,9 @@ function Shell({ user, onLogout, refreshUser }) {
             <div className="flex items-center gap-0.5">
               <IconButton theme={theme} onClick={() => navigate("investments")}>
                 <TrendingUp className={`w-5 h-5 ${theme.textMuted}`} />
+              </IconButton>
+              <IconButton theme={theme} onClick={syncBanks}>
+                <RefreshCw className={`w-5 h-5 ${theme.textMuted} ${syncing ? "animate-spin" : ""}`} />
               </IconButton>
               <NotificationsBell theme={theme} darkMode={darkMode} />
               <IconButton theme={theme} onClick={onLogout}><LogOut className={`w-5 h-5 ${theme.textMuted}`} /></IconButton>
