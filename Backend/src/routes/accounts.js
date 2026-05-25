@@ -34,6 +34,20 @@ export default async function (app) {
   });
 
   app.delete("/:id", async (req) => {
+    // Clean up transactions tied to this account FIRST. The schema's FK is
+    // ON DELETE SET NULL so without this the transactions would persist as
+    // orphans and skew budget / income calculations. Also limited to manual
+    // accounts (plaid_item_id IS NULL) — Plaid-linked accounts must be
+    // removed via /api/plaid/items/:id which handles its own cleanup.
+    await query(
+      `DELETE FROM transactions
+       WHERE user_id = ? AND account_id = ? AND account_id IN (
+         SELECT id FROM (
+           SELECT id FROM accounts WHERE id = ? AND user_id = ? AND plaid_item_id IS NULL
+         ) AS a
+       )`,
+      [req.user.id, req.params.id, req.params.id, req.user.id]
+    );
     await query("DELETE FROM accounts WHERE id = ? AND user_id = ? AND plaid_item_id IS NULL",
       [req.params.id, req.user.id]);
     return { ok: true };

@@ -79,7 +79,30 @@ export default async function (app) {
     } catch (e) {
       req.log.warn({ err: e.message }, "plaid itemRemove failed");
     }
-    await query("DELETE FROM plaid_items WHERE id = ?", [item.id]);
+
+    // BUG FIX: When the plaid_items row is deleted, the FK ON DELETE CASCADE
+    // also wipes the linked accounts — but transactions reference accounts
+    // via ON DELETE SET NULL, so they'd survive as orphans (account_id=NULL)
+    // and continue polluting budget / income / net-worth calculations.
+    // Explicitly delete them (and the per-account holdings + sync_cursor)
+    // BEFORE cascading the item.
+    await query(
+      `DELETE FROM transactions
+       WHERE user_id = ? AND account_id IN (
+         SELECT id FROM accounts WHERE plaid_item_id = ?
+       )`,
+      [req.user.id, item.id]
+    );
+    await query(
+      `DELETE FROM holdings
+       WHERE user_id = ? AND account_id IN (
+         SELECT id FROM accounts WHERE plaid_item_id = ?
+       )`,
+      [req.user.id, item.id]
+    );
+    // Now cascade the plaid_items delete (which removes its accounts).
+    await query("DELETE FROM plaid_items WHERE id = ? AND user_id = ?",
+      [item.id, req.user.id]);
     return { ok: true };
   });
 

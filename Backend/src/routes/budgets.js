@@ -1,48 +1,40 @@
 import { query, queryOne } from "../db.js";
 import {
-  currentPeriodBounds as _cpb,
-  isoDate as _iso,
-  spentForBudget as _spent,
+  currentPeriodBounds, isoDate, getMasterPeriod, getPastPeriods,
+  spentForBudgetInWindow,
 } from "../budget-utils.js";
 
 /**
- * Budget period + tracker route. Shared period math lives in budget-utils.js
- * so the notification engine can use the same logic.
+ * Master-period model
+ * ────────────────────
+ * The income tracker's period (user.income_period{_start,_days}) is the
+ * MASTER cycle that governs every budget and the credit tracker too. The
+ * per-budget period columns still exist in the schema but are ignored for
+ * computation. This way all spent/income/allocation totals reset together.
  *
- * Account-based budgets: when account_id is set the budget sums all expense
- * on that account regardless of category. Category budgets EXCLUDE credit-
- * card transactions (avoids double-counting swipe + payment).
+ * Periods supported: weekly | biweekly | semimonthly | monthly | yearly | custom
  *
- * Sort order: budgets are returned ASC by sort_order; new budgets get the
- * next-highest value (pushed to end).
+ * Account-based budgets (account_id set) sum expense on that account; credit
+ * cards in particular. Category budgets EXCLUDE credit-card transactions to
+ * avoid double-counting swipe + payment.
+ *
+ * Sort order: budgets returned ASC by sort_order; new budgets get the next
+ * highest (pushed to end).
  */
 
 const PERIODS = ["weekly","biweekly","semimonthly","monthly","yearly","custom"];
 
-// Use the shared helpers without renaming the local references the rest of
-// the file uses.
-const currentPeriodBounds = _cpb;
-const isoDate = _iso;
-const spentForBudget = _spent;
-
-async function incomeFor(userId, period, periodStart, periodDays) {
-  const { start, end } = currentPeriodBounds(period, periodStart, periodDays);
+async function sumIncomeInWindow(userId, startStr, endStr) {
   const row = await queryOne(
     `SELECT COALESCE(SUM(amount), 0) AS total
      FROM transactions
      WHERE user_id = ? AND amount > 0 AND date >= ? AND date < ?`,
-    [userId, isoDate(start), isoDate(end)]
+    [userId, startStr, endStr]
   );
-  return {
-    total: Number(row.total) || 0,
-    periodStart: isoDate(start),
-    periodEnd: isoDate(end),
-  };
+  return Number(row.total) || 0;
 }
 
-async function creditUsageFor(userId, period, periodStart, periodDays) {
-  const { start, end } = currentPeriodBounds(period, periodStart, periodDays);
-  // Per credit card, sum negative tx amounts
+async function creditUsageInWindow(userId, startStr, endStr) {
   const rows = await query(
     `SELECT a.id AS accountId, a.name AS accountName, a.institution,
             COALESCE(SUM(ABS(t.amount)), 0) AS used
@@ -51,7 +43,7 @@ async function creditUsageFor(userId, period, periodStart, periodDays) {
        AND t.date >= ? AND t.date < ?
      WHERE a.user_id = ? AND a.type = 'credit'
      GROUP BY a.id, a.name, a.institution`,
-    [isoDate(start), isoDate(end), userId]
+    [startStr, endStr, userId]
   );
   const cards = rows.map(r => ({
     accountId: r.accountId,
@@ -60,12 +52,7 @@ async function creditUsageFor(userId, period, periodStart, periodDays) {
     used: Number(r.used) || 0,
   }));
   const total = cards.reduce((s, c) => s + c.used, 0);
-  return {
-    total,
-    cards,
-    periodStart: isoDate(start),
-    periodEnd: isoDate(end),
-  };
+  return { total, cards };
 }
 
 export default async function (app) {
@@ -73,6 +60,11 @@ export default async function (app) {
 
   // ── GET / — list user budgets ────────────────────────────────────
   app.get("/", async (req) => {
+    // Master period drives every budget's window. If the caller supplies
+    // ?atDate=YYYY-MM-DD we compute as-of that date instead (used by history).
+    const atDate = req.query?.atDate || null;
+    const master = await getMasterPeriod(req.user.id, atDate);
+
     const budgets = await query(
       `SELECT b.id, b.category, b.amount, b.period, b.period_start, b.period_days,
               b.account_id AS accountId, b.sort_order AS sortOrder,
@@ -84,80 +76,138 @@ export default async function (app) {
       [req.user.id]
     );
     for (const b of budgets) {
-      b.spent = await spentForBudget(req.user.id, b);
-      const { start, end } = currentPeriodBounds(b.period, b.period_start, b.period_days);
-      b.periodStart = isoDate(start);
-      b.periodEnd   = isoDate(end);
+      b.spent = await spentForBudgetInWindow(req.user.id, b, master.startStr, master.endStr);
+      b.periodStart = master.startStr;
+      b.periodEnd   = master.endStr;
+      // Surface the master period info on each budget so the frontend can
+      // display "Resets every X days starting Y" consistently.
+      b.period = master.period;
+      b.period_days = master.periodDays;
     }
     return budgets;
   });
 
   // ── GET /trackers — income + credit usage + zero-budget summary ─
+  // All numbers use the MASTER period (income tracker's settings) so they
+  // line up exactly with the budgets page.
   app.get("/trackers", async (req) => {
+    const atDate = req.query?.atDate || null;
+    const master = await getMasterPeriod(req.user.id, atDate);
     const user = await queryOne(
-      `SELECT income_period, income_period_start, income_period_days,
-              credit_period, credit_period_start, credit_period_days
+      `SELECT income_period_start, credit_period, credit_period_start, credit_period_days
        FROM users WHERE id = ?`,
       [req.user.id]
     );
 
-    const income = await incomeFor(
-      req.user.id,
-      user.income_period || "monthly",
-      user.income_period_start,
-      user.income_period_days
-    );
-    income.period = user.income_period || "monthly";
-    income.periodDays = user.income_period_days;
-    // ANCHOR date = what the user picked (e.g. "every Tuesday from 2026-01-13").
-    // Distinct from periodStart, which is the CURRENT period's start (e.g.
-    // "this week's Tuesday"). Frontend needs the anchor to pre-fill the
-    // edit form correctly so picking a custom start doesn't keep
-    // re-resetting to today.
-    income.periodAnchor = user.income_period_start
-      ? new Date(user.income_period_start).toISOString().slice(0, 10)
-      : null;
+    const incomeTotal = await sumIncomeInWindow(req.user.id, master.startStr, master.endStr);
+    const income = {
+      total: incomeTotal,
+      period: master.period,
+      periodDays: master.periodDays,
+      periodStart: master.startStr,
+      periodEnd: master.endStr,
+      // Anchor = what the user picked. Different from periodStart (current).
+      periodAnchor: user?.income_period_start
+        ? String(user.income_period_start).slice(0, 10)
+        : null,
+    };
 
-    // Only return credit tracker info if user has at least one credit account.
+    // Credit tracker — only when ≥ 1 credit account exists. Also bound to
+    // master period now (one rhythm for the whole app).
     const hasCC = await queryOne(
       "SELECT 1 AS x FROM accounts WHERE user_id = ? AND type = 'credit' LIMIT 1",
       [req.user.id]
     );
     let credit = null;
     if (hasCC) {
-      credit = await creditUsageFor(
-        req.user.id,
-        user.credit_period || "monthly",
-        user.credit_period_start,
-        user.credit_period_days
-      );
-      credit.period = user.credit_period || "monthly";
-      credit.periodDays = user.credit_period_days;
-      credit.periodAnchor = user.credit_period_start
-        ? new Date(user.credit_period_start).toISOString().slice(0, 10)
-        : null;
+      const cu = await creditUsageInWindow(req.user.id, master.startStr, master.endStr);
+      credit = {
+        ...cu,
+        period: master.period,
+        periodDays: master.periodDays,
+        periodStart: master.startStr,
+        periodEnd: master.endStr,
+        periodAnchor: user?.income_period_start
+          ? String(user.income_period_start).slice(0, 10)
+          : null,
+      };
     }
 
-    // Zero-based-budget summary: sum of all budget amounts (caps) vs income.
-    // Card budgets don't count toward "money you've allocated to spend"
-    // because they're caps on a payment method, not allocations of income.
+    // Zero-based-budget summary: sum of category budget amounts vs income.
+    // Card budgets don't count toward allocation since they cap a payment
+    // method, not an income allocation.
     const allocRow = await queryOne(
       `SELECT COALESCE(SUM(amount), 0) AS total FROM budgets
        WHERE user_id = ? AND account_id IS NULL`,
       [req.user.id]
     );
     const allocated = Number(allocRow.total) || 0;
-    const remainingToBudget = income.total - allocated;
 
     return {
       income,
       credit,
       zeroBudget: {
-        income: income.total,
+        income: incomeTotal,
         allocated,
-        remaining: remainingToBudget,
+        remaining: incomeTotal - allocated,
       },
     };
+  });
+
+  // ── GET /history — past period snapshots (Feature: Budget History) ──
+  // Returns the last N completed periods (and the current one), each with:
+  //   - period bounds
+  //   - per-budget spent vs amount
+  //   - income total
+  // Computed live from transactions; no snapshot table needed.
+  app.get("/history", async (req) => {
+    const count = Math.min(24, Math.max(1, Number(req.query?.count) || 6));
+    const masterUser = await queryOne(
+      `SELECT income_period, income_period_start, income_period_days
+       FROM users WHERE id = ?`,
+      [req.user.id]
+    );
+    const periods = getPastPeriods(
+      masterUser?.income_period || "monthly",
+      masterUser?.income_period_start || null,
+      masterUser?.income_period_days || null,
+      count
+    );
+    const budgets = await query(
+      `SELECT b.id, b.category, b.amount,
+              b.account_id AS accountId, b.sort_order AS sortOrder,
+              a.name AS accountName, a.type AS accountType
+       FROM budgets b
+       LEFT JOIN accounts a ON a.id = b.account_id
+       WHERE b.user_id = ?
+       ORDER BY b.sort_order ASC, b.id ASC`,
+      [req.user.id]
+    );
+    const today = isoDate(new Date(new Date().setHours(0,0,0,0)));
+    const result = [];
+    for (const p of periods) {
+      const startStr = isoDate(p.start);
+      const endStr   = isoDate(p.end);
+      const isCurrent = startStr <= today && today < endStr;
+      const income = await sumIncomeInWindow(req.user.id, startStr, endStr);
+      const budgetOutcomes = [];
+      for (const b of budgets) {
+        const spent = await spentForBudgetInWindow(req.user.id, b, startStr, endStr);
+        budgetOutcomes.push({
+          id: b.id, category: b.category, amount: Number(b.amount),
+          accountId: b.accountId, accountName: b.accountName,
+          sortOrder: b.sortOrder, spent,
+        });
+      }
+      result.push({
+        periodStart: startStr,
+        periodEnd: endStr,
+        isCurrent,
+        income,
+        budgets: budgetOutcomes,
+      });
+    }
+    return result;
   });
 
   // ── GET /suggestions — categories with spend but no budget yet ──
@@ -262,18 +312,24 @@ export default async function (app) {
   });
 
   // ── GET /:id/transactions — list contributing transactions ──────
-  // Feature 1: tap a budget to see what's contributing to its spent total
-  // in the current period. Honours the same category/account/credit rules
-  // as the spent calculation.
+  // Optional ?periodStart=YYYY-MM-DD&periodEnd=YYYY-MM-DD for the history
+  // view; otherwise uses the master period.
   app.get("/:id/transactions", async (req, reply) => {
     const b = await queryOne(
-      `SELECT id, category, period, period_start, period_days, account_id
-       FROM budgets WHERE id = ? AND user_id = ?`,
+      `SELECT id, category, account_id FROM budgets WHERE id = ? AND user_id = ?`,
       [req.params.id, req.user.id]
     );
     if (!b) return reply.code(404).send({ error: "budget not found" });
 
-    const { start, end } = currentPeriodBounds(b.period, b.period_start, b.period_days);
+    let startStr, endStr;
+    if (req.query?.periodStart && req.query?.periodEnd) {
+      startStr = req.query.periodStart;
+      endStr   = req.query.periodEnd;
+    } else {
+      const master = await getMasterPeriod(req.user.id);
+      startStr = master.startStr;
+      endStr   = master.endStr;
+    }
 
     let rows;
     if (b.account_id) {
@@ -285,7 +341,7 @@ export default async function (app) {
          WHERE t.user_id = ? AND t.account_id = ? AND t.amount < 0
            AND t.date >= ? AND t.date < ?
          ORDER BY t.date DESC, t.id DESC`,
-        [req.user.id, b.account_id, isoDate(start), isoDate(end)]
+        [req.user.id, b.account_id, startStr, endStr]
       );
     } else {
       rows = await query(
@@ -297,7 +353,7 @@ export default async function (app) {
            AND t.date >= ? AND t.date < ?
            AND (a.type IS NULL OR a.type <> 'credit')
          ORDER BY t.date DESC, t.id DESC`,
-        [req.user.id, b.category, isoDate(start), isoDate(end)]
+        [req.user.id, b.category, startStr, endStr]
       );
     }
     return rows;

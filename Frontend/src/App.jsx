@@ -1957,9 +1957,90 @@ function SuggestionChips({ suggestions, onPick, theme, darkMode }) {
   );
 }
 
+// ── Budget history dropdown ────────────────────────────────────────────────
+// Sits to the left of "+ New Budget". Shows past period reset dates. Picking
+// a past period switches the Budgets tab into a read-only "what was this
+// period's outcome" view.
+function BudgetHistoryDropdown({ theme, darkMode, history, open, onOpen, onClose,
+                                historyIndex, onPick }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const h = e => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [open, onClose]);
+
+  const fmtRange = (s, e) => {
+    const d1 = new Date(s), d2 = new Date(e);
+    const sameYear = d1.getFullYear() === d2.getFullYear();
+    const opt = (full) => ({ month: "short", day: "numeric", year: full ? "numeric" : undefined });
+    return `${d1.toLocaleDateString(undefined, opt(false))} – ${d2.toLocaleDateString(undefined, opt(!sameYear))}`;
+  };
+
+  const activeLabel = historyIndex === null || !history
+    ? "Current period"
+    : history[historyIndex]?.isCurrent
+      ? "Current period"
+      : `Past · ${fmtRange(history[historyIndex].periodStart, history[historyIndex].periodEnd)}`;
+
+  return (
+    <div ref={ref} className="relative">
+      <motion.button whileTap={{ scale: 0.96 }}
+        onClick={() => (open ? onClose() : onOpen())}
+        className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border ${theme.border} ${theme.surface} text-xs font-medium`}>
+        <Calendar className="w-3.5 h-3.5" />
+        <span className="hidden sm:inline truncate max-w-[180px]">{activeLabel}</span>
+        <span className="sm:hidden">History</span>
+        <ChevronDown className={`w-3.5 h-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
+      </motion.button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            className={`absolute left-0 mt-2 w-72 z-30 ${theme.surface} border ${theme.border} rounded-xl shadow-xl overflow-hidden`}>
+            <div className={`px-3 py-2 border-b ${theme.border} text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider`}>
+              Budget periods
+            </div>
+            {!history ? (
+              <div className={`px-3 py-4 text-xs ${theme.textSubtle} text-center`}>Loading…</div>
+            ) : history.length === 0 ? (
+              <div className={`px-3 py-4 text-xs ${theme.textSubtle} text-center`}>No periods yet</div>
+            ) : (
+              <div className="max-h-80 overflow-y-auto py-1">
+                {/* Current first (last in array since chronological) */}
+                {history.slice().reverse().map((p, revIdx) => {
+                  const idx = history.length - 1 - revIdx;
+                  const isPicked = historyIndex === idx
+                    || (historyIndex === null && p.isCurrent);
+                  return (
+                    <button key={p.periodStart} onClick={() => onPick(p.isCurrent ? null : idx)}
+                      className={`w-full text-left px-3 py-2 ${theme.hover} flex items-center justify-between gap-2 ${isPicked ? "bg-emerald-500/10" : ""}`}>
+                      <div className="min-w-0">
+                        <div className={`text-sm font-medium ${isPicked ? "text-emerald-500" : ""}`}>
+                          {p.isCurrent ? "Current" : fmtRange(p.periodStart, p.periodEnd)}
+                        </div>
+                        <div className={`text-[10px] ${theme.textSubtle}`}>
+                          Income {fmt(p.income)} · {p.budgets.length} budget{p.budgets.length !== 1 ? "s" : ""}
+                        </div>
+                      </div>
+                      {isPicked && <Check className="w-4 h-4 text-emerald-500 flex-shrink-0" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 // ── Single budget card (used inside Reorder.Item) ──────────────────────────
 function BudgetCard({ b, theme, darkMode, onEdit, onDelete, reorderLocked,
-                     expanded, transactions, onToggleExpand }) {
+                     expanded, transactions, onToggleExpand, readOnly = false }) {
   const pct = Math.min(100, (Number(b.spent) / Number(b.amount)) * 100);
   const over = pct >= 100;
   const isCardBudget = !!b.accountId;
@@ -1988,17 +2069,21 @@ function BudgetCard({ b, theme, darkMode, onEdit, onDelete, reorderLocked,
             </div>
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
-            <button {...stopDrag} onClick={onEdit}
-              className={`p-1.5 rounded-lg ${theme.hover} ${theme.textSubtle}`}
-              title="Edit budget">
-              <Pencil className="w-3.5 h-3.5" />
-            </button>
-            <button {...stopDrag} onClick={onDelete}
-              className={`p-1.5 rounded-lg ${theme.hover} text-rose-500`}
-              title="Delete budget">
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
-            {!reorderLocked && (
+            {!readOnly && (
+              <>
+                <button {...stopDrag} onClick={onEdit}
+                  className={`p-1.5 rounded-lg ${theme.hover} ${theme.textSubtle}`}
+                  title="Edit budget">
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
+                <button {...stopDrag} onClick={onDelete}
+                  className={`p-1.5 rounded-lg ${theme.hover} text-rose-500`}
+                  title="Delete budget">
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </>
+            )}
+            {!reorderLocked && !readOnly && (
               <div className={`p-1 ${theme.textSubtle}`} title="Drag to reorder">
                 <GripVertical className="w-4 h-4" />
               </div>
@@ -2081,6 +2166,11 @@ function BudgetsTab({ theme, darkMode, toast }) {
   // Per-budget transactions expand state (Feature 1)
   const [expandedId, setExpandedId] = useState(null);
   const [budgetTxns, setBudgetTxns] = useState({}); // { [budgetId]: Transaction[] | "loading" }
+  // Budget history (read-only past periods)
+  const [history, setHistory] = useState(null);      // [{periodStart, periodEnd, isCurrent, income, budgets:[...]}]
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyIndex, setHistoryIndex] = useState(null); // null = current; number = index into history
+  const viewingHistory = historyIndex !== null && history && !history[historyIndex]?.isCurrent;
   // Local ordered copy of budgets for drag-reorder
   const [ordered, setOrdered] = useState(budgets);
   useEffect(() => { setOrdered(budgets); }, [budgets]);
@@ -2191,23 +2281,61 @@ function BudgetsTab({ theme, darkMode, toast }) {
     catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
   };
 
-  // Feature 1: tap a budget → see contributing transactions
+  // Feature 1: tap a budget → see contributing transactions.
+  // Cache key includes the period so switching to a different history
+  // window for the same budget reloads instead of showing stale data.
+  const txCacheKey = (b) =>
+    `${b.id}__${b.__periodStart || "current"}__${b.__periodEnd || ""}`;
   const toggleExpand = async (b) => {
+    const key = txCacheKey(b);
     if (expandedId === b.id) {
       setExpandedId(null);
       return;
     }
     setExpandedId(b.id);
-    if (budgetTxns[b.id]) return; // cached
-    setBudgetTxns(prev => ({ ...prev, [b.id]: "loading" }));
+    if (budgetTxns[key]) return; // cached for this budget+period
+    setBudgetTxns(prev => ({ ...prev, [key]: "loading" }));
     try {
-      const rows = await api.getBudgetTransactions(b.id);
-      setBudgetTxns(prev => ({ ...prev, [b.id]: rows }));
+      const params = (b.__periodStart && b.__periodEnd)
+        ? { periodStart: b.__periodStart, periodEnd: b.__periodEnd }
+        : {};
+      const rows = await api.getBudgetTransactions(b.id, params);
+      setBudgetTxns(prev => ({ ...prev, [key]: rows }));
     } catch (e) {
-      setBudgetTxns(prev => ({ ...prev, [b.id]: [] }));
+      setBudgetTxns(prev => ({ ...prev, [key]: [] }));
       toast?.("Failed to load transactions: " + (e.message || ""), "error");
     }
   };
+
+  // Lazy-load history when the dropdown is opened the first time
+  const loadHistory = useCallback(async () => {
+    try {
+      const rows = await api.getBudgetHistory(12);
+      setHistory(rows);
+    } catch (e) {
+      toast?.("Failed to load history: " + (e.message || ""), "error");
+    }
+  }, [toast]);
+
+  // When history is selected (past period), derive the budget display rows from it
+  const historicalBudgets = useMemo(() => {
+    if (!viewingHistory || historyIndex === null) return null;
+    const snap = history[historyIndex];
+    if (!snap) return null;
+    // Reconstruct the budget objects in the shape BudgetCard expects
+    return snap.budgets.map(b => ({
+      id: b.id, category: b.category, amount: b.amount,
+      accountId: b.accountId, accountName: b.accountName,
+      sortOrder: b.sortOrder, spent: b.spent,
+      period: null, period_days: null, // hidden in read-only view
+      __periodStart: snap.periodStart, __periodEnd: snap.periodEnd, // for tx lookup
+    }));
+  }, [viewingHistory, historyIndex, history]);
+
+  const displayBudgets = viewingHistory ? historicalBudgets || [] : ordered;
+
+  // Reset expansion when switching periods so we don't show stale txns
+  useEffect(() => { setExpandedId(null); setBudgetTxns({}); }, [historyIndex]);
 
   const saveTracker = async (e) => {
     e.preventDefault();
@@ -2234,26 +2362,51 @@ function BudgetsTab({ theme, darkMode, toast }) {
   return (
     <div className="space-y-3">
       {/* Header */}
-      <div className="flex items-center justify-between gap-2">
-        <p className={`text-sm ${theme.textSubtle} min-w-0 truncate`}>
-          {budgets.length} budget{budgets.length !== 1 ? "s" : ""}
-          {budgets.length > 1 && !reorderLocked && (
-            <span className="ml-1.5 text-emerald-500 font-medium">· drag to reorder</span>
-          )}
-        </p>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2 min-w-0 flex-shrink">
+          {/* History dropdown */}
+          <BudgetHistoryDropdown
+            theme={theme} darkMode={darkMode}
+            history={history}
+            open={historyOpen}
+            onOpen={async () => {
+              if (!history) await loadHistory();
+              setHistoryOpen(true);
+            }}
+            onClose={() => setHistoryOpen(false)}
+            historyIndex={historyIndex}
+            onPick={(idx) => { setHistoryIndex(idx); setHistoryOpen(false); }}
+          />
+          <p className={`text-sm ${theme.textSubtle} min-w-0 truncate`}>
+            {viewingHistory ? (
+              <span className="font-semibold text-amber-500">
+                Viewing past period — read only
+              </span>
+            ) : (
+              <>
+                {budgets.length} budget{budgets.length !== 1 ? "s" : ""}
+                {budgets.length > 1 && !reorderLocked && (
+                  <span className="ml-1.5 text-emerald-500 font-medium">· drag to reorder</span>
+                )}
+              </>
+            )}
+          </p>
+        </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          {/* Lock / unlock reorder */}
+          {/* Lock / unlock reorder — disabled in history view */}
           {budgets.length > 1 && (
             <motion.button whileTap={{ scale: 0.92 }}
               onClick={() => setReorderLocked(v => !v)}
-              title={reorderLocked ? "Unlock to reorder budgets" : "Lock to prevent reordering"}
-              className={`p-2 rounded-xl border ${theme.border} ${
-                reorderLocked
+              disabled={viewingHistory}
+              title={viewingHistory ? "Locked — viewing past period"
+                    : reorderLocked ? "Unlock to reorder budgets" : "Lock to prevent reordering"}
+              className={`p-2 rounded-xl border ${theme.border} disabled:opacity-40 ${
+                reorderLocked || viewingHistory
                   ? `${theme.surface} ${theme.textSubtle}`
                   : (darkMode ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/40"
                               : "bg-emerald-50 text-emerald-600 border-emerald-200")
               }`}>
-              {reorderLocked
+              {(reorderLocked || viewingHistory)
                 ? <Lock className="w-4 h-4" />
                 : <Unlock className="w-4 h-4" />
               }
@@ -2261,7 +2414,9 @@ function BudgetsTab({ theme, darkMode, toast }) {
           )}
           <motion.button whileTap={{ scale: 0.95 }}
             onClick={() => { resetForm(); setShowAdd(true); }}
-            className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-1.5 shadow-sm shadow-emerald-500/30">
+            disabled={viewingHistory}
+            title={viewingHistory ? "Disabled — viewing past period" : ""}
+            className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-1.5 shadow-sm shadow-emerald-500/30 disabled:opacity-40 disabled:cursor-not-allowed">
             <Plus className="w-4 h-4" /> New Budget
           </motion.button>
         </div>
@@ -2289,34 +2444,47 @@ function BudgetsTab({ theme, darkMode, toast }) {
           })} />
       )}
 
-      {/* Reorderable budgets */}
-      {budgets.length === 0 ? (
+      {/* Reorderable budgets — or read-only past period view */}
+      {displayBudgets.length === 0 ? (
         <div className={`${theme.surface} border-2 border-dashed ${darkMode ? "border-slate-700" : "border-slate-300"} rounded-2xl p-12 text-center`}>
           <PieChartIcon className={`w-12 h-12 ${theme.textSubtle} mx-auto mb-3`} />
           <p className={`${theme.textMuted} mb-4 text-sm`}>
-            No budgets yet. Track spending by category or cap credit-card usage.
+            {viewingHistory
+              ? "No budgets existed during this period."
+              : "No budgets yet. Track spending by category or cap credit-card usage."}
           </p>
-          <motion.button whileTap={{ scale: 0.97 }}
-            onClick={() => { resetForm(); setShowAdd(true); }}
-            className="bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm font-semibold">
-            Create your first budget
-          </motion.button>
+          {!viewingHistory && (
+            <motion.button whileTap={{ scale: 0.97 }}
+              onClick={() => { resetForm(); setShowAdd(true); }}
+              className="bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm font-semibold">
+              Create your first budget
+            </motion.button>
+          )}
+        </div>
+      ) : viewingHistory ? (
+        // Read-only past period — no Reorder, no edit/delete
+        <div className="space-y-3">
+          {displayBudgets.map(b => (
+            <BudgetCard key={b.id} b={b} theme={theme} darkMode={darkMode}
+              reorderLocked={true}
+              readOnly={true}
+              expanded={expandedId === b.id}
+              transactions={budgetTxns[txCacheKey(b)]}
+              onToggleExpand={() => toggleExpand(b)} />
+          ))}
         </div>
       ) : (
         <Reorder.Group axis="y" values={ordered} onReorder={onReorder}
           className="space-y-3">
           {ordered.map(b => (
             <Reorder.Item key={b.id} value={b}
-              // dragListener controls whether the item is draggable. When the
-              // user locks reorder, set false so taps/scrolls aren't captured
-              // as drag attempts.
               dragListener={!reorderLocked}
               whileDrag={{ scale: 1.02, zIndex: 50 }}
               className={reorderLocked ? "" : "cursor-grab active:cursor-grabbing touch-none"}>
               <BudgetCard b={b} theme={theme} darkMode={darkMode}
                 reorderLocked={reorderLocked}
                 expanded={expandedId === b.id}
-                transactions={budgetTxns[b.id]}
+                transactions={budgetTxns[txCacheKey(b)]}
                 onToggleExpand={() => toggleExpand(b)}
                 onEdit={() => openEdit(b)}
                 onDelete={() => deleteBudget(b)} />
@@ -2472,49 +2640,21 @@ function BudgetsTab({ theme, darkMode, toast }) {
               placeholder="0.00" className={inputCls} />
           </div>
 
-          {/* Period */}
-          <div>
-            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Reset every</label>
-            <div className="grid grid-cols-2 gap-2">
-              {BUDGET_PERIODS.map(p => {
-                const active = form.period === p.id;
-                return (
-                  <button type="button" key={p.id} onClick={() => setForm({ ...form, period: p.id })}
-                    className={`px-3 py-2 rounded-xl text-xs font-semibold text-left border transition ${
-                      active
-                        ? (darkMode ? "border-emerald-500 bg-emerald-500/10 text-emerald-400" : "border-emerald-500 bg-emerald-50 text-emerald-700")
-                        : `${theme.border} ${theme.textMuted}`
-                    }`}>
-                    <div>{p.label}</div>
-                    <div className={`text-[10px] font-normal mt-0.5 ${active ? "" : theme.textSubtle}`}>{p.desc}</div>
-                  </button>
-                );
-              })}
+          {/* Period info — all budgets now follow the Income tracker's cycle */}
+          <div className={`${darkMode ? "bg-emerald-500/10" : "bg-emerald-50"} rounded-xl px-3 py-2.5 flex items-start gap-2`}>
+            <Calendar className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" />
+            <div className="text-xs">
+              <div className="font-semibold text-emerald-700 dark:text-emerald-400">
+                {trackers?.income?.period === "custom"
+                  ? `Resets every ${trackers.income.periodDays} day${trackers.income.periodDays === 1 ? "" : "s"}`
+                  : `Resets ${(trackers?.income?.period || "monthly").replace("ly"," ly").trim()}`}
+              </div>
+              <div className={`${theme.textSubtle} mt-0.5`}>
+                All budgets follow the Income tracker schedule. Change the reset
+                cadence by tapping the Income card.
+              </div>
             </div>
           </div>
-
-          {isCustomPeriod && (
-            <div className="space-y-2">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Every N days</label>
-                  <input type="number" min="1" step="1" required value={form.periodDays}
-                    onChange={e => setForm({ ...form, periodDays: e.target.value })}
-                    className={inputCls} />
-                </div>
-                <div>
-                  <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Starting on</label>
-                  <input type="date" required value={form.periodStart}
-                    onChange={e => setForm({ ...form, periodStart: e.target.value })}
-                    className={inputCls} />
-                </div>
-              </div>
-              <p className={`text-[11px] ${theme.textSubtle} leading-relaxed`}>
-                Tip: for "every Tuesday", set <strong>7</strong> days starting on a Tuesday.
-                For "every 2 weeks", use <strong>14</strong>.
-              </p>
-            </div>
-          )}
 
           <div className="flex gap-2 pt-2">
             <button type="button" onClick={() => { setShowAdd(false); resetForm(); }}

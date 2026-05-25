@@ -78,7 +78,11 @@ export const api = {
   reorderBudgets: (ids) => request("POST", "/budgets/reorder", { ids }),
   getBudgetTrackers: () => request("GET", "/budgets/trackers"),
   getBudgetSuggestions: () => request("GET", "/budgets/suggestions"),
-  getBudgetTransactions: (id) => request("GET", `/budgets/${id}/transactions`),
+  getBudgetTransactions: (id, params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return request("GET", `/budgets/${id}/transactions${q ? "?" + q : ""}`);
+  },
+  getBudgetHistory: (count = 6) => request("GET", `/budgets/history?count=${count}`),
   updateTrackerSettings: (data) => request("PATCH", "/budgets/tracker-settings", data),
 
   getGoals: () => request("GET", "/goals"),

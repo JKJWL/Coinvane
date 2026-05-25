@@ -1,7 +1,7 @@
 import { query, queryOne } from "./db.js";
 import { enqueueMail } from "./queue.js";
 import { renderNotificationDigest } from "./mailer.js";
-import { spentForBudget, currentPeriodBounds, isoDate } from "./budget-utils.js";
+import { getMasterPeriod, spentForBudgetInWindow } from "./budget-utils.js";
 
 async function insertNotification(userId, n) {
   const dupe = await queryOne(
@@ -21,12 +21,12 @@ export async function generateNotifications(userId) {
   const created = [];
 
   // ── Budget overspend / approaching limit ────────────────────────
-  // Uses spentForBudget() which respects each budget's own period (weekly,
-  // biweekly, semimonthly, monthly, yearly, or custom from a start date).
-  // Bug fix: previously hardcoded to "since 1st of month" which gave false
-  // overspend alerts based on transactions from prior periods.
+  // All budgets evaluated against the MASTER period (income tracker's
+  // settings). Single rhythm means alerts reset at the same time every
+  // counter resets.
+  const master = await getMasterPeriod(userId);
   const budgets = await query(
-    `SELECT b.id, b.category, b.amount, b.period, b.period_start, b.period_days,
+    `SELECT b.id, b.category, b.amount,
             b.account_id, a.name AS accountName
      FROM budgets b
      LEFT JOIN accounts a ON a.id = b.account_id
@@ -34,7 +34,7 @@ export async function generateNotifications(userId) {
     [userId]
   );
   for (const b of budgets) {
-    const spent = await spentForBudget(userId, b);
+    const spent = await spentForBudgetInWindow(userId, b, master.startStr, master.endStr);
     const pct = spent / Number(b.amount);
     const displayName = b.account_id ? (b.accountName || "Credit Card") : b.category;
     if (pct >= 1) {
