@@ -1,7 +1,7 @@
 import { query, queryOne } from "../db.js";
 import {
   currentPeriodBounds, isoDate, getMasterPeriod, getPastPeriods,
-  spentForBudgetInWindow,
+  spentForBudgetInWindow, logBudgetAudit, getBudgetSnapshotsAsOf,
 } from "../budget-utils.js";
 
 /**
@@ -157,14 +157,20 @@ export default async function (app) {
   // ── GET /history — past period snapshots (Feature: Budget History) ──
   // Returns the last N completed periods (and the current one), each with:
   //   - period bounds
-  //   - per-budget spent vs amount
+  //   - per-budget spent vs amount (using the AS-OF-period-end snapshot)
   //   - income total
-  // Computed live from transactions; no snapshot table needed.
   //
-  // Caveat (partial): we filter budgets by created_at <= periodEnd so budgets
-  // added AFTER a given period don't appear in that period's view. We can't
-  // perfectly reconstruct historical cap values or category renames without a
-  // dedicated budget_audit table — that's the documented limitation.
+  // Resolution model: every budget create/update/delete writes a row to
+  // budget_audit. For each historical period we read the latest snapshot
+  // with effective_at < periodEnd. If that snapshot's action is 'delete',
+  // or no snapshot exists for that budget by then, the budget is omitted
+  // from the period. This means amount edits and deletions are faithful
+  // to history — last month shows last month's cap, not today's.
+  //
+  // Account-name lookup falls back to the live `accounts` table; if the
+  // account was renamed since the period closed, the current name is
+  // shown. We don't snapshot account names (out of scope for budget
+  // history).
   app.get("/history", async (req) => {
     const count = Math.min(24, Math.max(1, Number(req.query?.count) || 6));
     const masterUser = await queryOne(
@@ -178,17 +184,26 @@ export default async function (app) {
       masterUser?.income_period_days || null,
       count
     );
-    const budgets = await query(
-      `SELECT b.id, b.category, b.amount,
-              b.account_id AS accountId, b.sort_order AS sortOrder,
-              b.created_at AS createdAt,
+    // Sort-order + accountName lookups come from current state; everything
+    // else is snapshotted in budget_audit.
+    const liveRows = await query(
+      `SELECT b.id, b.sort_order AS sortOrder,
               a.name AS accountName, a.type AS accountType
        FROM budgets b
        LEFT JOIN accounts a ON a.id = b.account_id
-       WHERE b.user_id = ?
-       ORDER BY b.sort_order ASC, b.id ASC`,
+       WHERE b.user_id = ?`,
       [req.user.id]
     );
+    const liveById = new Map(liveRows.map(r => [r.id, r]));
+
+    // Account names for budgets whose budgets row no longer exists (deleted)
+    // — pull from the snapshot's account_id against accounts.
+    const accountRows = await query(
+      `SELECT id, name FROM accounts WHERE user_id = ?`,
+      [req.user.id]
+    );
+    const accountNameById = new Map(accountRows.map(a => [a.id, a.name]));
+
     const today = isoDate(new Date(new Date().setHours(0,0,0,0)));
     const result = [];
     for (const p of periods) {
@@ -196,22 +211,42 @@ export default async function (app) {
       const endStr   = isoDate(p.end);
       const isCurrent = startStr <= today && today < endStr;
       const income = await sumIncomeInWindow(req.user.id, startStr, endStr);
+
+      // endStr is exclusive (first day NOT included). The audit cutoff is
+      // the start of that day in local time — any audit row stamped before
+      // then was in effect during the period.
+      const snapshots = await getBudgetSnapshotsAsOf(
+        req.user.id,
+        `${endStr} 00:00:00`
+      );
+
       const budgetOutcomes = [];
-      for (const b of budgets) {
-        // Only include budgets that existed before this period ended. Avoids
-        // showing today's freshly-added "Coffee" budget against last month's
-        // spending, which would invent a fictional history.
-        const createdStr = b.createdAt
-          ? String(b.createdAt).slice(0, 10)
-          : "0000-01-01";
-        if (createdStr >= endStr) continue;
-        const spent = await spentForBudgetInWindow(req.user.id, b, startStr, endStr);
+      for (const [budgetId, snap] of snapshots) {
+        const live = liveById.get(budgetId);
+        const accountName = snap.account_id
+          ? accountNameById.get(snap.account_id) || null
+          : null;
+        // Use the snapshotted category + amount + account so amount edits
+        // after the period are not back-applied.
+        const spent = await spentForBudgetInWindow(
+          req.user.id,
+          { category: snap.category, account_id: snap.account_id },
+          startStr, endStr
+        );
         budgetOutcomes.push({
-          id: b.id, category: b.category, amount: Number(b.amount),
-          accountId: b.accountId, accountName: b.accountName,
-          sortOrder: b.sortOrder, spent,
+          id: budgetId,
+          category: snap.category,
+          amount: Number(snap.amount),
+          accountId: snap.account_id,
+          accountName,
+          // Live sort_order if the budget still exists; deleted budgets
+          // fall to the end.
+          sortOrder: live ? live.sortOrder : Number.MAX_SAFE_INTEGER,
+          spent,
         });
       }
+      budgetOutcomes.sort((a, b) => (a.sortOrder - b.sortOrder) || (a.id - b.id));
+
       result.push({
         periodStart: startStr,
         periodEnd: endStr,
@@ -300,27 +335,47 @@ export default async function (app) {
       if (!acc) return reply.code(400).send({ error: "invalid account" });
     }
 
-    // Next sort_order (push to end)
-    const maxRow = await queryOne(
-      "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM budgets WHERE user_id = ?",
-      [req.user.id]
+    // Explicit upsert so we can emit the correct audit action (create vs
+    // update). The previous ON DUPLICATE KEY shortcut made that ambiguous.
+    const existing = await queryOne(
+      `SELECT id FROM budgets WHERE user_id = ? AND category = ? AND (account_id <=> ?)`,
+      [req.user.id, category, account_id]
     );
-    const sortOrder = Number(maxRow.next) || 0;
 
-    await query(
-      `INSERT INTO budgets
-         (user_id, category, amount, period, period_start, period_days, account_id, sort_order)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-         amount = VALUES(amount), period = VALUES(period),
-         period_start = VALUES(period_start), period_days = VALUES(period_days)`,
-      [req.user.id, category, amount, period,
-       period_start, period_days, account_id, sortOrder]
-    );
+    let budgetId;
+    let action;
+    if (existing) {
+      await query(
+        `UPDATE budgets SET amount = ?, period = ?, period_start = ?, period_days = ?
+         WHERE id = ? AND user_id = ?`,
+        [amount, period, period_start, period_days, existing.id, req.user.id]
+      );
+      budgetId = existing.id;
+      action = "update";
+    } else {
+      const maxRow = await queryOne(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM budgets WHERE user_id = ?",
+        [req.user.id]
+      );
+      const sortOrder = Number(maxRow.next) || 0;
+      const result = await query(
+        `INSERT INTO budgets
+           (user_id, category, amount, period, period_start, period_days, account_id, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [req.user.id, category, amount, period,
+         period_start, period_days, account_id, sortOrder]
+      );
+      budgetId = result.insertId;
+      action = "create";
+    }
+
+    await logBudgetAudit(req.user.id, budgetId, action, {
+      category, amount, period, period_start, period_days, account_id,
+    });
 
     return queryOne(
-      `SELECT * FROM budgets WHERE user_id = ? AND category = ? AND (account_id <=> ?)`,
-      [req.user.id, category, account_id]
+      `SELECT * FROM budgets WHERE id = ? AND user_id = ?`,
+      [budgetId, req.user.id]
     );
   });
 
@@ -388,8 +443,21 @@ export default async function (app) {
       [amount ?? null, period ?? null, period_start ?? null, period_days ?? null,
        req.params.id, req.user.id]
     );
-    return queryOne("SELECT * FROM budgets WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]);
+    const fresh = await queryOne(
+      "SELECT * FROM budgets WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    if (fresh) {
+      await logBudgetAudit(req.user.id, fresh.id, "update", {
+        category: fresh.category,
+        amount: fresh.amount,
+        period: fresh.period,
+        period_start: fresh.period_start,
+        period_days: fresh.period_days,
+        account_id: fresh.account_id,
+      });
+    }
+    return fresh;
   });
 
   // ── POST /reorder — drag-to-reorder (Feature 1) ─────────────────
@@ -420,8 +488,26 @@ export default async function (app) {
 
   // ── DELETE /:id ─────────────────────────────────────────────────
   app.delete("/:id", async (req) => {
+    // Snapshot the row BEFORE deletion so the audit row reflects the
+    // state at the moment of delete. budget_audit has no FK to budgets,
+    // so the snapshot lives on after the parent row is gone — that's how
+    // history can still resolve periods the budget participated in.
+    const snap = await queryOne(
+      "SELECT * FROM budgets WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
     await query("DELETE FROM budgets WHERE id = ? AND user_id = ?",
       [req.params.id, req.user.id]);
+    if (snap) {
+      await logBudgetAudit(req.user.id, snap.id, "delete", {
+        category: snap.category,
+        amount: snap.amount,
+        period: snap.period,
+        period_start: snap.period_start,
+        period_days: snap.period_days,
+        account_id: snap.account_id,
+      });
+    }
     return { ok: true };
   });
 }

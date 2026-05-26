@@ -133,6 +133,30 @@ const SCHEMA = [
     UNIQUE KEY uq_user_merchant (user_id, merchant)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
+  // ── Budget audit log (historical accuracy) ─────────────────────
+  // One row per create/update/delete event with a full state snapshot.
+  // `GET /budgets/history` resolves each past period against this table:
+  // for each budget, it picks the latest audit row with effective_at <
+  // periodEnd, and skips the budget if that latest row is a 'delete'.
+  // budget_id is intentionally NOT a foreign key so audit rows survive
+  // their parent budget being deleted.
+  `CREATE TABLE IF NOT EXISTS budget_audit (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    budget_id INT NOT NULL,
+    category VARCHAR(64) NOT NULL,
+    amount DECIMAL(14,2) NULL,
+    period VARCHAR(32) NULL,
+    period_start DATE NULL,
+    period_days INT NULL,
+    account_id INT NULL,
+    action ENUM('create','update','delete') NOT NULL,
+    effective_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user_budget_eff (user_id, budget_id, effective_at),
+    INDEX idx_user_eff (user_id, effective_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
   `CREATE TABLE IF NOT EXISTS goals (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
@@ -267,6 +291,32 @@ async function run() {
     catch (e) { /* expected on fresh DBs */ }
   }
   console.log("Schema OK.");
+
+  // Backfill budget_audit for any pre-existing budgets that have no audit
+  // history yet. Seeds one 'create' row at the original created_at so the
+  // history endpoint can resolve periods that pre-date the audit table.
+  // Idempotent: only inserts rows missing from budget_audit, so re-runs
+  // after migrations do nothing.
+  const orphans = await query(
+    `SELECT b.id, b.user_id, b.category, b.amount, b.period, b.period_start,
+            b.period_days, b.account_id, b.created_at
+     FROM budgets b
+     LEFT JOIN budget_audit ba ON ba.budget_id = b.id
+     WHERE ba.id IS NULL`
+  );
+  if (orphans.length > 0) {
+    for (const b of orphans) {
+      await query(
+        `INSERT INTO budget_audit
+           (user_id, budget_id, category, amount, period, period_start,
+            period_days, account_id, action, effective_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'create', ?)`,
+        [b.user_id, b.id, b.category, b.amount, b.period, b.period_start,
+         b.period_days, b.account_id, b.created_at]
+      );
+    }
+    console.log(`Backfilled budget_audit: ${orphans.length} budget(s).`);
+  }
 
   const email = process.env.INITIAL_USER_EMAIL;
   const password = process.env.INITIAL_USER_PASSWORD;

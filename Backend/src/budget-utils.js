@@ -194,3 +194,64 @@ export async function spentForBudget(userId, b) {
   const master = await getMasterPeriod(userId);
   return spentForBudgetInWindow(userId, b, master.startStr, master.endStr);
 }
+
+/**
+ * Append a snapshot row to budget_audit. Action is 'create' | 'update' |
+ * 'delete'. The snapshot captures the full state after the change (or, for
+ * deletes, the state immediately before deletion). The audit table is what
+ * GET /budgets/history reads to reconstruct each past period accurately,
+ * including amount edits that happened after the period closed.
+ */
+export async function logBudgetAudit(userId, budgetId, action, snapshot) {
+  await query(
+    `INSERT INTO budget_audit
+       (user_id, budget_id, category, amount, period, period_start,
+        period_days, account_id, action)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      userId, budgetId,
+      snapshot.category,
+      snapshot.amount ?? null,
+      snapshot.period ?? null,
+      snapshot.period_start ?? null,
+      snapshot.period_days ?? null,
+      snapshot.account_id ?? null,
+      action,
+    ]
+  );
+}
+
+/**
+ * For each budget id given, return the latest budget_audit snapshot with
+ * effective_at < endTs. Snapshots whose latest action is 'delete' (i.e. the
+ * budget had been deleted by then) are filtered out. Used by the history
+ * endpoint to render each past period with the cap/category that were
+ * actually in effect at the time, not the live row.
+ *
+ * Returns Map<budgetId, snapshotRow>. Budgets with no qualifying audit row
+ * (either created later, or deleted by then) won't appear in the map.
+ */
+export async function getBudgetSnapshotsAsOf(userId, endTs) {
+  // Latest audit per budget for this user, capped at endTs. We rank rows
+  // within each budget by (effective_at DESC, id DESC) so the id break-ties
+  // when two audits land in the same TIMESTAMP(3) tick (e.g. rapid edits).
+  const rows = await query(
+    `SELECT * FROM (
+       SELECT ba.*,
+              ROW_NUMBER() OVER (
+                PARTITION BY ba.budget_id
+                ORDER BY ba.effective_at DESC, ba.id DESC
+              ) AS rn
+       FROM budget_audit ba
+       WHERE ba.user_id = ? AND ba.effective_at < ?
+     ) ranked
+     WHERE ranked.rn = 1`,
+    [userId, endTs]
+  );
+  const map = new Map();
+  for (const r of rows) {
+    if (r.action === "delete") continue;
+    map.set(r.budget_id, r);
+  }
+  return map;
+}

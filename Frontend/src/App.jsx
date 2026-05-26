@@ -3488,7 +3488,14 @@ function Shell({ user, onLogout, refreshUser }) {
         {/* ── Main ── */}
         <main className="flex-1 min-w-0 pb-[calc(96px+env(safe-area-inset-bottom))] lg:pb-8 overflow-hidden">
           <div className="p-4 sm:p-6">
-            <AnimatePresence mode="wait" custom={direction}>
+            {/* popLayout (not "wait") so the incoming tab mounts immediately.
+                Under mode="wait" the exit-promise of the outgoing tab can get
+                wedged when the budgets subtree had a Reorder.Group plus
+                nested AnimatePresence (history dropdown / expanded cards /
+                Sheets) — leaving the next tab unmounted (blank). popLayout
+                pops the exiting child to position:absolute and mounts the
+                next child synchronously, sidestepping the deadlock. */}
+            <AnimatePresence mode="popLayout" custom={direction}>
               <motion.div key={tab} custom={direction}
                 initial={{ opacity: 0, x: direction > 0 ? 28 : -28 }}
                 animate={{ opacity: 1, x: 0 }}
