@@ -160,6 +160,11 @@ export default async function (app) {
   //   - per-budget spent vs amount
   //   - income total
   // Computed live from transactions; no snapshot table needed.
+  //
+  // Caveat (partial): we filter budgets by created_at <= periodEnd so budgets
+  // added AFTER a given period don't appear in that period's view. We can't
+  // perfectly reconstruct historical cap values or category renames without a
+  // dedicated budget_audit table — that's the documented limitation.
   app.get("/history", async (req) => {
     const count = Math.min(24, Math.max(1, Number(req.query?.count) || 6));
     const masterUser = await queryOne(
@@ -176,6 +181,7 @@ export default async function (app) {
     const budgets = await query(
       `SELECT b.id, b.category, b.amount,
               b.account_id AS accountId, b.sort_order AS sortOrder,
+              b.created_at AS createdAt,
               a.name AS accountName, a.type AS accountType
        FROM budgets b
        LEFT JOIN accounts a ON a.id = b.account_id
@@ -192,6 +198,13 @@ export default async function (app) {
       const income = await sumIncomeInWindow(req.user.id, startStr, endStr);
       const budgetOutcomes = [];
       for (const b of budgets) {
+        // Only include budgets that existed before this period ended. Avoids
+        // showing today's freshly-added "Coffee" budget against last month's
+        // spending, which would invent a fictional history.
+        const createdStr = b.createdAt
+          ? String(b.createdAt).slice(0, 10)
+          : "0000-01-01";
+        if (createdStr >= endStr) continue;
         const spent = await spentForBudgetInWindow(req.user.id, b, startStr, endStr);
         budgetOutcomes.push({
           id: b.id, category: b.category, amount: Number(b.amount),

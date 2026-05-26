@@ -30,7 +30,21 @@ import { query, queryOne } from "./db.js";
 function parseLocalDate(s) {
   if (!s) return null;
   if (s instanceof Date) {
-    const d = new Date(s); d.setHours(0, 0, 0, 0); return d;
+    // If the input Date looks like UTC midnight (zero UTC h/m/s), it was
+    // almost certainly built from `new Date("YYYY-MM-DD")` — which is the
+    // very footgun this helper exists to neutralise. Extract the intended
+    // calendar day from UTC components so a US-Eastern caller doesn't get
+    // bumped to the previous day. Otherwise treat it as a local-time Date
+    // and use its local components.
+    const isUtcMidnight =
+      s.getUTCHours() === 0
+      && s.getUTCMinutes() === 0
+      && s.getUTCSeconds() === 0
+      && s.getUTCMilliseconds() === 0;
+    if (isUtcMidnight) {
+      return new Date(s.getUTCFullYear(), s.getUTCMonth(), s.getUTCDate());
+    }
+    return new Date(s.getFullYear(), s.getMonth(), s.getDate());
   }
   const str = String(s).slice(0, 10);
   const [y, m, d] = str.split("-").map(Number);

@@ -1,0 +1,27 @@
+# Normalise line endings across Linux/macOS/Windows checkouts.
+# - Source files are stored as LF in the repo (matching the Linux VPS runtime)
+#   and converted to native on Windows checkouts. Avoids the "LF will be
+#   replaced by CRLF the next time Git touches it" warning storms.
+# - Windows-native scripts keep CRLF.
+# - Binary types are explicitly marked so Git never tries to convert them.
+
+* text=auto eol=lf
+
+# Windows-native script types
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+# Binary assets — never normalise
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.webp      binary
+*.pdf       binary
+*.zip       binary
+*.gz        binary
+*.tgz       binary
+*.woff      binary
+*.woff2     binary
