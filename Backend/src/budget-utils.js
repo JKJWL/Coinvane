@@ -131,9 +131,13 @@ export function getPastPeriods(period, periodStart, periodDays, count, nowDate) 
   let cursor = currentPeriodBounds(period, periodStart, periodDays, nowDate);
   for (let i = 0; i < count; i++) {
     result.push({ start: cursor.start, end: cursor.end });
-    // Move one day before this period's start; that day belongs to the
-    // previous period, so currentPeriodBounds(...) will return the prior one.
-    const dayBefore = new Date(cursor.start.getTime() - 86400000);
+    // Step one calendar day before this period's start; that day belongs to
+    // the previous period, so currentPeriodBounds(...) will return the prior
+    // one. Use Y/M/D constructor rather than `start.getTime() - 86400000` —
+    // subtracting raw milliseconds shifts by 23h or 25h across DST
+    // transitions, which can land us in the wrong calendar day.
+    const s = cursor.start;
+    const dayBefore = new Date(s.getFullYear(), s.getMonth(), s.getDate() - 1);
     cursor = currentPeriodBounds(period, periodStart, periodDays, dayBefore);
   }
   // Reverse so oldest is first

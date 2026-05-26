@@ -1807,6 +1807,22 @@ function fmtPeriodLabel(period, days) {
   return BUDGET_PERIODS.find(p => p.id === period)?.label || "Monthly";
 }
 
+// Cadence phrase for "Resets ___" sentences (lowercase, grammatical).
+// The previous `.replace("ly", " ly")` trick produced "week ly" / "month ly".
+const PERIOD_CADENCE = {
+  weekly: "weekly",
+  biweekly: "every 2 weeks",
+  semimonthly: "on the 1st & 15th",
+  monthly: "monthly",
+  yearly: "yearly",
+};
+function fmtCadence(period, days) {
+  if (period === "custom" && days) {
+    return `every ${days} day${Number(days) === 1 ? "" : "s"}`;
+  }
+  return PERIOD_CADENCE[period] || "monthly";
+}
+
 // ── Income tracker card (pinned at top, always shown) ───────────────────────
 function IncomeTracker({ tracker, theme, darkMode, onConfigure }) {
   const total = Number(tracker?.total || 0);
@@ -2170,7 +2186,15 @@ function BudgetsTab({ theme, darkMode, toast }) {
   const [history, setHistory] = useState(null);      // [{periodStart, periodEnd, isCurrent, income, budgets:[...]}]
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyIndex, setHistoryIndex] = useState(null); // null = current; number = index into history
-  const viewingHistory = historyIndex !== null && history && !history[historyIndex]?.isCurrent;
+  // Bounds-check historyIndex so a stale index (e.g. after history reloads
+  // with fewer entries) can't lock the UI into an empty read-only screen
+  // with no way back to the current period.
+  const viewingHistory =
+    historyIndex !== null
+    && Array.isArray(history)
+    && historyIndex >= 0
+    && historyIndex < history.length
+    && !history[historyIndex]?.isCurrent;
   // Local ordered copy of budgets for drag-reorder
   const [ordered, setOrdered] = useState(budgets);
   useEffect(() => { setOrdered(budgets); }, [budgets]);
@@ -2317,20 +2341,25 @@ function BudgetsTab({ theme, darkMode, toast }) {
     }
   }, [toast]);
 
-  // When history is selected (past period), derive the budget display rows from it
+  // When history is selected (past period), derive the budget display rows from it.
+  // The cadence label is sourced from the income tracker (master period) so the
+  // card's "Weekly / Bi-weekly / Every Nd" subtitle matches what's actually
+  // driving the window — not a hard-coded "Monthly" default.
   const historicalBudgets = useMemo(() => {
     if (!viewingHistory || historyIndex === null) return null;
+    if (historyIndex < 0 || historyIndex >= (history?.length || 0)) return null;
     const snap = history[historyIndex];
     if (!snap) return null;
-    // Reconstruct the budget objects in the shape BudgetCard expects
+    const masterPeriod = trackers?.income?.period || "monthly";
+    const masterDays   = trackers?.income?.periodDays || null;
     return snap.budgets.map(b => ({
       id: b.id, category: b.category, amount: b.amount,
       accountId: b.accountId, accountName: b.accountName,
       sortOrder: b.sortOrder, spent: b.spent,
-      period: null, period_days: null, // hidden in read-only view
+      period: masterPeriod, period_days: masterDays,
       __periodStart: snap.periodStart, __periodEnd: snap.periodEnd, // for tx lookup
     }));
-  }, [viewingHistory, historyIndex, history]);
+  }, [viewingHistory, historyIndex, history, trackers]);
 
   const displayBudgets = viewingHistory ? historicalBudgets || [] : ordered;
 
@@ -2450,7 +2479,7 @@ function BudgetsTab({ theme, darkMode, toast }) {
           <PieChartIcon className={`w-12 h-12 ${theme.textSubtle} mx-auto mb-3`} />
           <p className={`${theme.textMuted} mb-4 text-sm`}>
             {viewingHistory
-              ? "No budgets existed during this period."
+              ? "No budgets to show for this period."
               : "No budgets yet. Track spending by category or cap credit-card usage."}
           </p>
           {!viewingHistory && (
@@ -2645,9 +2674,7 @@ function BudgetsTab({ theme, darkMode, toast }) {
             <Calendar className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" />
             <div className="text-xs">
               <div className="font-semibold text-emerald-700 dark:text-emerald-400">
-                {trackers?.income?.period === "custom"
-                  ? `Resets every ${trackers.income.periodDays} day${trackers.income.periodDays === 1 ? "" : "s"}`
-                  : `Resets ${(trackers?.income?.period || "monthly").replace("ly"," ly").trim()}`}
+                Resets {fmtCadence(trackers?.income?.period, trackers?.income?.periodDays)}
               </div>
               <div className={`${theme.textSubtle} mt-0.5`}>
                 All budgets follow the Income tracker schedule. Change the reset

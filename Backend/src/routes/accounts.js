@@ -33,23 +33,32 @@ export default async function (app) {
     return queryOne("SELECT * FROM accounts WHERE id = ?", [req.params.id]);
   });
 
-  app.delete("/:id", async (req) => {
+  app.delete("/:id", async (req, reply) => {
+    // Look up the target first so we can return a meaningful error instead
+    // of a silent no-op. Plaid-linked accounts must be removed via
+    // /api/plaid/items/:id (which handles token revoke + cascade cleanup),
+    // not from here.
+    const acct = await queryOne(
+      "SELECT id, plaid_item_id FROM accounts WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    if (!acct) return reply.code(404).send({ error: "account not found" });
+    if (acct.plaid_item_id) {
+      return reply.code(409).send({
+        error: "this is a Plaid-linked account; disconnect it from the Plaid items endpoint",
+      });
+    }
     // Clean up transactions tied to this account FIRST. The schema's FK is
     // ON DELETE SET NULL so without this the transactions would persist as
-    // orphans and skew budget / income calculations. Also limited to manual
-    // accounts (plaid_item_id IS NULL) — Plaid-linked accounts must be
-    // removed via /api/plaid/items/:id which handles its own cleanup.
+    // orphans and skew budget / income calculations.
     await query(
-      `DELETE FROM transactions
-       WHERE user_id = ? AND account_id = ? AND account_id IN (
-         SELECT id FROM (
-           SELECT id FROM accounts WHERE id = ? AND user_id = ? AND plaid_item_id IS NULL
-         ) AS a
-       )`,
-      [req.user.id, req.params.id, req.params.id, req.user.id]
+      "DELETE FROM transactions WHERE user_id = ? AND account_id = ?",
+      [req.user.id, req.params.id]
     );
-    await query("DELETE FROM accounts WHERE id = ? AND user_id = ? AND plaid_item_id IS NULL",
-      [req.params.id, req.user.id]);
+    await query(
+      "DELETE FROM accounts WHERE id = ? AND user_id = ? AND plaid_item_id IS NULL",
+      [req.params.id, req.user.id]
+    );
     return { ok: true };
   });
 
