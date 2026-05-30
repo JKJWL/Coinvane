@@ -139,6 +139,97 @@ function ProgressBar({ value, color = "bg-emerald-500", darkMode, height = "h-2"
   );
 }
 
+// ─── ConfirmDialog ────────────────────────────────────────────────────────────
+// In-app replacement for window.confirm for destructive actions. Matches
+// the app's design language (Sheet-like backdrop, rounded modal, themed)
+// and is more visually impactful than the native dialog, which can blend
+// into the browser chrome and be dismissed without the user really
+// noticing.
+//
+// Usage:
+//   <ConfirmDialog open={!!toDelete} ... />
+// Always rendered (open controls visibility) so AnimatePresence can run
+// the enter/exit transitions cleanly.
+function ConfirmDialog({
+  open, onConfirm, onCancel, theme, darkMode,
+  title = "Are you sure?",
+  message,
+  confirmLabel = "Delete",
+  cancelLabel = "Cancel",
+  destructive = true,
+  busy = false,
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const h = (e) => {
+      if (e.key === "Escape") onCancel();
+      if (e.key === "Enter")  onConfirm();
+    };
+    document.addEventListener("keydown", h);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", h);
+      document.body.style.overflow = "";
+    };
+  }, [open, onConfirm, onCancel]);
+
+  const confirmCls = destructive
+    ? "bg-rose-500 hover:bg-rose-600 text-white shadow-sm shadow-rose-500/30"
+    : "bg-emerald-500 hover:bg-emerald-600 text-white shadow-sm shadow-emerald-500/30";
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <>
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[70]"
+            onClick={busy ? undefined : onCancel}
+          />
+          <div className="fixed inset-0 z-[71] flex items-center justify-center p-6 pointer-events-none">
+            <motion.div
+              initial={{ scale: 0.92, opacity: 0, y: 8 }}
+              animate={{ scale: 1,    opacity: 1, y: 0 }}
+              exit={{    scale: 0.92, opacity: 0, y: 8 }}
+              transition={{ type: "spring", damping: 26, stiffness: 320 }}
+              className={`pointer-events-auto w-full max-w-sm ${theme.surface} ${theme.text} rounded-3xl shadow-2xl border ${theme.border} overflow-hidden`}
+            >
+              <div className="p-6 text-center">
+                {destructive && (
+                  <div className={`mx-auto w-12 h-12 rounded-full flex items-center justify-center mb-3 ${
+                    darkMode ? "bg-rose-500/15" : "bg-rose-50"
+                  }`}>
+                    <AlertCircle className="w-6 h-6 text-rose-500" />
+                  </div>
+                )}
+                <h3 className="font-semibold text-base mb-1">{title}</h3>
+                {message && (
+                  <p className={`text-sm ${theme.textMuted} leading-relaxed`}>{message}</p>
+                )}
+              </div>
+              <div className={`flex gap-2 px-5 pb-5`}>
+                <button
+                  type="button" onClick={onCancel} disabled={busy}
+                  className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.surface} border ${theme.border} ${theme.hover} disabled:opacity-50`}
+                >
+                  {cancelLabel}
+                </button>
+                <motion.button
+                  whileTap={{ scale: 0.97 }} onClick={onConfirm} disabled={busy}
+                  className={`flex-1 py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60 ${confirmCls}`}
+                >
+                  {busy ? "Working…" : confirmLabel}
+                </motion.button>
+              </div>
+            </motion.div>
+          </div>
+        </>
+      )}
+    </AnimatePresence>
+  );
+}
+
 // ─── PendingPill ──────────────────────────────────────────────────────────────
 // Small amber chip rendered next to a transaction's merchant when Plaid has
 // reported it as `pending: true`. The sync stores pending status in
@@ -2336,11 +2427,27 @@ function BudgetsTab({ theme, darkMode, toast }) {
     }
   };
 
-  const deleteBudget = async (b) => {
-    const displayName = b.accountId ? (b.accountName || "Credit Card") : b.category;
-    if (!window.confirm(`Delete budget "${displayName}"?`)) return;
-    try { await api.deleteBudget(b.id); toast?.("Budget removed", "success"); refreshAll(); }
-    catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  // Budget delete now goes through a themed ConfirmDialog instead of
+  // window.confirm. The native browser confirm blends into the chrome
+  // and is easy to miss-click; an in-app modal makes it obvious that a
+  // destructive action is about to happen, and lets us spell out
+  // exactly what's preserved (history) vs lost (the live budget).
+  const [confirmDelete, setConfirmDelete] = useState(null); // budget object or null
+  const [deletingBudget, setDeletingBudget] = useState(false);
+  const deleteBudget = (b) => setConfirmDelete(b);
+  const performDeleteBudget = async () => {
+    if (!confirmDelete) return;
+    setDeletingBudget(true);
+    try {
+      await api.deleteBudget(confirmDelete.id);
+      toast?.("Budget removed", "success");
+      setConfirmDelete(null);
+      refreshAll();
+    } catch (e) {
+      toast?.("Failed: " + (e.message || ""), "error");
+    } finally {
+      setDeletingBudget(false);
+    }
   };
 
   // Feature 1: tap a budget → see contributing transactions.
@@ -2633,6 +2740,24 @@ function BudgetsTab({ theme, darkMode, toast }) {
           </form>
         )}
       </Sheet>
+
+      {/* Delete budget confirmation. The name is computed at render time
+          off `confirmDelete` so the modal shows the right budget even
+          if the underlying budgets array changes mid-confirm. */}
+      <ConfirmDialog
+        open={!!confirmDelete}
+        onCancel={() => setConfirmDelete(null)}
+        onConfirm={performDeleteBudget}
+        theme={theme} darkMode={darkMode}
+        busy={deletingBudget}
+        title="Delete this budget?"
+        message={confirmDelete && (
+          confirmDelete.accountId
+            ? `"${confirmDelete.accountName || "Credit Card"}" card-usage budget will be removed. Past period history stays intact.`
+            : `"${confirmDelete.category}" budget will be removed. Past period history stays intact.`
+        )}
+        confirmLabel="Delete budget"
+      />
 
       {/* New / Edit budget sheet */}
       <Sheet open={showAdd} onClose={() => { setShowAdd(false); resetForm(); }}
