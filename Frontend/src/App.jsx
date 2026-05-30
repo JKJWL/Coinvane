@@ -3487,39 +3487,40 @@ function Shell({ user, onLogout, refreshUser }) {
 
         {/* ── Main ── */}
         <main className="flex-1 min-w-0 pb-[calc(96px+env(safe-area-inset-bottom))] lg:pb-8 overflow-hidden">
-          {/* `relative` matters: with AnimatePresence mode="popLayout",
-              the exiting tab becomes position:absolute. Its containing
-              block is the nearest positioned ancestor — without
-              `relative` here it would resolve to the viewport, putting
-              the exit-ghost anywhere on screen (including covering the
-              incoming tab). Anchoring it inside this padded div keeps
-              the ghost in its lane. */}
-          <div className="p-4 sm:p-6 relative">
-            <AnimatePresence mode="popLayout" custom={direction}>
-              {/* The entering motion.div is explicitly stacked (z-10)
-                  above the exiting ghost (z-0). Even if the exit
-                  animation lingers (e.g. nested AnimatePresence in the
-                  Budgets subtree affects framer-motion's projection
-                  tracking after viewing history), the new content is
-                  always visually on top and interactive. */}
-              <motion.div key={tab} custom={direction}
-                initial={{ opacity: 0, x: direction > 0 ? 28 : -28, zIndex: 10 }}
-                animate={{ opacity: 1, x: 0,                         zIndex: 10 }}
-                exit={{    opacity: 0, x: direction > 0 ? -28 : 28,  zIndex: 0  }}
-                transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-                style={{ position: "relative" }}
-              >
-                {tab === "dashboard"    && <OverviewTab      theme={theme} darkMode={darkMode} onNavigate={navigate} />}
-                {tab === "accounts"     && <AccountsTab      theme={theme} darkMode={darkMode} toast={toast} />}
-                {tab === "transactions" && <TransactionsTab  theme={theme} darkMode={darkMode} toast={toast} />}
-                {tab === "investments"  && <InvestmentsTab   theme={theme} darkMode={darkMode} />}
-                {tab === "budgets"      && <BudgetsTab       theme={theme} darkMode={darkMode} toast={toast} />}
-                {tab === "goals"        && <GoalsTab         theme={theme} darkMode={darkMode} toast={toast} />}
-                {tab === "notes"        && <NotesTab         theme={theme} darkMode={darkMode} toast={toast} />}
-                {tab === "users"        && <UsersPanel       currentUser={user} theme={theme} darkMode={darkMode} toast={toast} />}
-                {tab === "settings"     && <SettingsPanel    user={user} onUpdate={refreshUser} theme={theme} darkMode={darkMode} onToggleDark={setDarkMode} />}
-              </motion.div>
-            </AnimatePresence>
+          {/* No AnimatePresence on the tab switcher.
+              ─────────────────────────────────────────
+              Across three attempts (mode="wait" → mode="popLayout" →
+              popLayout + relative wrapper + z-index stacking) the bug
+              persisted: after viewing budget history, switching to
+              another tab left the new motion.div stuck at its initial
+              state (opacity:0), so the content was mounted but
+              invisible. Diagnosis: the Budgets-history subtree
+              (Reorder.Group → plain div swap, plus nested
+              AnimatePresence in dropdown / expanded cards / Sheets)
+              corrupts framer-motion's projection tracking inside the
+              parent AnimatePresence — and once corrupted, no future
+              `animate` fires inside it until a full reload.
+
+              Dropping AnimatePresence gives each tab a fresh motion.div
+              on mount (key={tab}), so its initial→animate transition
+              always fires cleanly. Trade-off: the outgoing tab unmounts
+              instantly with no slide-out. The slide-in is preserved. */}
+          <div className="p-4 sm:p-6">
+            <motion.div key={tab} custom={direction}
+              initial={{ opacity: 0, x: direction > 0 ? 28 : -28 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+            >
+              {tab === "dashboard"    && <OverviewTab      theme={theme} darkMode={darkMode} onNavigate={navigate} />}
+              {tab === "accounts"     && <AccountsTab      theme={theme} darkMode={darkMode} toast={toast} />}
+              {tab === "transactions" && <TransactionsTab  theme={theme} darkMode={darkMode} toast={toast} />}
+              {tab === "investments"  && <InvestmentsTab   theme={theme} darkMode={darkMode} />}
+              {tab === "budgets"      && <BudgetsTab       theme={theme} darkMode={darkMode} toast={toast} />}
+              {tab === "goals"        && <GoalsTab         theme={theme} darkMode={darkMode} toast={toast} />}
+              {tab === "notes"        && <NotesTab         theme={theme} darkMode={darkMode} toast={toast} />}
+              {tab === "users"        && <UsersPanel       currentUser={user} theme={theme} darkMode={darkMode} toast={toast} />}
+              {tab === "settings"     && <SettingsPanel    user={user} onUpdate={refreshUser} theme={theme} darkMode={darkMode} onToggleDark={setDarkMode} />}
+            </motion.div>
           </div>
         </main>
       </div>
