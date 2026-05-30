@@ -1,2 +1,15 @@
 .env
 .claude
+
+# Node deps
+node_modules/
+
+# Vite build output (regenerated on every build)
+Frontend/dist/
+
+# PWA icons — generated from favicon.svg by scripts/generate-icons.mjs
+# at build time. The SVG is the source of truth.
+Frontend/public/apple-touch-icon.png
+Frontend/public/icon-192.png
+Frontend/public/icon-512.png
+Frontend/public/icon-512-maskable.png
