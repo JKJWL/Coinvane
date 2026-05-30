@@ -139,6 +139,26 @@ function ProgressBar({ value, color = "bg-emerald-500", darkMode, height = "h-2"
   );
 }
 
+// ─── PendingPill ──────────────────────────────────────────────────────────────
+// Small amber chip rendered next to a transaction's merchant when Plaid has
+// reported it as `pending: true`. The sync stores pending status in
+// transactions.pending; this is just the visual indicator. Renders nothing
+// for posted transactions so the markup stays clean.
+function PendingPill({ pending, darkMode, size = "sm" }) {
+  if (!pending) return null;
+  const cls = size === "xs"
+    ? "text-[9px] px-1.5 py-px"
+    : "text-[10px] px-1.5 py-0.5";
+  return (
+    <span className={`inline-flex items-center gap-1 ${cls} rounded-full font-semibold uppercase tracking-wide ${
+      darkMode ? "bg-amber-500/15 text-amber-400" : "bg-amber-50 text-amber-700"
+    }`}>
+      <span className="w-1 h-1 rounded-full bg-amber-500" />
+      Pending
+    </span>
+  );
+}
+
 // ─── IconButton ───────────────────────────────────────────────────────────────
 function IconButton({ children, onClick, theme }) {
   return (
@@ -1043,7 +1063,10 @@ function OverviewTab({ theme, darkMode, onNavigate }) {
                   <Icon className="w-4 h-4" style={{ color }} />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm truncate">{t.merchant}</div>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <div className="font-medium text-sm truncate">{t.merchant}</div>
+                    <PendingPill pending={t.pending} darkMode={darkMode} />
+                  </div>
                   <div className={`text-xs ${theme.textSubtle}`}>{t.date} · {t.category}</div>
                 </div>
                 <div className={`font-semibold text-sm ${Number(t.amount) >= 0 ? "text-emerald-500" : ""}`}>
@@ -1573,7 +1596,10 @@ function TransactionsTab({ theme, darkMode, toast }) {
                           <Icon className="w-4 h-4" style={{ color }} />
                         </div>
                         <div className="flex-1 min-w-0">
-                          <div className="font-medium text-sm truncate">{t.merchant}</div>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <div className="font-medium text-sm truncate">{t.merchant}</div>
+                            <PendingPill pending={t.pending} darkMode={darkMode} />
+                          </div>
                           <div className={`text-xs ${theme.textSubtle} truncate`}>
                             {isFlat ? `${t.date} · ` : ""}{t.category} · {t.accountName || "—"}
                           </div>
@@ -1746,10 +1772,19 @@ function TransactionsTab({ theme, darkMode, toast }) {
                 <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-3 ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
                   <Icon className="w-7 h-7" style={{ color }} />
                 </div>
-                <div className="text-xl font-semibold">{detail.merchant}</div>
+                <div className="flex items-center gap-2">
+                  <div className="text-xl font-semibold">{detail.merchant}</div>
+                  <PendingPill pending={detail.pending} darkMode={darkMode} />
+                </div>
                 <div className={`text-3xl font-bold mt-2 ${isIncome ? "text-emerald-500" : ""}`}>
                   {isIncome ? "+" : "−"}{fmt(Math.abs(Number(detail.amount)))}
                 </div>
+                {detail.pending && (
+                  <p className={`text-[11px] ${theme.textSubtle} mt-2 max-w-[260px]`}>
+                    Authorized but not yet settled by your bank. The amount or
+                    merchant name may change once it posts.
+                  </p>
+                )}
               </div>
               <div className={`${darkMode ? "bg-slate-800/50" : "bg-slate-50"} rounded-2xl divide-y ${theme.divide}`}>
                 <DetailRow label="Date"     value={detail.date} theme={theme} />
@@ -2151,7 +2186,10 @@ function BudgetCard({ b, theme, darkMode, onEdit, onDelete, reorderLocked,
                         <TIcon className="w-3.5 h-3.5" style={{ color: tColor }} />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div className="font-medium text-xs truncate">{t.merchant}</div>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <div className="font-medium text-xs truncate">{t.merchant}</div>
+                          <PendingPill pending={t.pending} darkMode={darkMode} size="xs" />
+                        </div>
                         <div className={`text-[10px] ${theme.textSubtle}`}>{t.date} · {t.accountName || "—"}</div>
                       </div>
                       <div className="font-semibold text-xs flex-shrink-0">

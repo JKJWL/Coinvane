@@ -29,10 +29,23 @@ new Worker("sync", async (job) => {
   const { userId, itemId, kind } = job.data;
 
   if (kind === "periodic") {
-    const items = await query("SELECT id, user_id FROM plaid_items");
+    const items = await query("SELECT id, user_id, institution_name FROM plaid_items");
     for (const it of items) {
-      try { await fullSyncItem(it.user_id, it.id); }
-      catch (e) { console.error(`periodic sync failed for item ${it.id}:`, e.message); }
+      try {
+        const r = await fullSyncItem(it.user_id, it.id);
+        // Log pending vs posted counts so the user can verify pending
+        // transactions are actually arriving from each bank. If a bank
+        // consistently shows `pending: 0` it likely doesn't push pending
+        // to Plaid before posting — a bank-side limitation, not a bug.
+        const t = r?.transactions || {};
+        console.log(
+          `[sync] item=${it.id} (${it.institution_name || "?"}) ` +
+          `added=${t.added ?? 0} (posted=${t.posted ?? 0}, pending=${t.pending ?? 0}) ` +
+          `modified=${t.modified ?? 0} removed=${t.removed ?? 0}`
+        );
+      } catch (e) {
+        console.error(`periodic sync failed for item ${it.id}:`, e.message);
+      }
     }
     return { ok: true, count: items.length };
   }
@@ -50,9 +63,28 @@ new Worker("sync", async (job) => {
   if (!item) throw new Error("Item not found");
   const token = decrypt(item.access_token_enc);
 
-  if (kind === "transactions") return syncTransactions(userId, itemId, token);
-  if (kind === "holdings")     return syncHoldings(userId, itemId, token);
-  return fullSyncItem(userId, itemId);
+  // Wrap individual-item syncs with the same logging the periodic branch
+  // does, so manual Sync-button presses and webhook-driven syncs also
+  // surface pending/posted counts.
+  const logResult = (r) => {
+    const t = r?.transactions || (kind === "transactions" ? r : null);
+    if (!t) return;
+    console.log(
+      `[sync] item=${itemId} (${item.institution_name || "?"}) kind=${kind} ` +
+      `added=${t.added ?? 0} (posted=${t.posted ?? 0}, pending=${t.pending ?? 0}) ` +
+      `modified=${t.modified ?? 0} removed=${t.removed ?? 0}`
+    );
+  };
+
+  if (kind === "transactions") {
+    const r = await syncTransactions(userId, itemId, token);
+    logResult(r);
+    return r;
+  }
+  if (kind === "holdings") return syncHoldings(userId, itemId, token);
+  const r = await fullSyncItem(userId, itemId);
+  logResult(r);
+  return r;
 }, { connection, concurrency: 4 });
 
 new Worker("mail", async (job) => sendMail(job.data), { connection, concurrency: 2 });

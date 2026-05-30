@@ -70,12 +70,21 @@ export async function syncTransactions(userId, itemId, accessToken) {
     )).map(r => [r.merchant.toLowerCase(), r.category])
   );
 
+  // Track pending vs posted counts for diagnostics. The toast / worker
+  // log shows these so the user can verify pending transactions are
+  // actually arriving from their bank. Some banks (smaller credit unions
+  // especially) only push transactions to Plaid AFTER they post — if you
+  // ever see `pending: 0` after a recent swipe, that's a bank-side delay,
+  // not a sync bug.
+  let pendingAdded = 0, postedAdded = 0;
+
   for (const t of [...added, ...modified]) {
     const accId = accountMap.get(t.account_id) || null;
     const merchant = t.merchant_name || t.name || "Unknown";
     const plaidCat = t.personal_finance_category?.primary || (t.category?.[0]) || "Other";
     // User-defined rule takes precedence over Plaid's category
     const finalCat = ruleMap.get(merchant.toLowerCase()) || normalizeCategory(plaidCat);
+    if (t.pending) pendingAdded++; else postedAdded++;
     await query(
       `INSERT INTO transactions (user_id, account_id, plaid_transaction_id, date, merchant,
                                   category, amount, pending)
@@ -95,7 +104,13 @@ export async function syncTransactions(userId, itemId, accessToken) {
 
   await query("UPDATE plaid_items SET sync_cursor = ?, last_sync_at = NOW() WHERE id = ?",
     [cursor, itemId]);
-  return { added: added.length, modified: modified.length, removed: removed.length };
+  return {
+    added: added.length,
+    modified: modified.length,
+    removed: removed.length,
+    pending: pendingAdded,
+    posted: postedAdded,
+  };
 }
 
 export async function syncHoldings(userId, itemId, accessToken) {
