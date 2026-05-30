@@ -2473,7 +2473,22 @@ function BudgetsTab({ theme, darkMode, toast }) {
           })} />
       )}
 
-      {/* Reorderable budgets — or read-only past period view */}
+      {/* Reorderable budgets — or read-only past period view.
+          ─────────────────────────────────────────────────────
+          IMPORTANT: we always render the same Reorder.Group structure
+          regardless of view. Conditionally swapping Reorder.Group for a
+          plain <div> when entering history view was the actual root
+          cause of the "blank tabs after viewing history" bug:
+          framer-motion's Reorder.Group registers global layout-
+          projection nodes, and unmounting it mid-session (instead of on
+          BudgetsTab unmount) left orphan projection state that froze
+          motion components on other tabs at their initial state — they
+          rendered at opacity:0 with content fully mounted but
+          invisible. By keeping Reorder.Group mounted across the
+          current↔history transition and only flipping dragListener +
+          readOnly, projection state stays clean. The group only
+          unmounts when BudgetsTab itself unmounts, which happens
+          cleanly on tab switch. */}
       {displayBudgets.length === 0 ? (
         <div className={`${theme.surface} border-2 border-dashed ${darkMode ? "border-slate-700" : "border-slate-300"} rounded-2xl p-12 text-center`}>
           <PieChartIcon className={`w-12 h-12 ${theme.textSubtle} mx-auto mb-3`} />
@@ -2490,35 +2505,32 @@ function BudgetsTab({ theme, darkMode, toast }) {
             </motion.button>
           )}
         </div>
-      ) : viewingHistory ? (
-        // Read-only past period — no Reorder, no edit/delete
-        <div className="space-y-3">
-          {displayBudgets.map(b => (
-            <BudgetCard key={b.id} b={b} theme={theme} darkMode={darkMode}
-              reorderLocked={true}
-              readOnly={true}
-              expanded={expandedId === b.id}
-              transactions={budgetTxns[txCacheKey(b)]}
-              onToggleExpand={() => toggleExpand(b)} />
-          ))}
-        </div>
       ) : (
-        <Reorder.Group axis="y" values={ordered} onReorder={onReorder}
+        <Reorder.Group axis="y"
+          values={displayBudgets}
+          onReorder={viewingHistory ? () => {} : onReorder}
           className="space-y-3">
-          {ordered.map(b => (
-            <Reorder.Item key={b.id} value={b}
-              dragListener={!reorderLocked}
-              whileDrag={{ scale: 1.02, zIndex: 50 }}
-              className={reorderLocked ? "" : "cursor-grab active:cursor-grabbing touch-none"}>
-              <BudgetCard b={b} theme={theme} darkMode={darkMode}
-                reorderLocked={reorderLocked}
-                expanded={expandedId === b.id}
-                transactions={budgetTxns[txCacheKey(b)]}
-                onToggleExpand={() => toggleExpand(b)}
-                onEdit={() => openEdit(b)}
-                onDelete={() => deleteBudget(b)} />
-            </Reorder.Item>
-          ))}
+          {displayBudgets.map(b => {
+            // History view = drag disabled + edit/delete hidden + no
+            // grab cursor. Same component tree as current view, just
+            // with locked-down interactions.
+            const lockDrag = viewingHistory || reorderLocked;
+            return (
+              <Reorder.Item key={b.id} value={b}
+                dragListener={!lockDrag}
+                whileDrag={{ scale: 1.02, zIndex: 50 }}
+                className={lockDrag ? "" : "cursor-grab active:cursor-grabbing touch-none"}>
+                <BudgetCard b={b} theme={theme} darkMode={darkMode}
+                  reorderLocked={lockDrag}
+                  readOnly={viewingHistory}
+                  expanded={expandedId === b.id}
+                  transactions={budgetTxns[txCacheKey(b)]}
+                  onToggleExpand={() => toggleExpand(b)}
+                  onEdit={viewingHistory ? undefined : () => openEdit(b)}
+                  onDelete={viewingHistory ? undefined : () => deleteBudget(b)} />
+              </Reorder.Item>
+            );
+          })}
         </Reorder.Group>
       )}
 
@@ -3487,40 +3499,25 @@ function Shell({ user, onLogout, refreshUser }) {
 
         {/* ── Main ── */}
         <main className="flex-1 min-w-0 pb-[calc(96px+env(safe-area-inset-bottom))] lg:pb-8 overflow-hidden">
-          {/* No AnimatePresence on the tab switcher.
-              ─────────────────────────────────────────
-              Across three attempts (mode="wait" → mode="popLayout" →
-              popLayout + relative wrapper + z-index stacking) the bug
-              persisted: after viewing budget history, switching to
-              another tab left the new motion.div stuck at its initial
-              state (opacity:0), so the content was mounted but
-              invisible. Diagnosis: the Budgets-history subtree
-              (Reorder.Group → plain div swap, plus nested
-              AnimatePresence in dropdown / expanded cards / Sheets)
-              corrupts framer-motion's projection tracking inside the
-              parent AnimatePresence — and once corrupted, no future
-              `animate` fires inside it until a full reload.
-
-              Dropping AnimatePresence gives each tab a fresh motion.div
-              on mount (key={tab}), so its initial→animate transition
-              always fires cleanly. Trade-off: the outgoing tab unmounts
-              instantly with no slide-out. The slide-in is preserved. */}
           <div className="p-4 sm:p-6">
-            <motion.div key={tab} custom={direction}
-              initial={{ opacity: 0, x: direction > 0 ? 28 : -28 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-            >
-              {tab === "dashboard"    && <OverviewTab      theme={theme} darkMode={darkMode} onNavigate={navigate} />}
-              {tab === "accounts"     && <AccountsTab      theme={theme} darkMode={darkMode} toast={toast} />}
-              {tab === "transactions" && <TransactionsTab  theme={theme} darkMode={darkMode} toast={toast} />}
-              {tab === "investments"  && <InvestmentsTab   theme={theme} darkMode={darkMode} />}
-              {tab === "budgets"      && <BudgetsTab       theme={theme} darkMode={darkMode} toast={toast} />}
-              {tab === "goals"        && <GoalsTab         theme={theme} darkMode={darkMode} toast={toast} />}
-              {tab === "notes"        && <NotesTab         theme={theme} darkMode={darkMode} toast={toast} />}
-              {tab === "users"        && <UsersPanel       currentUser={user} theme={theme} darkMode={darkMode} toast={toast} />}
-              {tab === "settings"     && <SettingsPanel    user={user} onUpdate={refreshUser} theme={theme} darkMode={darkMode} onToggleDark={setDarkMode} />}
-            </motion.div>
+            <AnimatePresence mode="wait" custom={direction}>
+              <motion.div key={tab} custom={direction}
+                initial={{ opacity: 0, x: direction > 0 ? 28 : -28 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: direction > 0 ? -28 : 28 }}
+                transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+              >
+                {tab === "dashboard"    && <OverviewTab      theme={theme} darkMode={darkMode} onNavigate={navigate} />}
+                {tab === "accounts"     && <AccountsTab      theme={theme} darkMode={darkMode} toast={toast} />}
+                {tab === "transactions" && <TransactionsTab  theme={theme} darkMode={darkMode} toast={toast} />}
+                {tab === "investments"  && <InvestmentsTab   theme={theme} darkMode={darkMode} />}
+                {tab === "budgets"      && <BudgetsTab       theme={theme} darkMode={darkMode} toast={toast} />}
+                {tab === "goals"        && <GoalsTab         theme={theme} darkMode={darkMode} toast={toast} />}
+                {tab === "notes"        && <NotesTab         theme={theme} darkMode={darkMode} toast={toast} />}
+                {tab === "users"        && <UsersPanel       currentUser={user} theme={theme} darkMode={darkMode} toast={toast} />}
+                {tab === "settings"     && <SettingsPanel    user={user} onUpdate={refreshUser} theme={theme} darkMode={darkMode} onToggleDark={setDarkMode} />}
+              </motion.div>
+            </AnimatePresence>
           </div>
         </main>
       </div>
