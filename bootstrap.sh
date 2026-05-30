@@ -78,6 +78,11 @@ PLAID_WEBHOOK_URL=https://${DOMAIN}/api/plaid/webhook
 # ─── Misc ────────────────────────────────────────────────────────
 SIGNUP_MODE=closed
 
+# How often the worker polls Plaid for new transactions, in minutes.
+# Webhook-driven syncs fire instantly regardless of this value. Going
+# below ~15 min mostly burns Plaid API quota — see .env.example.
+SYNC_INTERVAL_MINUTES=60
+
 # ─── Email subsystem ──────────────────────────────────────────────
 # disabled = no emails sent (default). Set to "enabled" once you've
 # configured + tested the SMTP creds below. UI greys out Email Notifs
