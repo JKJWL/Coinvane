@@ -3487,20 +3487,27 @@ function Shell({ user, onLogout, refreshUser }) {
 
         {/* ── Main ── */}
         <main className="flex-1 min-w-0 pb-[calc(96px+env(safe-area-inset-bottom))] lg:pb-8 overflow-hidden">
-          <div className="p-4 sm:p-6">
-            {/* popLayout (not "wait") so the incoming tab mounts immediately.
-                Under mode="wait" the exit-promise of the outgoing tab can get
-                wedged when the budgets subtree had a Reorder.Group plus
-                nested AnimatePresence (history dropdown / expanded cards /
-                Sheets) — leaving the next tab unmounted (blank). popLayout
-                pops the exiting child to position:absolute and mounts the
-                next child synchronously, sidestepping the deadlock. */}
+          {/* `relative` matters: with AnimatePresence mode="popLayout",
+              the exiting tab becomes position:absolute. Its containing
+              block is the nearest positioned ancestor — without
+              `relative` here it would resolve to the viewport, putting
+              the exit-ghost anywhere on screen (including covering the
+              incoming tab). Anchoring it inside this padded div keeps
+              the ghost in its lane. */}
+          <div className="p-4 sm:p-6 relative">
             <AnimatePresence mode="popLayout" custom={direction}>
+              {/* The entering motion.div is explicitly stacked (z-10)
+                  above the exiting ghost (z-0). Even if the exit
+                  animation lingers (e.g. nested AnimatePresence in the
+                  Budgets subtree affects framer-motion's projection
+                  tracking after viewing history), the new content is
+                  always visually on top and interactive. */}
               <motion.div key={tab} custom={direction}
-                initial={{ opacity: 0, x: direction > 0 ? 28 : -28 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: direction > 0 ? -28 : 28 }}
+                initial={{ opacity: 0, x: direction > 0 ? 28 : -28, zIndex: 10 }}
+                animate={{ opacity: 1, x: 0,                         zIndex: 10 }}
+                exit={{    opacity: 0, x: direction > 0 ? -28 : 28,  zIndex: 0  }}
                 transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+                style={{ position: "relative" }}
               >
                 {tab === "dashboard"    && <OverviewTab      theme={theme} darkMode={darkMode} onNavigate={navigate} />}
                 {tab === "accounts"     && <AccountsTab      theme={theme} darkMode={darkMode} toast={toast} />}
