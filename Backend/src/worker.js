@@ -12,12 +12,38 @@ const connection = {
   port: Number(process.env.REDIS_PORT || 6379),
 };
 
+// How often the periodic full sync runs, in minutes. Tunable via env so
+// the cadence can be adjusted without redeploying code. Default is 60
+// minutes; Plaid's general guidance is 4-6 hours for polling, but more
+// frequent is reasonable as a safety net for missed webhooks. Going
+// below ~15 min is rarely useful — banks themselves don't push to
+// Plaid faster than that, and you'll just burn Plaid API quota.
+// Webhook-driven syncs continue to fire regardless of this interval.
+const SYNC_INTERVAL_MIN = Math.max(
+  1,
+  Number(process.env.SYNC_INTERVAL_MINUTES) || 60
+);
+
 async function schedulePeriodic() {
+  // BullMQ repeatable jobs are keyed by a hash of their full schedule
+  // signature (name + interval + jobId). If we just `add()` with a new
+  // `repeat.every`, BullMQ will register a SECOND schedule alongside
+  // the old one — both would fire forever. To make the env var
+  // hot-swappable across restarts, sweep any existing periodic-sync
+  // repeatables first, then add the one matching the current env.
+  const existing = await syncQueue.getRepeatableJobs();
+  for (const r of existing) {
+    if (r.name === "periodic-full-sync" || r.name === "daily-notifications") {
+      await syncQueue.removeRepeatableByKey(r.key);
+    }
+  }
+
   await syncQueue.add(
     "periodic-full-sync",
     { kind: "periodic" },
-    { repeat: { every: 6 * 60 * 60 * 1000 }, jobId: "periodic-full-sync" }
+    { repeat: { every: SYNC_INTERVAL_MIN * 60 * 1000 }, jobId: "periodic-full-sync" }
   );
+  console.log(`Scheduled periodic full sync every ${SYNC_INTERVAL_MIN} min.`);
   await syncQueue.add(
     "daily-notifications",
     { kind: "notifications" },

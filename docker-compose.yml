@@ -65,6 +65,9 @@ services:
       SMTP_PASS: ${SMTP_PASS}
       SMTP_FROM: ${SMTP_FROM}
       SIGNUP_MODE: ${SIGNUP_MODE}
+      # Worker-only: how often Plaid is polled, in minutes. The backend
+      # ignores it. Default in code is 60. See .env.example for guidance.
+      SYNC_INTERVAL_MINUTES: ${SYNC_INTERVAL_MINUTES:-60}
     ports:
       - "127.0.0.1:4000:4000"
 
