@@ -10,7 +10,6 @@
 set -euo pipefail
 
 ENV_FILE=".env"
-DOMAIN="ledger.example.com"
 
 if [[ -f "$ENV_FILE" ]]; then
   echo "❌ $ENV_FILE already exists."
@@ -28,12 +27,18 @@ ENCRYPTION_KEY=$(openssl rand -hex 32)   # 32 bytes = 64 hex chars
 
 echo
 echo "→ Need a few values you must provide:"
+read -rp "  Domain (e.g. ledger.example.com — without https://): " DOMAIN
 read -rp "  Your Gmail address (only this email will be allowed in): " ALLOWED_EMAIL
 read -rp "  Google OAuth Client ID (xxxxx.apps.googleusercontent.com): " GOOGLE_CLIENT_ID
 read -rp "  Plaid Client ID: " PLAID_CLIENT_ID
 read -rsp "  Plaid Production Secret (input hidden): " PLAID_SECRET
 echo
 echo
+
+if [[ -z "$DOMAIN" ]]; then
+  echo "❌ Domain is required."
+  exit 1
+fi
 
 cat > "$ENV_FILE" <<EOF
 # ─────────────────────────────────────────────────────────────────────

@@ -17,20 +17,23 @@ without paying a subscription or handing your financial data to a third party.
 ## Features
 
 ### Accounts & transactions
-- **Bank sync** — connect any institution Plaid supports (most US banks, brokerages, credit unions). Auto-sync every 6 hours, plus webhook-driven near-real-time updates.
-- **Manual accounts** — for banks Plaid doesn't support; balances auto-adjust when you record transactions
-- **Transactions** — date-grouped activity feed with filter by account / category, sort options, tap-to-edit
-- **Per-merchant rules** — recategorise a transaction and choose "all future from this merchant"; the rule is saved per-user and applied to every subsequent sync
+- **Bank sync** — connect any institution Plaid supports (most US banks, brokerages, credit unions). Polls Plaid on a configurable interval (default every 60 min, tunable via `SYNC_INTERVAL_MINUTES`), plus webhook-driven near-real-time updates when your bank pushes them.
+- **Pending transactions** — when your bank reports a charge as pending, it shows up immediately with an amber "Pending" badge so you can tell authorized-but-not-yet-settled spending apart from posted activity.
+- **Manual accounts** — for banks Plaid doesn't support; balances auto-adjust when you record transactions.
+- **Transactions** — date-grouped activity feed with filter by account / category, sort options, tap-to-edit.
+- **Per-merchant rules** — recategorise a transaction and choose "all future from this merchant"; the rule is saved per-user and applied to every subsequent sync.
 
 ### Budgets
-- **Six reset periods** — weekly, bi-weekly, twice-a-month, monthly, yearly, or a custom interval (every N days from a date you pick)
-- **Two budget types** — category-based (default) or credit-card-account-based; credit-card transactions are excluded from category budgets to avoid double-counting (swipe + payment)
-- **Drag to reorder** — touch and mouse both work, order persists across devices
-- **Edit any budget** — amount and reset cadence are editable after creation
-- **Suggested categories** — new-budget form suggests categories you spend on but haven't budgeted yet
-- **Income tracker** — pinned at top, no limit; sums positive transactions over the period you choose
-- **Credit usage tracker** — only appears when a credit account is linked; per-card breakdown
-- **Zero-based-budget summary** — dual-color bar at the bottom showing income vs allocated, with "X left to budget" indicator
+- **Master period** — one reset rhythm drives every budget AND the credit-usage tracker. Pick a cadence on the Income card (weekly, bi-weekly, semi-monthly, monthly, yearly, or every N days from a date) and "this week's groceries", "this week's income", and "this week's allocation total" all line up exactly.
+- **Two budget types** — category-based (default) or credit-card-account-based; credit-card transactions are excluded from category budgets to avoid double-counting (swipe + payment).
+- **Drag to reorder** — touch and mouse both work; order persists across devices. A lock toggle prevents accidental drags on mobile.
+- **Edit any budget** — amount editable after creation. Category and account are locked once a budget is created (use delete + recreate if you need to change either).
+- **Budget history** — a date dropdown next to "+ New Budget" walks back through past periods (the last 12 by default). Each period shows what you actually budgeted vs spent AT THAT TIME — amount edits or deletions made later don't rewrite history. Backed by a `budget_audit` table that snapshots every create / update / delete event.
+- **Suggested categories** — new-budget form suggests categories you spend on but haven't budgeted yet.
+- **Income tracker** — pinned at top, no limit; sums positive transactions over the master period.
+- **Credit usage tracker** — only appears when a credit account is linked; per-card breakdown, also master-period bound.
+- **Zero-based-budget summary** — dual-color bar at the bottom showing income vs allocated, with "X left to budget" indicator.
+- **Themed confirmations** — destructive actions (delete budget, etc.) prompt with an in-app modal, not the native browser dialog.
 
 ### Goals
 - **Savings goals** with target / progress
@@ -118,18 +121,25 @@ This guide assumes Ubuntu 24.04 LTS. Adapt as needed for other distros.
 
 ### 1. Server prep
 
+Pick a non-root username — anything **other than** `ledger`, `admin`, `ubuntu`,
+or any other word someone could guess from the project name or distro
+defaults. We'll refer to it as `<your-user>` throughout the rest of this
+guide; substitute your actual choice. (Yes, your SSH key auth defeats brute
+force on its own — but the less an attacker can guess about your setup, the
+fewer free attempts they get.)
+
 ```bash
-# As root, create a non-root user
-adduser ledger
-usermod -aG sudo ledger
-mkdir -p /home/ledger/.ssh
-cp ~/.ssh/authorized_keys /home/ledger/.ssh/
-chown -R ledger:ledger /home/ledger/.ssh
-chmod 700 /home/ledger/.ssh
-chmod 600 /home/ledger/.ssh/authorized_keys
+# As root, replace <your-user> with whatever username you picked.
+adduser <your-user>
+usermod -aG sudo <your-user>
+mkdir -p /home/<your-user>/.ssh
+cp ~/.ssh/authorized_keys /home/<your-user>/.ssh/
+chown -R <your-user>:<your-user> /home/<your-user>/.ssh
+chmod 700 /home/<your-user>/.ssh
+chmod 600 /home/<your-user>/.ssh/authorized_keys
 ```
 
-Log out, log back in as `ledger`, confirm `sudo` works.
+Log out, log back in as `<your-user>`, confirm `sudo` works.
 
 ### 2. Lock down SSH
 
@@ -212,19 +222,25 @@ You should see "certificate obtained successfully" within a minute.
 
 ### 7. Clone and deploy the app
 
+Substitute `<your-user>` with whatever username you created in step 1, and
+`<your-domain>` with whatever domain you'll be serving from.
+
 ```bash
-cd /home/ledger
+cd ~                # your-user's home directory
 git clone https://github.com/JKJWL/Ledger.git ledger
 cd ledger
-./bootstrap.sh
+./bootstrap.sh      # prompts for domain, Google ID, Plaid keys, etc.
 docker compose build
 docker compose up -d
 docker compose exec backend npm run migrate
 ```
 
-Visit `https://ledger.your-domain.com` and sign in.
+Visit `https://<your-domain>` and sign in.
 
 ### 8. Encrypted nightly backups
+
+The example below assumes you keep backups under your user's home directory.
+Substitute `<your-user>` (and the project path if you cloned somewhere else).
 
 ```bash
 sudo nano /etc/cron.daily/ledger-backup
@@ -233,25 +249,30 @@ sudo nano /etc/cron.daily/ledger-backup
 ```bash
 #!/bin/bash
 set -e
-BACKUP_DIR=/home/ledger/backups
-mkdir -p $BACKUP_DIR
+# Adjust these two paths to match your install.
+APP_DIR=/home/<your-user>/ledger
+BACKUP_DIR=/home/<your-user>/backups
+KEY_FILE=/home/<your-user>/.backup-key
+
+mkdir -p "$BACKUP_DIR"
 TS=$(date +%Y%m%d-%H%M%S)
-source /home/ledger/ledger/.env
+source "$APP_DIR/.env"
 docker exec ledger-db mysqldump -uroot -p"$DB_ROOT_PASSWORD" --all-databases \
   | gzip \
-  | openssl enc -aes-256-cbc -salt -pbkdf2 -pass file:/home/ledger/.backup-key \
-  > $BACKUP_DIR/ledger-$TS.sql.gz.enc
-find $BACKUP_DIR -name "ledger-*.sql.gz.enc" -mtime +14 -delete
+  | openssl enc -aes-256-cbc -salt -pbkdf2 -pass file:"$KEY_FILE" \
+  > "$BACKUP_DIR/ledger-$TS.sql.gz.enc"
+find "$BACKUP_DIR" -name "ledger-*.sql.gz.enc" -mtime +14 -delete
 ```
 
 ```bash
 sudo chmod +x /etc/cron.daily/ledger-backup
-openssl rand -hex 32 | sudo tee /home/ledger/.backup-key
-sudo chmod 400 /home/ledger/.backup-key
+openssl rand -hex 32 | sudo tee /home/<your-user>/.backup-key
+sudo chmod 400 /home/<your-user>/.backup-key
 ```
 
-Keep a copy of `/home/ledger/.backup-key` off-server. Periodically rsync the
-backup directory to another host or to S3. To restore:
+Keep a copy of `.backup-key` off-server (password manager, encrypted USB,
+etc.). Periodically rsync the backup directory to another host or to S3. To
+restore:
 ```bash
 openssl enc -d -aes-256-cbc -pbkdf2 -pass file:.backup-key \
   -in ledger-YYYYMMDD-HHMMSS.sql.gz.enc | gunzip | mysql -uroot -p
@@ -348,6 +369,13 @@ This app is designed to be exposed to the public internet safely.
 - **Body limit** — 512KB.
 - **CSP** — nginx serves a strict Content-Security-Policy locking script sources
   to self, Google, and Plaid.
+- **No client-side caching** — every response (HTML, JS, CSS, API, images) is
+  served with `Cache-Control: no-store, no-cache, must-revalidate`. Cost is a
+  tiny per-page-load bandwidth hit on a single-file React app; benefit is that
+  security fixes and bug fixes propagate to every user the instant they
+  navigate, with zero chance of a stale bundle masking a deployed fix. The
+  login session lives in `localStorage` (not the HTTP cache), so you stay
+  signed in despite the no-cache policy.
 
 ### Things to do yourself
 
@@ -382,9 +410,13 @@ A few notes:
 - **Vite env vars are build-time.** If you ever change `VITE_GOOGLE_CLIENT_ID`
   (or add new `VITE_*` vars), you MUST rebuild the frontend (`--no-cache`) —
   restarting the container alone won't pick the change up.
-- **Hard-refresh after deploy** (Cmd/Ctrl + Shift + R) — service worker / PWA
-  caches are aggressive. On iPhone PWA, remove and re-add the home-screen icon
-  to fully bust the cache.
+- **No client-side caching means no stale bundles** — every navigation
+  re-downloads the (small) JS bundle, so a hard refresh after deploy is
+  unnecessary in practice. Your session in `localStorage` survives across
+  reloads, deploys, and container rebuilds; you stay signed in.
+- **Restart just the worker** if you change `SYNC_INTERVAL_MINUTES`. The
+  worker sweeps and re-registers BullMQ schedules at startup, so a
+  `docker compose up -d worker` is enough; backend and frontend can stay up.
 
 ---
 
@@ -504,7 +536,9 @@ ledger/
 | `PLAID_WEBHOOK_URL`       | Optional | Auto-sync push endpoint; verified by signature                       |
 | `APP_URL` / `CORS_ORIGIN` | Yes      | Your full HTTPS URL; CORS won't start without it in production       |
 | `SIGNUP_MODE`             | Optional | `closed` for single-user, `invite` to use the invitation system, `open` for anything-goes |
-| `SMTP_*`                  | Optional | Email delivery (invitations, alerts). Leave `SMTP_HOST` blank to log to console |
+| `SYNC_INTERVAL_MINUTES`   | Optional | How often the worker polls Plaid for new transactions. Default 60. Webhook-driven syncs fire regardless. |
+| `EMAIL_CONFIG`            | Optional | `disabled` (default) or `enabled`. Master kill-switch for outbound email. UI greys out email-notification settings when disabled. |
+| `SMTP_*`                  | Optional | SMTP credentials, only consulted when `EMAIL_CONFIG=enabled`. Leave `SMTP_HOST` blank to log emails to console for testing. |
 
 See `.env.example` for the full annotated template, or run `./bootstrap.sh` to
 generate one with strong randoms.
