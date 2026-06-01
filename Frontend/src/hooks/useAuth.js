@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { useState, useEffect, useCallback } from "react";
 import { api, setToken, getToken } from "../api/client.js";
 

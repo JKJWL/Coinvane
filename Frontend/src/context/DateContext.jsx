@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
 import { api } from "../api/client.js";
 

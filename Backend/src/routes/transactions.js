@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { query, queryOne } from "../db.js";
 
 // Update a manual account's balance by the given delta.

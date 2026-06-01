@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 const API_URL = import.meta.env.VITE_API_URL || "/api";
 
 let authToken = localStorage.getItem("ledger_token");

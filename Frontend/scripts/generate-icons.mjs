@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Generate the PNG icons iOS / Android / Chrome need from the single
 // favicon.svg source. Runs automatically before `vite build` via the
 // `prebuild` npm script, so the icons in Frontend/public/ are always

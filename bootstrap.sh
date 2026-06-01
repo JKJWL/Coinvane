@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # ─────────────────────────────────────────────────────────────────────
 #  Ledger — first-time .env generator
 #  Generates all secrets, prompts for the few values only you can know,

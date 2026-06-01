@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { motion, AnimatePresence, Reorder, animate as framerAnimate } from "framer-motion";
 import {

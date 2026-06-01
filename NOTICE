@@ -1,0 +1,92 @@
+Ledger
+Copyright (C) 2026 Jack Jewell and contributors
+
+This product is licensed under the GNU Affero General Public License v3.0.
+See the LICENSE file for the full license text.
+
+═══════════════════════════════════════════════════════════════════════════
+This file documents third-party software bundled or directly depended upon
+by Ledger. It is informational; the authoritative license terms for each
+component live with that component upstream.
+
+For a NOTICE file, the convention is to acknowledge significant first-tier
+dependencies, not every transitive package. For a complete machine-readable
+dependency tree, see the lockfiles (`Backend/package-lock.json` and
+`Frontend/package-lock.json`) and inspect each package's own LICENSE file
+under `node_modules/`.
+═══════════════════════════════════════════════════════════════════════════
+
+
+── BACKEND — runtime dependencies ─────────────────────────────────────────
+
+  fastify                 MIT      https://github.com/fastify/fastify
+  @fastify/cors           MIT      https://github.com/fastify/fastify-cors
+  @fastify/jwt            MIT      https://github.com/fastify/fastify-jwt
+  @fastify/helmet         MIT      https://github.com/fastify/fastify-helmet
+  @fastify/rate-limit     MIT      https://github.com/fastify/fastify-rate-limit
+  fastify-raw-body        MIT      https://github.com/Eomm/fastify-raw-body
+  mysql2                  MIT      https://github.com/sidorares/node-mysql2
+  bcrypt                  MIT      https://github.com/kelektiv/node.bcrypt.js
+  google-auth-library     Apache-2.0  https://github.com/googleapis/google-auth-library-nodejs
+  plaid                   MIT      https://github.com/plaid/plaid-node
+  jsonwebtoken            MIT      https://github.com/auth0/node-jsonwebtoken
+  bullmq                  MIT      https://github.com/taskforcesh/bullmq
+  ioredis                 MIT      https://github.com/redis/ioredis
+  nodemailer              MIT-0    https://github.com/nodemailer/nodemailer
+  dotenv                  BSD-2-Clause  https://github.com/motdotla/dotenv
+
+
+── FRONTEND — runtime dependencies ────────────────────────────────────────
+
+  react                   MIT      https://github.com/facebook/react
+  react-dom               MIT      https://github.com/facebook/react
+  react-plaid-link        MIT      https://github.com/plaid/react-plaid-link
+  lucide-react            ISC      https://github.com/lucide-icons/lucide
+  recharts                MIT      https://github.com/recharts/recharts
+  framer-motion           MIT      https://github.com/framer/motion
+
+
+── FRONTEND — build / dev dependencies ────────────────────────────────────
+
+  vite                    MIT      https://github.com/vitejs/vite
+  @vitejs/plugin-react    MIT      https://github.com/vitejs/vite-plugin-react
+  tailwindcss             MIT      https://github.com/tailwindlabs/tailwindcss
+  postcss                 MIT      https://github.com/postcss/postcss
+  autoprefixer            MIT      https://github.com/postcss/autoprefixer
+  sharp                   Apache-2.0  https://github.com/lovell/sharp
+
+
+── INFRASTRUCTURE (used at runtime, not bundled in build output) ──────────
+
+  Node.js 20              MIT      https://nodejs.org/
+  MariaDB 11              GPL-2.0  https://mariadb.org/
+  Redis 7                 BSD-3-Clause  https://redis.io/
+                          (Redis switched to dual SSPL/RSAL for newer
+                           versions; Ledger pins the `redis:7-alpine`
+                           image which is the last BSD-licensed release.)
+  nginx                   BSD-2-Clause  https://nginx.org/
+  Docker                  Apache-2.0  https://docker.com/
+  Caddy (recommended)     Apache-2.0  https://caddyserver.com/
+
+
+── THIRD-PARTY SERVICES (not software dependencies; required to operate) ──
+
+  Plaid                   Commercial — https://plaid.com/legal/
+                          The `plaid` npm SDK is MIT-licensed; the Plaid
+                          service itself is governed by Plaid's terms.
+  Google Identity         Commercial — https://developers.google.com/identity/
+                          Sign-In with Google is provided by Google under
+                          their own terms.
+  Let's Encrypt           ISRG Subscriber Agreement — https://letsencrypt.org/
+                          Auto-HTTPS certificates issued via Caddy's
+                          built-in ACME client.
+
+
+═══════════════════════════════════════════════════════════════════════════
+This NOTICE is provided in addition to the LICENSE file. It does not
+modify the terms of the GNU Affero General Public License v3.0, which
+remain the authoritative license terms for the code in this repository.
+
+If you redistribute Ledger (modified or unmodified), please retain this
+NOTICE file alongside the LICENSE file.
+═══════════════════════════════════════════════════════════════════════════

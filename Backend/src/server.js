@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import "dotenv/config";
 import Fastify from "fastify";
 import cors from "@fastify/cors";

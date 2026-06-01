@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { plaid } from "../plaid-client.js";
 import { query, queryOne } from "../db.js";
 import { encrypt } from "../crypto.js";

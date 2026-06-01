@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { query, queryOne } from "../db.js";
 
 export default async function (app) {

@@ -1,9 +1,13 @@
 # Ledger
 
 > Self-hosted personal finance · React PWA · Plaid · Google SSO · zero-knowledge
-> at-rest encryption · single-binary deploy via Docker Compose
+> at-rest encryption · Docker Compose deploy
 >
-> Source: <https://github.com/JKJWL/Ledger>
+> Copyright © 2026 Jack Jewell and contributors ·
+> Source: <https://github.com/JKJWL/Ledger> ·
+> License: **AGPL v3** (see [LICENSE](LICENSE), third-party acknowledgements
+> in [NOTICE](NOTICE)) ·
+> Security policy: [SECURITY.md](SECURITY.md)
 
 A self-hosted personal finance app with bank sync via Plaid, Google Sign-In auth,
 end-to-end encrypted secrets, and a mobile-first PWA that you can install on your
@@ -11,6 +15,39 @@ iPhone home screen and use behind your own VPN or on the public internet.
 
 Built for one person (or a small household) to replace Mint / Copilot / Monarch
 without paying a subscription or handing your financial data to a third party.
+
+### A note on the license
+
+Ledger is licensed under the **GNU Affero General Public License v3.0**.
+That means:
+
+- ✅ **Personal / household use**: do whatever you want with it. Run it,
+  modify it, share it with friends.
+- ✅ **Forking + modifying**: encouraged. Your fork is still AGPL.
+- ⚠ **Running it as a paid service for other people** (SaaS,
+  multi-tenant hosting, anything where someone pays to access *your*
+  instance): the AGPL's network-use clause triggers, and you must
+  release your modifications to the source code (including any private
+  patches) under AGPL too. This is by design — the project is for
+  individuals to self-host, not for corporations to repackage and resell.
+
+If AGPL doesn't work for your use case (e.g. you want to fork commercially
+without sharing your changes), please reach out and we can discuss.
+
+### A note on security
+
+This is a self-hosted app for personal use. **You are the operator of your
+deployment**, which means *you* are responsible for keeping your VPS
+patched, your SSH hardened, your firewall correct, and your secret keys
+backed up off-server. The application ships with sensible security
+defaults (allowlist-only sign-in, strict CSP, AES-256-GCM for tokens and
+notes, no client-side caching, rate-limiting, prepared statements only,
+etc.) but those defaults can only protect you if the layer underneath is
+sound. Read [SECURITY.md](SECURITY.md) before you deploy.
+
+To report a security vulnerability in the *code* (as opposed to your
+specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
+— **do not** open a public GitHub issue.
 
 ---
 
@@ -377,12 +414,19 @@ This app is designed to be exposed to the public internet safely.
   login session lives in `localStorage` (not the HTTP cache), so you stay
   signed in despite the no-cache policy.
 
-### Things to do yourself
+### Operator responsibilities
+
+This app ships with strong defaults but you, the self-hoster, are the system
+administrator. Reading [SECURITY.md](SECURITY.md) is recommended before you
+deploy. Short version:
 
 - Generate **fresh** secrets per environment — don't reuse dev secrets in production
 - Back up `ENCRYPTION_KEY` and `.backup-key` off-server (lose either and data is gone)
 - Restrict SSH to your home IP in the cloud firewall once everything works
 - Enable disk encryption at the VPS level (Linode supports this at provisioning time)
+- Keep the OS patched (`unattended-upgrades` covers most of it)
+- Review the [SECURITY.md](SECURITY.md) scope before reporting an issue,
+  and report code-level vulnerabilities **privately**, never on a public issue.
 
 ---
 
@@ -560,7 +604,34 @@ nothing in the source assumes a particular domain or owner.
 
 ## License
 
-MIT — see `LICENSE` (or treat this as MIT if you fork before that file exists).
+Licensed under the **GNU Affero General Public License v3.0** — see
+[LICENSE](LICENSE) for the full text.
+
+The short version of what this means for you:
+
+- **Self-hosting for yourself or your household**: do whatever you want.
+  Modify, fork, share with friends. The license is permissive for end users.
+- **Forking and shipping your own version**: encouraged. Your fork must
+  also be AGPL.
+- **Running it as a hosted service that other people pay to access**:
+  the AGPL's network-use clause (Section 13) triggers. You must publish
+  the *complete* corresponding source code of your modified version,
+  including any private patches, under AGPL — and you must make it
+  easy for users of your service to download it.
+
+This is intentionally chosen as a strong-copyleft license to keep the
+project free and prevent commercial repackaging without contributing
+back. If you have a use case that AGPL genuinely doesn't fit, open a
+discussion at the GitHub repo and we can talk.
+
+### Why AGPL specifically
+
+AGPL is OSI-approved and accepted by every major Linux distribution,
+unlike newer "source-available" licenses (SSPL, BUSL, Elastic v2,
+Commons Clause) which are not. It's the strongest copyleft license you
+can use while remaining unambiguously open source. Major projects in the
+same space — Mastodon, Bitwarden, Nextcloud, Plausible — use AGPL for
+the same reasons.
 
 ---
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import { plaid } from "./plaid-client.js";

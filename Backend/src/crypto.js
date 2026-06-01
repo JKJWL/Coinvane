@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import crypto from "crypto";
 
 const ALGO = "aes-256-gcm";
