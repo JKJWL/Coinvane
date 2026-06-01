@@ -9,12 +9,9 @@
 > in [NOTICE](NOTICE)) ·
 > Security policy: [SECURITY.md](SECURITY.md)
 
-A self-hosted personal finance app with bank sync via Plaid, Google Sign-In auth,
-end-to-end encrypted secrets, and a mobile-first PWA that you can install on your
-iPhone home screen and use behind your own VPN or on the public internet.
-
-Built for one person (or a small household) to replace Mint / Copilot / Monarch
-without paying a subscription or handing your financial data to a third party.
+A self-hosted personal-finance app for one person (or a small household).
+Bank sync via Plaid, transactions stored encrypted on your own server,
+mobile PWA you can install on your phone. AGPL, no telemetry, no ads.
 
 ### A note on the license
 
