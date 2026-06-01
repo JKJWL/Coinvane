@@ -117,7 +117,23 @@ export default async function (app) {
     return { queued: jobs.length, jobIds: jobs };
   });
 
-  app.post("/webhook", { config: { rawBody: true } }, async (req, reply) => {
+  // Plaid webhook — public endpoint, signature-verified inline.
+  // Per-route rate limit (300 req/min/IP) sits in front of the
+  // signature check so unbounded garbage payloads can't drain CPU
+  // through repeated JWKS lookups + JWT verifies (each failure still
+  // costs work). 300/min easily covers the legitimate Plaid burst
+  // rate during an initial-link or multi-item sync; anything beyond
+  // that is almost certainly abuse. The global 200/min on /api/*
+  // doesn't apply here because rate-limit hooks check the per-route
+  // config first when present, which is intentional: legitimate
+  // Plaid traffic shouldn't compete with normal API usage from the
+  // same proxy IP.
+  app.post("/webhook", {
+    config: {
+      rawBody: true,
+      rateLimit: { max: 300, timeWindow: "1 minute" },
+    },
+  }, async (req, reply) => {
     const headerToken = req.headers["plaid-verification"];
     try {
       await verifyPlaidWebhook(headerToken, req.rawBody);
@@ -138,6 +154,6 @@ export default async function (app) {
       const item = await queryOne("SELECT * FROM plaid_items WHERE plaid_item_id = ?", [item_id]);
       if (item) await enqueueSync({ userId: item.user_id, itemId: item.id, kind: "holdings" });
     }
-    reply.send({ ok: true });
+    return reply.send({ ok: true });
   });
 }

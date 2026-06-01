@@ -133,6 +133,10 @@ app.decorate("authenticate", async (req, reply) => {
 });
 
 // ── Production error mask — never leak stack traces ──────────────
+// Fastify 5 expects error handlers to return the reply (or a promise) in
+// every branch — without the `return`, the handler is treated as not
+// having handled the error and Fastify falls through to default
+// behaviour. Both branches return explicitly.
 app.setErrorHandler((err, req, reply) => {
   req.log.error({ err, url: req.url }, "request error");
   const code = err.statusCode && err.statusCode >= 400 && err.statusCode < 600 ? err.statusCode : 500;
@@ -141,7 +145,7 @@ app.setErrorHandler((err, req, reply) => {
   if (code >= 500 && isProd) {
     return reply.code(500).send({ error: "Internal server error" });
   }
-  reply.code(code).send({ error: err.message || "Error" });
+  return reply.code(code).send({ error: err.message || "Error" });
 });
 
 app.get("/api/health", async () => ({ ok: true, ts: new Date().toISOString() }));
