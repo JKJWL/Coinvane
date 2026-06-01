@@ -869,7 +869,7 @@ function NetWorthChart({ theme, darkMode, variant = "hero" }) {
   );
 }
 
-// ─── Mobile Spending Pulse (Mint signature card) ──────────────────────────────
+// ─── Mobile Spending Pulse (hero summary card) ────────────────────────────────
 function MobileSpendingPulse({ byCategory, cashflow, theme, darkMode }) {
   const lastMonth = cashflow?.[cashflow.length - 1];
   const thisSpend = Number(lastMonth?.spending || 0);
@@ -3605,7 +3605,7 @@ function Shell({ user, onLogout, refreshUser }) {
         </div>
       </nav>
 
-      {/* ── Mobile sticky frosted nav (Mint/iOS style) ── */}
+      {/* ── Mobile sticky frosted nav (iOS style) ── */}
       <div className={`lg:hidden sticky top-0 z-30 backdrop-blur-xl ${darkMode ? "bg-slate-950/70" : "bg-white/70"} border-b ${darkMode ? "border-slate-800/40" : "border-slate-200/50"}`}>
         {/* Dynamic Island spacer — env(safe-area-inset-top) on iPhone 15+ */}
         <div className="safe-pt" style={{ paddingTop: "max(env(safe-area-inset-top), 12px)" }}>

@@ -65,7 +65,7 @@ export function renderInviteEmail({ inviterName, link }) {
 }
 
 /**
- * Notification email — Mint-style branded digest.
+ * Notification email — branded monthly digest.
  *
  * Color-codes each notification by its `color` field:
  *   "red" / "rose"   → over budget

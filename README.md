@@ -75,7 +75,7 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 
 ### Net worth
 - **Net Worth chart** with WTD / MTD / YTD / 1M / 3M / 1Y / ALL toggle (mobile gradient hero + desktop full chart)
-- **Spending pulse** — Mint-style monthly breakdown by category
+- **Spending pulse** — compact monthly category breakdown card
 
 ### Investments
 - **Holdings, gains/losses** — brokerage syncing via Plaid
