@@ -51,19 +51,6 @@ export async function sendMail({ to, subject, html, text }) {
   return { ok: true, messageId: info.messageId };
 }
 
-export function renderInviteEmail({ inviterName, link }) {
-  return {
-    subject: `${inviterName || "Someone"} invited you to Ledger`,
-    text: `You've been invited to Ledger. Accept here: ${link}`,
-    html: `<div style="font-family:system-ui,sans-serif;max-width:520px;margin:auto;padding:24px">
-      <h2 style="color:#0f172a">You're invited to Ledger</h2>
-      <p>${inviterName ? `<strong>${inviterName}</strong> invited you` : "You've been invited"} to join.</p>
-      <p><a href="${link}" style="display:inline-block;background:#0ea5e9;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600">Accept invitation</a></p>
-      <p style="color:#64748b;font-size:13px">Or paste this link: ${link}</p>
-    </div>`,
-  };
-}
-
 /**
  * Notification email — branded monthly digest.
  *

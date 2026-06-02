@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import crypto from "crypto";
 import { OAuth2Client } from "google-auth-library";
 import { query, queryOne } from "../db.js";
 import { enqueueMail } from "../queue.js";
-import { renderInviteEmail, renderNotificationDigest, isEmailEnabled } from "../mailer.js";
+import { renderNotificationDigest, isEmailEnabled } from "../mailer.js";
 import { audit } from "../audit.js";
 
-const SIGNUP_MODE = () => process.env.SIGNUP_MODE || "invite";
+// "open" (default): any allowlisted Google account can sign up.
+// "closed": no new users — existing users may still sign in. Use after
+//           the household roster is finalised to harden the deployment.
+const SIGNUP_MODE = () => process.env.SIGNUP_MODE || "open";
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
 
@@ -38,8 +40,6 @@ async function seedCategoriesFor(userId) {
     );
   }
 }
-
-function tokenStr() { return crypto.randomBytes(32).toString("hex"); }
 
 function userPayload(u) {
   return {
@@ -106,25 +106,14 @@ export default async function (app) {
       }
       user = await queryOne("SELECT * FROM users WHERE id = ?", [user.id]);
     } else {
-      // New user — decide if signup is allowed
+      // New user — allowlist already gated entry above. Only remaining
+      // check is SIGNUP_MODE=closed (lockdown after household finalised).
       const userCount = (await queryOne("SELECT COUNT(*) AS c FROM users"))?.c || 0;
-      const mode = SIGNUP_MODE();
       let role = "user";
-      let acceptInvitationId = null;
 
       if (userCount === 0) {
         role = "admin"; // first user is always admin
-      } else if (mode === "open") {
-        // allow
-      } else if (mode === "invite") {
-        const inv = await queryOne(
-          `SELECT * FROM invitations WHERE email = ? AND accepted = FALSE AND expires_at > NOW()
-           ORDER BY created_at DESC LIMIT 1`,
-          [email]
-        );
-        if (!inv) return reply.code(403).send({ error: "No invitation found for this email" });
-        acceptInvitationId = inv.id;
-      } else {
+      } else if (SIGNUP_MODE() === "closed") {
         return reply.code(403).send({ error: "Signups are disabled" });
       }
 
@@ -132,9 +121,6 @@ export default async function (app) {
         `INSERT INTO users (email, google_id, picture, name, role) VALUES (?, ?, ?, ?, ?)`,
         [email, googleId, picture, name, role]
       );
-      if (acceptInvitationId) {
-        await query("UPDATE invitations SET accepted = TRUE WHERE id = ?", [acceptInvitationId]);
-      }
       await seedCategoriesFor(r.insertId);
       user = await queryOne("SELECT * FROM users WHERE id = ?", [r.insertId]);
     }
@@ -211,42 +197,6 @@ export default async function (app) {
               notification_email, notification_push FROM users WHERE id = ?`, [req.user.id]
     );
     return userPayload(u);
-  });
-
-  // ── Invitations (admin) ─────────────────────────────────────────
-  app.post("/invitations", { preHandler: [app.authenticate] }, async (req, reply) => {
-    if (req.user.role !== "admin") return reply.code(403).send({ error: "Admin only" });
-    const { email } = req.body || {};
-    if (!email) return reply.code(400).send({ error: "Email required" });
-
-    const token = tokenStr();
-    const expires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-    await query(
-      `INSERT INTO invitations (email, token, invited_by, expires_at) VALUES (?, ?, ?, ?)`,
-      [email, token, req.user.id, expires]
-    );
-
-    const inviter = await queryOne("SELECT name FROM users WHERE id = ?", [req.user.id]);
-    const link = `${process.env.APP_URL || ""}/`;
-    try {
-      await enqueueMail({ to: email, ...renderInviteEmail({ inviterName: inviter.name, link }) });
-    } catch (e) { req.log.warn({ err: e.message }, "invite email enqueue failed"); }
-
-    return { ok: true, token, link, expires_at: expires };
-  });
-
-  app.get("/invitations", { preHandler: [app.authenticate] }, async (req, reply) => {
-    if (req.user.role !== "admin") return reply.code(403).send({ error: "Admin only" });
-    return query(
-      `SELECT id, email, accepted, expires_at, created_at FROM invitations
-       ORDER BY created_at DESC LIMIT 100`
-    );
-  });
-
-  app.delete("/invitations/:id", { preHandler: [app.authenticate] }, async (req, reply) => {
-    if (req.user.role !== "admin") return reply.code(403).send({ error: "Admin only" });
-    await query("DELETE FROM invitations WHERE id = ?", [req.params.id]);
-    return { ok: true };
   });
 
   // ── Users (admin) ───────────────────────────────────────────────

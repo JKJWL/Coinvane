@@ -2879,15 +2879,24 @@ function BudgetsTab({ theme, darkMode, toast }) {
 const GOAL_COLORS = ["bg-emerald-500","bg-sky-500","bg-violet-500","bg-amber-500","bg-rose-500"];
 
 function GoalsTab({ theme, darkMode, toast }) {
-  const { goals, refreshAll } = useData();
-  const [form, setForm] = useState({ name: "", target: "", saved: "" });
-  const [contribFor, setContribFor] = useState(null); // {goal, amount, busy}
+  const { goals, accounts, refreshAll } = useData();
+  // mode: "add" | "withdraw" — direction of the contribution
+  const [form, setForm] = useState({ name: "", target: "", saved: "", account_id: "" });
+  const [contribFor, setContribFor] = useState(null); // {goal, amount, mode, busy}
+  const [toDelete, setToDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const submit = async (e) => {
     e.preventDefault();
     try {
-      await api.createGoal({ name: form.name, target: Number(form.target), saved: Number(form.saved || 0) });
-      setForm({ name: "", target: "", saved: "" }); refreshAll();
+      await api.createGoal({
+        name: form.name,
+        target: Number(form.target),
+        saved: form.account_id ? 0 : Number(form.saved || 0),
+        account_id: form.account_id || null,
+      });
+      setForm({ name: "", target: "", saved: "", account_id: "" });
+      refreshAll();
       toast?.("Goal created", "success");
     } catch { toast?.("Failed to create goal", "error"); }
   };
@@ -2895,17 +2904,36 @@ function GoalsTab({ theme, darkMode, toast }) {
   const contribute = async (e) => {
     e.preventDefault();
     if (!contribFor) return;
-    const amt = Number(contribFor.amount);
-    if (!Number.isFinite(amt) || amt <= 0) return toast?.("Enter a positive amount", "error");
+    const raw = Number(contribFor.amount);
+    if (!Number.isFinite(raw) || raw <= 0) return toast?.("Enter a positive amount", "error");
+    const signed = contribFor.mode === "withdraw" ? -raw : raw;
     setContribFor({ ...contribFor, busy: true });
     try {
-      await api.contributeGoal(contribFor.goal.id, amt);
-      toast?.(`Added ${fmt(amt)} to ${contribFor.goal.name}`, "success");
+      await api.contributeGoal(contribFor.goal.id, signed);
+      toast?.(
+        `${contribFor.mode === "withdraw" ? "Withdrew" : "Added"} ${fmt(raw)} ${contribFor.mode === "withdraw" ? "from" : "to"} ${contribFor.goal.name}`,
+        "success"
+      );
       setContribFor(null);
       refreshAll();
     } catch (e) {
       toast?.("Failed: " + (e.message || ""), "error");
       setContribFor({ ...contribFor, busy: false });
+    }
+  };
+
+  const performDelete = async () => {
+    if (!toDelete) return;
+    setDeleting(true);
+    try {
+      await api.deleteGoal(toDelete.id);
+      toast?.("Goal deleted", "success");
+      setToDelete(null);
+      refreshAll();
+    } catch (e) {
+      toast?.("Failed: " + (e.message || ""), "error");
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -2918,17 +2946,31 @@ function GoalsTab({ theme, darkMode, toast }) {
         <input type="number" value={form.target} onChange={e => setForm({ ...form, target: e.target.value })}
           placeholder="Target" required
           className={`w-32 px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`} />
-        <input type="number" value={form.saved} onChange={e => setForm({ ...form, saved: e.target.value })}
-          placeholder="Saved"
-          className={`w-32 px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`} />
+        {!form.account_id && (
+          <input type="number" value={form.saved} onChange={e => setForm({ ...form, saved: e.target.value })}
+            placeholder="Saved"
+            className={`w-28 px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`} />
+        )}
+        <select value={form.account_id}
+          onChange={e => setForm({ ...form, account_id: e.target.value })}
+          title="Link to a bank account (optional). If set, progress auto-updates from the account balance."
+          className={`min-w-44 px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`}>
+          <option value="">Manual (no linked account)</option>
+          {accounts.map(a => (
+            <option key={a.id} value={a.id}>Linked · {a.name}</option>
+          ))}
+        </select>
         <motion.button whileTap={{ scale: 0.97 }} type="submit"
           className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold">Add</motion.button>
       </form>
       <div className="grid md:grid-cols-2 gap-4">
         {goals.map((g, i) => {
-          const pct = Math.min(100, (Number(g.saved) / Number(g.target)) * 100);
+          const saved = Number(g.saved);
+          const target = Number(g.target);
+          const pct = Math.max(0, Math.min(100, (saved / target) * 100));
           const bg = GOAL_COLORS[i % GOAL_COLORS.length];
-          const completed = Number(g.saved) >= Number(g.target);
+          const completed = saved >= target;
+          const linked = g.accountId != null;
           return (
             <motion.div key={g.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
               className={`${theme.surface} border ${theme.border} rounded-2xl p-5`}>
@@ -2937,33 +2979,49 @@ function GoalsTab({ theme, darkMode, toast }) {
                   <div className={`w-10 h-10 rounded-xl ${bg} flex items-center justify-center flex-shrink-0`}>
                     <Target className="w-5 h-5 text-white" />
                   </div>
-                  <div className="font-semibold truncate">{g.name}</div>
+                  <div className="min-w-0">
+                    <div className="font-semibold truncate">{g.name}</div>
+                    {linked && (
+                      <div className={`text-[11px] ${theme.textSubtle} flex items-center gap-1 mt-0.5`}>
+                        <Link2 className="w-3 h-3" />
+                        <span className="truncate">{g.accountName || "Linked account"}</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <div className="flex items-center gap-1 flex-shrink-0">
-                  <motion.button whileTap={{ scale: 0.92 }}
-                    onClick={() => setContribFor({ goal: g, amount: "" })}
-                    disabled={completed}
-                    title={completed ? "Goal already reached" : "Add money"}
-                    className="bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold px-2.5 py-1.5 rounded-lg flex items-center gap-1 disabled:opacity-40">
-                    <Plus className="w-3 h-3" /> Add
-                  </motion.button>
-                  <button onClick={async () => {
-                    if (!window.confirm(`Delete goal "${g.name}"?`)) return;
-                    await api.deleteGoal(g.id); refreshAll(); toast?.("Goal deleted");
-                  }}>
+                  {!linked && (
+                    <motion.button whileTap={{ scale: 0.92 }}
+                      onClick={() => setContribFor({ goal: g, amount: "", mode: "add" })}
+                      disabled={completed}
+                      title={completed ? "Goal already reached" : "Add money"}
+                      className="bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold px-2.5 py-1.5 rounded-lg flex items-center gap-1 disabled:opacity-40">
+                      <Plus className="w-3 h-3" /> Add
+                    </motion.button>
+                  )}
+                  {!linked && (
+                    <motion.button whileTap={{ scale: 0.92 }}
+                      onClick={() => setContribFor({ goal: g, amount: "", mode: "withdraw" })}
+                      disabled={saved <= 0}
+                      title={saved <= 0 ? "Nothing to withdraw" : "Withdraw money"}
+                      className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg flex items-center gap-1 disabled:opacity-40 border ${theme.border} ${theme.hover}`}>
+                      <TrendingDown className="w-3 h-3" /> Withdraw
+                    </motion.button>
+                  )}
+                  <button onClick={() => setToDelete(g)} title="Delete goal">
                     <Trash2 className={`w-4 h-4 ${theme.textSubtle} hover:text-rose-500 transition-colors`} />
                   </button>
                 </div>
               </div>
               <div className={`flex justify-between text-sm mb-2 ${theme.textMuted}`}>
-                <span>{fmt(g.saved)}</span>
-                <span className="font-medium">{fmt(g.target)}</span>
+                <span>{fmt(saved)}</span>
+                <span className="font-medium">{fmt(target)}</span>
               </div>
               <ProgressBar value={pct} color={bg} darkMode={darkMode} />
               <div className={`flex items-center justify-between mt-2`}>
                 <span className={`text-xs ${theme.textSubtle}`}>
                   {Math.round(pct)}% complete
-                  {!completed && <span className="ml-1">· {fmt(Number(g.target) - Number(g.saved))} to go</span>}
+                  {!completed && saved < target && <span className="ml-1">· {fmt(target - saved)} to go</span>}
                 </span>
                 {g.deadline && (
                   <span className={`text-xs ${theme.textSubtle} flex items-center gap-1`}>
@@ -2976,9 +3034,12 @@ function GoalsTab({ theme, darkMode, toast }) {
         })}
       </div>
 
-      {/* Contribute sheet */}
+      {/* Contribute / Withdraw sheet */}
       <Sheet open={!!contribFor} onClose={() => setContribFor(null)}
-        title={`Add to ${contribFor?.goal?.name || ""}`} theme={theme}>
+        title={contribFor?.mode === "withdraw"
+          ? `Withdraw from ${contribFor?.goal?.name || ""}`
+          : `Add to ${contribFor?.goal?.name || ""}`}
+        theme={theme}>
         {contribFor && (
           <form onSubmit={contribute} className="space-y-4">
             <div className="text-center py-2">
@@ -2986,8 +3047,25 @@ function GoalsTab({ theme, darkMode, toast }) {
               <div className="text-2xl font-bold mt-1">{fmt(contribFor.goal.saved)}</div>
               <div className={`text-xs ${theme.textSubtle} mt-0.5`}>of {fmt(contribFor.goal.target)}</div>
             </div>
+            {/* Mode toggle — flip between Add and Withdraw without closing
+                the sheet. */}
+            <div className={`flex p-1 rounded-xl ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+              {["add", "withdraw"].map(m => (
+                <button type="button" key={m}
+                  onClick={() => setContribFor({ ...contribFor, mode: m })}
+                  className={`flex-1 py-2 rounded-lg text-sm font-semibold capitalize transition ${
+                    contribFor.mode === m
+                      ? (darkMode ? "bg-slate-900 shadow text-emerald-400" : "bg-white shadow text-emerald-600")
+                      : theme.textMuted
+                  }`}>
+                  {m}
+                </button>
+              ))}
+            </div>
             <div>
-              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Add amount</label>
+              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>
+                {contribFor.mode === "withdraw" ? "Withdraw amount" : "Add amount"}
+              </label>
               <input type="number" min="0.01" step="0.01" required autoFocus
                 value={contribFor.amount}
                 onChange={e => setContribFor({ ...contribFor, amount: e.target.value })}
@@ -2999,7 +3077,7 @@ function GoalsTab({ theme, darkMode, toast }) {
                 <button type="button" key={amt}
                   onClick={() => setContribFor({ ...contribFor, amount: String(amt) })}
                   className={`px-3 py-1.5 rounded-full text-xs font-semibold border ${theme.border} ${theme.hover}`}>
-                  +{fmt(amt)}
+                  {contribFor.mode === "withdraw" ? "−" : "+"}{fmt(amt)}
                 </button>
               ))}
             </div>
@@ -3009,13 +3087,30 @@ function GoalsTab({ theme, darkMode, toast }) {
                 Cancel
               </button>
               <motion.button whileTap={{ scale: 0.97 }} type="submit" disabled={contribFor.busy}
-                className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
-                {contribFor.busy ? "Adding…" : "Add to goal"}
+                className={`flex-1 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60 ${
+                  contribFor.mode === "withdraw"
+                    ? "bg-rose-500 hover:bg-rose-600"
+                    : "bg-emerald-500 hover:bg-emerald-600"
+                }`}>
+                {contribFor.busy
+                  ? "Working…"
+                  : contribFor.mode === "withdraw" ? "Withdraw" : "Add to goal"}
               </motion.button>
             </div>
           </form>
         )}
       </Sheet>
+
+      <ConfirmDialog
+        open={!!toDelete}
+        onCancel={() => !deleting && setToDelete(null)}
+        onConfirm={performDelete}
+        theme={theme} darkMode={darkMode}
+        busy={deleting}
+        title="Delete this goal?"
+        message={toDelete && `"${toDelete.name}" will be removed. ${toDelete.accountId ? "The linked bank account is unaffected." : "Your saved progress will be lost."}`}
+        confirmLabel="Delete goal"
+      />
     </div>
   );
 }
@@ -3116,6 +3211,8 @@ function NotesTab({ theme, darkMode, toast }) {
 // ─── Users Panel ──────────────────────────────────────────────────────────────
 function UsersPanel({ currentUser, theme, darkMode, toast }) {
   const [users, setUsers] = useState([]);
+  const [toRemove, setToRemove] = useState(null); // user pending delete
+  const [removing, setRemoving] = useState(false);
   const load = async () => {
     try { setUsers(await api.listUsers()); } catch {}
   };
@@ -3129,19 +3226,30 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
     );
   }
 
+  const performRemove = async () => {
+    if (!toRemove) return;
+    setRemoving(true);
+    try {
+      await api.deleteUser(toRemove.id);
+      toast?.(`Removed ${toRemove.name || toRemove.email}`, "success");
+      setToRemove(null);
+      load();
+    } catch (e) {
+      toast?.("Failed: " + (e.message || ""), "error");
+    } finally {
+      setRemoving(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
-      {/* Explainer card — replaces the disabled invite form */}
       <div className={`${theme.surface} rounded-2xl border ${theme.border} p-5`}>
         <h3 className="font-semibold mb-2">Adding new users</h3>
         <p className={`text-sm ${theme.textMuted} leading-relaxed`}>
-          New users sign in with their own Google account. To grant access, add
-          their Gmail address to the <code className={`px-1.5 py-0.5 rounded ${darkMode ? "bg-slate-800" : "bg-slate-100"} text-[12px]`}>ALLOWED_EMAILS</code> environment variable on
-          the server (and to the Test Users list in your Google Cloud OAuth
-          consent screen), then restart the backend.
-        </p>
-        <p className={`text-xs ${theme.textSubtle} mt-2`}>
-          Each Google account creates its own isolated user record — fresh data, no shared accounts.
+          Add the Gmail address to <code className={`px-1.5 py-0.5 rounded ${darkMode ? "bg-slate-800" : "bg-slate-100"} text-[12px]`}>ALLOWED_EMAILS</code> in
+          the server environment and restart the backend. The user then signs
+          in with their own Google account — each account gets its own
+          isolated data.
         </p>
       </div>
 
@@ -3169,10 +3277,7 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
                   {u.role}
                 </span>
                 {u.id !== currentUser.id && (
-                  <button onClick={async () => {
-                    if (!window.confirm(`Remove ${u.name || u.email}? Their data will be deleted.`)) return;
-                    await api.deleteUser(u.id); load(); toast?.("User removed");
-                  }}>
+                  <button onClick={() => setToRemove(u)}>
                     <Trash2 className={`w-4 h-4 ${theme.textSubtle} hover:text-rose-500 transition-colors`} />
                   </button>
                 )}
@@ -3181,6 +3286,17 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
           ))}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={!!toRemove}
+        onCancel={() => !removing && setToRemove(null)}
+        onConfirm={performRemove}
+        theme={theme} darkMode={darkMode}
+        busy={removing}
+        title="Remove this user?"
+        message={toRemove && `${toRemove.name || toRemove.email} will be deleted along with all their accounts, transactions, budgets, goals, and notes. This cannot be undone.`}
+        confirmLabel="Remove user"
+      />
     </div>
   );
 }

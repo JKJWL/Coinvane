@@ -45,9 +45,6 @@ export const api = {
   // admin
   listUsers: () => request("GET", "/auth/users"),
   deleteUser: (id) => request("DELETE", `/auth/users/${id}`),
-  listInvitations: () => request("GET", "/auth/invitations"),
-  createInvitation: (email) => request("POST", "/auth/invitations", { email }),
-  deleteInvitation: (id) => request("DELETE", `/auth/invitations/${id}`),
 
   // accounts
   getAccounts: () => request("GET", "/accounts"),

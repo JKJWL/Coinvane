@@ -164,9 +164,18 @@ const SCHEMA = [
     deadline DATE,
     icon VARCHAR(64) DEFAULT 'Target',
     color VARCHAR(16) DEFAULT '#0ea5e9',
+    account_id INT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE SET NULL,
+    INDEX idx_goal_account (account_id)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Bank-account-linked goals: when set, the goal's "saved" amount is
+  // computed live from the linked account's current balance rather than
+  // tracked via manual contributions. ON DELETE SET NULL so unlinking
+  // an account just detaches the goal instead of cascading.
+  `ALTER TABLE goals ADD COLUMN IF NOT EXISTS account_id INT NULL`,
 
   `CREATE TABLE IF NOT EXISTS notes (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -223,19 +232,6 @@ const SCHEMA = [
     INDEX idx_account (account_id)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
-  `CREATE TABLE IF NOT EXISTS invitations (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    email VARCHAR(255) NOT NULL,
-    token VARCHAR(128) UNIQUE NOT NULL,
-    invited_by INT,
-    accepted BOOLEAN DEFAULT FALSE,
-    expires_at TIMESTAMP NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (invited_by) REFERENCES users(id) ON DELETE SET NULL,
-    INDEX idx_token (token),
-    INDEX idx_email (email)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-
   `CREATE TABLE IF NOT EXISTS audit_log (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NULL,
@@ -266,6 +262,13 @@ const SOFT_SCHEMA = [
   // The composite key was created by the CREATE TABLE; if the old index also
   // exists (from a pre-upgrade install), drop it.
   `ALTER TABLE budgets DROP INDEX uq_user_cat`,
+  // Older deployments got the goals.account_id column added by the
+  // idempotent ALTER above but without the FK / index — add them here.
+  // Both fail silently on fresh DBs where the CREATE TABLE already
+  // included them.
+  `ALTER TABLE goals ADD INDEX idx_goal_account (account_id)`,
+  `ALTER TABLE goals ADD CONSTRAINT fk_goals_account
+     FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE SET NULL`,
 ];
 
 async function run() {
