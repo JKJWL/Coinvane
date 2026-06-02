@@ -1871,7 +1871,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
                 <div className={`text-3xl font-bold mt-2 ${isIncome ? "text-emerald-500" : ""}`}>
                   {isIncome ? "+" : "−"}{fmt(Math.abs(Number(detail.amount)))}
                 </div>
-                {detail.pending && (
+                {!!detail.pending && (
                   <p className={`text-[11px] ${theme.textSubtle} mt-2 max-w-[260px]`}>
                     Authorized but not yet settled by your bank. The amount or
                     merchant name may change once it posts.
