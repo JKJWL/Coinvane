@@ -159,15 +159,3 @@ export function renderNotificationDigest({ userName, notifications }) {
 </body></html>`,
   };
 }
-
-export function renderPasswordResetEmail({ link }) {
-  return {
-    subject: "Reset your Ledger password",
-    text: `Reset your password: ${link}`,
-    html: `<div style="font-family:system-ui,sans-serif;max-width:520px;margin:auto;padding:24px">
-      <h2>Reset your password</h2>
-      <p><a href="${link}" style="display:inline-block;background:#0ea5e9;color:white;padding:12px 24px;border-radius:8px;text-decoration:none">Reset password</a></p>
-      <p style="color:#64748b;font-size:13px">If you didn't request this, ignore this email.</p>
-    </div>`,
-  };
-}

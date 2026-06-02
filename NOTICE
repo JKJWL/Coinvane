@@ -26,7 +26,6 @@ under `node_modules/`.
   @fastify/rate-limit     MIT      https://github.com/fastify/fastify-rate-limit
   fastify-raw-body        MIT      https://github.com/Eomm/fastify-raw-body
   mysql2                  MIT      https://github.com/sidorares/node-mysql2
-  bcrypt                  MIT      https://github.com/kelektiv/node.bcrypt.js
   google-auth-library     Apache-2.0  https://github.com/googleapis/google-auth-library-nodejs
   plaid                   MIT      https://github.com/plaid/plaid-node
   jsonwebtoken            MIT      https://github.com/auth0/node-jsonwebtoken

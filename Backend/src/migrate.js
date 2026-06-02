@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import "dotenv/config";
-import bcrypt from "bcrypt";
 import { pool, query, queryOne } from "./db.js";
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS users (
     id INT AUTO_INCREMENT PRIMARY KEY,
     email VARCHAR(255) UNIQUE NOT NULL,
-    password_hash VARCHAR(255) NULL,
     google_id VARCHAR(64) UNIQUE,
     picture VARCHAR(512),
     name VARCHAR(255),
@@ -25,7 +23,6 @@ const SCHEMA = [
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id VARCHAR(64) UNIQUE`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS picture VARCHAR(512)`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS dark_mode BOOLEAN DEFAULT FALSE`,
-  `ALTER TABLE users MODIFY COLUMN password_hash VARCHAR(255) NULL`,
   // Income tracker (Feature 4)
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS income_period VARCHAR(32) DEFAULT 'monthly'`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS income_period_days INT NULL`,
@@ -239,17 +236,6 @@ const SCHEMA = [
     INDEX idx_email (email)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
-  `CREATE TABLE IF NOT EXISTS password_resets (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    user_id INT NOT NULL,
-    token VARCHAR(128) UNIQUE NOT NULL,
-    used BOOLEAN DEFAULT FALSE,
-    expires_at TIMESTAMP NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    INDEX idx_token (token)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-
   `CREATE TABLE IF NOT EXISTS audit_log (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NULL,
@@ -317,29 +303,6 @@ async function run() {
       );
     }
     console.log(`Backfilled budget_audit: ${orphans.length} budget(s).`);
-  }
-
-  const email = process.env.INITIAL_USER_EMAIL;
-  const password = process.env.INITIAL_USER_PASSWORD;
-  if (email && password) {
-    const existing = await queryOne("SELECT id FROM users WHERE email = ?", [email]);
-    if (!existing) {
-      const hash = await bcrypt.hash(password, 12);
-      const result = await query(
-        "INSERT INTO users (email, password_hash, name, role) VALUES (?, ?, ?, 'admin')",
-        [email, hash, email.split("@")[0]]
-      );
-      const userId = result.insertId;
-      for (const [name, color, icon] of DEFAULT_CATEGORIES) {
-        await query(
-          "INSERT IGNORE INTO categories (user_id, name, color, icon, custom) VALUES (?, ?, ?, ?, FALSE)",
-          [userId, name, color, icon]
-        );
-      }
-      console.log(`Created admin user: ${email}`);
-    } else {
-      console.log(`Admin user already exists: ${email}`);
-    }
   }
 
   await pool.end();
