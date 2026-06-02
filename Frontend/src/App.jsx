@@ -2526,8 +2526,6 @@ function BudgetsTab({ theme, darkMode, toast }) {
     }));
   }, [viewingHistory, historyIndex, history, trackers]);
 
-  const displayBudgets = viewingHistory ? historicalBudgets || [] : ordered;
-
   // Reset expansion when switching periods so we don't show stale txns
   useEffect(() => { setExpandedId(null); setBudgetTxns({}); }, [historyIndex]);
 
@@ -2640,63 +2638,98 @@ function BudgetsTab({ theme, darkMode, toast }) {
 
       {/* Reorderable budgets — or read-only past period view.
           ─────────────────────────────────────────────────────
-          IMPORTANT: we always render the same Reorder.Group structure
-          regardless of view. Conditionally swapping Reorder.Group for a
-          plain <div> when entering history view was the actual root
-          cause of the "blank tabs after viewing history" bug:
-          framer-motion's Reorder.Group registers global layout-
-          projection nodes, and unmounting it mid-session (instead of on
-          BudgetsTab unmount) left orphan projection state that froze
-          motion components on other tabs at their initial state — they
-          rendered at opacity:0 with content fully mounted but
-          invisible. By keeping Reorder.Group mounted across the
-          current↔history transition and only flipping dragListener +
-          readOnly, projection state stays clean. The group only
-          unmounts when BudgetsTab itself unmounts, which happens
-          cleanly on tab switch. */}
-      {displayBudgets.length === 0 ? (
+          The history view is rendered as a COMPLETELY SEPARATE subtree
+          of plain BudgetCards (no Reorder.Group involvement). The
+          current-period Reorder.Group below stays mounted with the same
+          `values={ordered}` prop the whole time and just gets CSS-hidden
+          when the user is in history view.
+
+          Why this matters: every previous structural attempt either
+          unmounted Reorder.Group (the original 7acf64a bug — leaves
+          orphan projection nodes in framer-motion's global tracker and
+          freezes motion components on other tabs at opacity:0), or
+          mounted it with empty values, or transitioned its `values`
+          from one set of object references to a totally different set
+          (current → historical), which framer-motion's projection
+          reconciler treats as a mass unmount+remount and corrupts state
+          the same way. This structure does none of those things:
+          Reorder.Group is invariant — same component, same `values`
+          identity, same children — across the whole BudgetsTab session.
+          It only unmounts when BudgetsTab itself unmounts on tab
+          switch.
+
+          The empty-state card for the CURRENT period (fresh user with
+          no budgets) is preserved as the safe original path —
+          Reorder.Group is simply not mounted in that case. Mounting
+          Reorder.Group with empty values from the start was its own
+          source of corruption in commit 7ceb435 (reverted), so we
+          keep the established "don't mount when ordered=[]" pattern. */}
+
+      {/* Current period empty state — only when not viewing history.
+          Reorder.Group is intentionally not mounted in this case. */}
+      {!viewingHistory && ordered.length === 0 && (
         <div className={`${theme.surface} border-2 border-dashed ${darkMode ? "border-slate-700" : "border-slate-300"} rounded-2xl p-12 text-center`}>
           <PieChartIcon className={`w-12 h-12 ${theme.textSubtle} mx-auto mb-3`} />
           <p className={`${theme.textMuted} mb-4 text-sm`}>
-            {viewingHistory
-              ? "No budgets to show for this period."
-              : "No budgets yet. Track spending by category or cap credit-card usage."}
+            No budgets yet. Track spending by category or cap credit-card usage.
           </p>
-          {!viewingHistory && (
-            <motion.button whileTap={{ scale: 0.97 }}
-              onClick={() => { resetForm(); setShowAdd(true); }}
-              className="bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm font-semibold">
-              Create your first budget
-            </motion.button>
-          )}
+          <motion.button whileTap={{ scale: 0.97 }}
+            onClick={() => { resetForm(); setShowAdd(true); }}
+            className="bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm font-semibold">
+            Create your first budget
+          </motion.button>
         </div>
-      ) : (
-        <Reorder.Group axis="y"
-          values={displayBudgets}
-          onReorder={viewingHistory ? () => {} : onReorder}
-          className="space-y-3">
-          {displayBudgets.map(b => {
-            // History view = drag disabled + edit/delete hidden + no
-            // grab cursor. Same component tree as current view, just
-            // with locked-down interactions.
-            const lockDrag = viewingHistory || reorderLocked;
-            return (
-              <Reorder.Item key={b.id} value={b}
-                dragListener={!lockDrag}
-                whileDrag={{ scale: 1.02, zIndex: 50 }}
-                className={lockDrag ? "" : "cursor-grab active:cursor-grabbing touch-none"}>
-                <BudgetCard b={b} theme={theme} darkMode={darkMode}
-                  reorderLocked={lockDrag}
-                  readOnly={viewingHistory}
-                  expanded={expandedId === b.id}
-                  transactions={budgetTxns[txCacheKey(b)]}
-                  onToggleExpand={() => toggleExpand(b)}
-                  onEdit={viewingHistory ? undefined : () => openEdit(b)}
-                  onDelete={viewingHistory ? undefined : () => deleteBudget(b)} />
-              </Reorder.Item>
-            );
-          })}
-        </Reorder.Group>
+      )}
+
+      {/* Current period Reorder.Group. Always rendered while ordered
+          has items, just CSS-hidden when the user is in history view
+          so its framer-motion projection state is never disturbed
+          mid-session. The `values` prop is permanently `ordered` —
+          history view does NOT rebind it to snapshot data. */}
+      {ordered.length > 0 && (
+        <div className={viewingHistory ? "hidden" : ""}>
+          <Reorder.Group axis="y"
+            values={ordered}
+            onReorder={onReorder}
+            className="space-y-3">
+            {ordered.map(b => {
+              const lockDrag = reorderLocked;
+              return (
+                <Reorder.Item key={b.id} value={b}
+                  dragListener={!lockDrag}
+                  whileDrag={{ scale: 1.02, zIndex: 50 }}
+                  className={lockDrag ? "" : "cursor-grab active:cursor-grabbing touch-none"}>
+                  <BudgetCard b={b} theme={theme} darkMode={darkMode}
+                    reorderLocked={lockDrag}
+                    readOnly={false}
+                    expanded={expandedId === b.id}
+                    transactions={budgetTxns[txCacheKey(b)]}
+                    onToggleExpand={() => toggleExpand(b)}
+                    onEdit={() => openEdit(b)}
+                    onDelete={() => deleteBudget(b)} />
+                </Reorder.Item>
+              );
+            })}
+          </Reorder.Group>
+        </div>
+      )}
+
+      {/* History view — plain BudgetCards in a regular div, completely
+          outside Reorder.Group. With the adeaaa9 dropdown filter, the
+          user can't navigate to an empty past period, so historicalBudgets
+          is always populated here. Defensive `.length > 0` guard just in
+          case some edge case slips through. */}
+      {viewingHistory && (historicalBudgets || []).length > 0 && (
+        <div className="space-y-3">
+          {historicalBudgets.map(b => (
+            <BudgetCard key={b.id} b={b} theme={theme} darkMode={darkMode}
+              reorderLocked={true}
+              readOnly={true}
+              expanded={expandedId === b.id}
+              transactions={budgetTxns[txCacheKey(b)]}
+              onToggleExpand={() => toggleExpand(b)} />
+          ))}
+        </div>
       )}
 
       {/* Zero-budget summary */}
