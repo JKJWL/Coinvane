@@ -2148,32 +2148,51 @@ function BudgetHistoryDropdown({ theme, darkMode, history, open, onOpen, onClose
             </div>
             {!history ? (
               <div className={`px-3 py-4 text-xs ${theme.textSubtle} text-center`}>Loading…</div>
-            ) : history.length === 0 ? (
-              <div className={`px-3 py-4 text-xs ${theme.textSubtle} text-center`}>No periods yet</div>
-            ) : (
-              <div className="max-h-80 overflow-y-auto py-1">
-                {/* Current first (last in array since chronological) */}
-                {history.slice().reverse().map((p, revIdx) => {
-                  const idx = history.length - 1 - revIdx;
-                  const isPicked = historyIndex === idx
-                    || (historyIndex === null && p.isCurrent);
-                  return (
-                    <button key={p.periodStart} onClick={() => onPick(p.isCurrent ? null : idx)}
-                      className={`w-full text-left px-3 py-2 ${theme.hover} flex items-center justify-between gap-2 ${isPicked ? "bg-emerald-500/10" : ""}`}>
-                      <div className="min-w-0">
-                        <div className={`text-sm font-medium ${isPicked ? "text-emerald-500" : ""}`}>
-                          {p.isCurrent ? "Current" : fmtRange(p.periodStart, p.periodEnd)}
+            ) : (() => {
+              // Hide PAST periods that had zero budgets — navigating to one
+              // currently triggers a framer-motion projection-corruption bug
+              // (empty displayBudgets unmounts Reorder.Group, blanking
+              // motion components on every other tab). Users with periods
+              // that pre-date their first budget create can have many
+              // empty past entries; without this filter the dropdown is
+              // mostly landmines. The current period is always shown
+              // regardless, since that's the active view, not a navigation
+              // target.
+              const visible = history
+                .map((p, idx) => ({ p, idx }))
+                .filter(({ p }) => p.isCurrent || p.budgets.length > 0);
+              if (visible.length === 0) {
+                return (
+                  <div className={`px-3 py-4 text-xs ${theme.textSubtle} text-center`}>No periods yet</div>
+                );
+              }
+              return (
+                <div className="max-h-80 overflow-y-auto py-1">
+                  {/* Current first (last in array since chronological).
+                      Iterate over the filtered set but keep each entry's
+                      ORIGINAL index so onPick still maps to the right
+                      slot in BudgetsTab's history[] state. */}
+                  {visible.slice().reverse().map(({ p, idx }) => {
+                    const isPicked = historyIndex === idx
+                      || (historyIndex === null && p.isCurrent);
+                    return (
+                      <button key={p.periodStart} onClick={() => onPick(p.isCurrent ? null : idx)}
+                        className={`w-full text-left px-3 py-2 ${theme.hover} flex items-center justify-between gap-2 ${isPicked ? "bg-emerald-500/10" : ""}`}>
+                        <div className="min-w-0">
+                          <div className={`text-sm font-medium ${isPicked ? "text-emerald-500" : ""}`}>
+                            {p.isCurrent ? "Current" : fmtRange(p.periodStart, p.periodEnd)}
+                          </div>
+                          <div className={`text-[10px] ${theme.textSubtle}`}>
+                            Income {fmt(p.income)} · {p.budgets.length} budget{p.budgets.length !== 1 ? "s" : ""}
+                          </div>
                         </div>
-                        <div className={`text-[10px] ${theme.textSubtle}`}>
-                          Income {fmt(p.income)} · {p.budgets.length} budget{p.budgets.length !== 1 ? "s" : ""}
-                        </div>
-                      </div>
-                      {isPicked && <Check className="w-4 h-4 text-emerald-500 flex-shrink-0" />}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+                        {isPicked && <Check className="w-4 h-4 text-emerald-500 flex-shrink-0" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })()}
           </motion.div>
         )}
       </AnimatePresence>
