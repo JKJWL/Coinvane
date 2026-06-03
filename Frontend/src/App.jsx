@@ -715,12 +715,12 @@ function SidebarGroup({ type, label, icon: Icon, accounts, theme }) {
 
 // ─── Net Worth Chart (with MTD/YTD/1M/3M/1Y/ALL selector) ────────────────────
 const NET_PERIODS = [
+  { id: "all", label: "ALL" },
   { id: "mtd", label: "MTD" },
   { id: "ytd", label: "YTD" },
   { id: "1m",  label: "1M"  },
   { id: "3m",  label: "3M"  },
   { id: "1y",  label: "1Y"  },
-  { id: "all", label: "ALL" },
 ];
 
 function NetWorthChart({ theme, darkMode, variant = "hero" }) {
