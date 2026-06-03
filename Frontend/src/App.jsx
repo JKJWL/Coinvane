@@ -2800,8 +2800,21 @@ function BudgetsTab({ theme, darkMode, toast }) {
         </div>
       )}
 
-      {/* Zero-budget summary */}
-      <ZeroBudgetSummary zb={trackers?.zeroBudget} theme={theme} darkMode={darkMode} />
+      {/* Zero-budget summary — mirrors the income tracker. In history view,
+          income comes from the snapshot and allocated is the sum of the
+          snapshotted budget caps for that period, so the bar reflects the
+          past balance rather than today's. */}
+      <ZeroBudgetSummary
+        zb={viewingHistory && history?.[historyIndex]
+          ? (() => {
+              const snap = history[historyIndex];
+              const income = Number(snap.income || 0);
+              const allocated = (snap.budgets || [])
+                .reduce((s, b) => s + Number(b.amount || 0), 0);
+              return { income, allocated, remaining: income - allocated };
+            })()
+          : trackers?.zeroBudget}
+        theme={theme} darkMode={darkMode} />
 
       {/* Tracker period sheet */}
       <Sheet open={!!trackerSheet} onClose={() => setTrackerSheet(null)}
