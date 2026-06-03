@@ -26,10 +26,16 @@ import {
 const PERIODS = ["weekly","biweekly","semimonthly","monthly","yearly","custom"];
 
 async function sumIncomeInWindow(userId, startStr, endStr) {
+  // Credit-account positive entries (refunds, payments made to the card)
+  // aren't real income, so they're excluded — matches the same posture
+  // category budgets take with credit-account expenses.
   const row = await queryOne(
-    `SELECT COALESCE(SUM(amount), 0) AS total
-     FROM transactions
-     WHERE user_id = ? AND amount > 0 AND date >= ? AND date < ?`,
+    `SELECT COALESCE(SUM(t.amount), 0) AS total
+     FROM transactions t
+     LEFT JOIN accounts a ON a.id = t.account_id
+     WHERE t.user_id = ? AND t.amount > 0
+       AND t.date >= ? AND t.date < ?
+       AND (a.type IS NULL OR a.type <> 'credit')`,
     [userId, startStr, endStr]
   );
   return Number(row.total) || 0;

@@ -98,23 +98,36 @@ export default async function (app) {
     const { from, to } = req.query;
     const params = [req.user.id];
     let dateClause = "";
-    if (from) { dateClause += " AND date >= ?"; params.push(from); }
-    if (to)   { dateClause += " AND date <= ?"; params.push(to); }
+    if (from) { dateClause += " AND t.date >= ?"; params.push(from); }
+    if (to)   { dateClause += " AND t.date <= ?"; params.push(to); }
+    // Credit-account expenses excluded — consistent with category budgets and
+    // the income/cashflow rollups. Credit purchases get tallied via the
+    // credit-usage tracker, not category totals.
     return query(
-      `SELECT category, SUM(ABS(amount)) AS total, COUNT(*) AS count
-       FROM transactions WHERE user_id = ? AND amount < 0 ${dateClause}
-       GROUP BY category ORDER BY total DESC`,
+      `SELECT t.category, SUM(ABS(t.amount)) AS total, COUNT(*) AS count
+       FROM transactions t
+       LEFT JOIN accounts a ON a.id = t.account_id
+       WHERE t.user_id = ? AND t.amount < 0
+         AND (a.type IS NULL OR a.type <> 'credit')
+         ${dateClause}
+       GROUP BY t.category ORDER BY total DESC`,
       params
     );
   });
 
   app.get("/cashflow", async (req) => {
+    // Credit-card transactions are excluded so the dashboard income/spending
+    // bars line up with the budget + income trackers, all of which treat
+    // credit accounts as their own world (see budgets.js for the same rule).
     return query(
-      `SELECT DATE_FORMAT(date, '%Y-%m') AS month,
-              SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS income,
-              SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) AS spending
-       FROM transactions WHERE user_id = ?
-         AND date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
+      `SELECT DATE_FORMAT(t.date, '%Y-%m') AS month,
+              SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END) AS income,
+              SUM(CASE WHEN t.amount < 0 THEN ABS(t.amount) ELSE 0 END) AS spending
+       FROM transactions t
+       LEFT JOIN accounts a ON a.id = t.account_id
+       WHERE t.user_id = ?
+         AND t.date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
+         AND (a.type IS NULL OR a.type <> 'credit')
        GROUP BY month ORDER BY month`,
       [req.user.id]
     );

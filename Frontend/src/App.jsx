@@ -713,9 +713,8 @@ function SidebarGroup({ type, label, icon: Icon, accounts, theme }) {
   );
 }
 
-// ─── Net Worth Chart (with WTD/MTD/YTD/1M/3M/1Y/ALL selector) ────────────────
+// ─── Net Worth Chart (with MTD/YTD/1M/3M/1Y/ALL selector) ────────────────────
 const NET_PERIODS = [
-  { id: "wtd", label: "WTD" },
   { id: "mtd", label: "MTD" },
   { id: "ytd", label: "YTD" },
   { id: "1m",  label: "1M"  },
@@ -727,7 +726,7 @@ const NET_PERIODS = [
 function NetWorthChart({ theme, darkMode, variant = "hero" }) {
   // variant "hero"  → mobile-style gradient card
   // variant "card"  → desktop surface card
-  const [range, setRange] = useState("mtd");
+  const [range, setRange] = useState("all");
   const [data, setData] = useState({ points: [], current: 0 });
   const [loading, setLoading] = useState(true);
 
@@ -1421,6 +1420,20 @@ function TransactionsTab({ theme, darkMode, toast }) {
   const [catFilter, setCatFilter] = useState("");      // category filter
   const [acctFilter, setAcctFilter] = useState("all"); // account filter (id | "all")
   const [sort, setSort] = useState("date_desc");       // sort key
+  // Cash / Credit pill — splits the entire list by account type. Defaults to
+  // "cash" every time the tab is mounted (non-persistent by design).
+  const [side, setSide] = useState("cash");            // "cash" | "credit"
+
+  // Set of credit account ids for fast classification of each transaction.
+  // Manual transactions (accountId null) are treated as cash-side.
+  const creditAccountIds = useMemo(
+    () => new Set(accounts.filter(a => a.type === "credit").map(a => a.id)),
+    [accounts]
+  );
+  const isCreditTxn = (t) => creditAccountIds.has(t.accountId);
+  // Reset the account filter when the user flips sides so a stale id from the
+  // other side doesn't silently hide everything.
+  useEffect(() => { setAcctFilter("all"); }, [side]);
   const [detail, setDetail] = useState(null);
   const [deleting, setDeleting] = useState(false);
   // Category-edit flow: 'pick' = pick new category, 'scope' = ask just-this/all-future
@@ -1470,6 +1483,11 @@ function TransactionsTab({ theme, darkMode, toast }) {
   // ── Filter + sort pipeline ─────────────────────────────────────
   const filtered = useMemo(() => {
     let rows = transactions.filter(t => {
+      // Cash / Credit split runs first — the tab is conceptually two
+      // separate lists, not one list with a soft filter.
+      const credit = isCreditTxn(t);
+      if (side === "cash"   && credit) return false;
+      if (side === "credit" && !credit) return false;
       if (search) {
         const q = search.toLowerCase();
         if (!(t.merchant || "").toLowerCase().includes(q) &&
@@ -1486,7 +1504,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
       amount_desc:(a, b) => Number(b.amount) - Number(a.amount), // most positive first → biggest income
     }[sort] || ((a, b) => 0);
     return [...rows].sort(cmp);
-  }, [transactions, search, catFilter, acctFilter, sort]);
+  }, [transactions, search, catFilter, acctFilter, sort, side, creditAccountIds]);
 
   // Group by date for the rendered list.
   // BUG FIX: when sorted by amount, transactions aren't ordered by date so
@@ -1534,16 +1552,21 @@ function TransactionsTab({ theme, darkMode, toast }) {
   const groupTotal = (items) =>
     items.reduce((s, t) => s + Number(t.amount), 0);
 
-  // Group accounts by institution for the filter dropdown
+  // Group accounts by institution for the filter dropdown.
+  // Scoped to the current side so the dropdown only ever offers accounts
+  // that match the cash/credit pill.
   const accountsByBank = useMemo(() => {
     const map = new Map();
     for (const a of accounts) {
+      const credit = a.type === "credit";
+      if (side === "cash"   && credit) continue;
+      if (side === "credit" && !credit) continue;
       const bank = a.institution || "Manual";
       if (!map.has(bank)) map.set(bank, []);
       map.get(bank).push(a);
     }
     return [...map.entries()];
-  }, [accounts]);
+  }, [accounts, side]);
 
   const activeFilterCount = (catFilter ? 1 : 0) + (acctFilter !== "all" ? 1 : 0) + (sort !== "date_desc" ? 1 : 0);
 
@@ -1576,16 +1599,34 @@ function TransactionsTab({ theme, darkMode, toast }) {
 
   return (
     <div className="space-y-3">
-      {/* Search + filters + add */}
+      {/* Search + cash/credit pill + filters + add */}
       <div className="flex items-center gap-2">
-        <div className={`flex items-center gap-3 px-4 py-2.5 ${theme.surface} border ${theme.border} rounded-xl flex-1`}>
+        <div className={`flex items-center gap-3 px-4 py-2.5 ${theme.surface} border ${theme.border} rounded-xl flex-1 min-w-0`}>
           <Search className={`w-4 h-4 ${theme.textSubtle} flex-shrink-0`} />
           <input value={search} onChange={e => setSearch(e.target.value)}
             placeholder="Search transactions…"
-            className={`flex-1 bg-transparent text-sm focus:outline-none ${theme.text}`} />
+            className={`flex-1 min-w-0 bg-transparent text-sm focus:outline-none ${theme.text}`} />
           {search && (
             <button onClick={() => setSearch("")}><X className={`w-4 h-4 ${theme.textSubtle}`} /></button>
           )}
+        </div>
+        {/* Cash / Credit slider — splits the entire list in two. Defaults to
+            "cash" on every mount; intentionally not persisted. */}
+        <div className={`flex items-center p-1 rounded-xl border ${theme.border} ${theme.surface} flex-shrink-0`} role="tablist" aria-label="Account type">
+          {["cash", "credit"].map(s => {
+            const active = side === s;
+            return (
+              <button key={s} role="tab" aria-selected={active}
+                onClick={() => setSide(s)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold capitalize transition ${
+                  active
+                    ? "bg-emerald-500 text-white shadow-sm shadow-emerald-500/30"
+                    : theme.textMuted
+                }`}>
+                {s}
+              </button>
+            );
+          })}
         </div>
         <motion.button whileTap={{ scale: 0.94 }} onClick={() => setShowFilters(!showFilters)}
           className={`relative p-2.5 rounded-xl border ${theme.border} ${theme.surface} flex-shrink-0`}>
@@ -1654,7 +1695,9 @@ function TransactionsTab({ theme, darkMode, toast }) {
         <div className={`${theme.surface} rounded-2xl border ${theme.border} px-5 py-12 text-center text-sm ${theme.textSubtle}`}>
           {search || activeFilterCount > 0
             ? "No matching transactions"
-            : "No transactions yet — connect a bank to get started."}
+            : side === "credit"
+              ? "No credit-card transactions yet."
+              : "No transactions yet — connect a bank to get started."}
         </div>
       ) : (
         <div className="space-y-3">
