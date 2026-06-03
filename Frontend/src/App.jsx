@@ -1951,14 +1951,18 @@ function fmtCadence(period, days) {
 }
 
 // ── Income tracker card (pinned at top, always shown) ───────────────────────
-function IncomeTracker({ tracker, theme, darkMode, onConfigure }) {
+// `readOnly` (true when the user is viewing a past period) disables the
+// tap-to-configure action and hides the "tap to change" hint, so period
+// settings can't be edited while reviewing history.
+function IncomeTracker({ tracker, theme, darkMode, onConfigure, readOnly = false }) {
   const total = Number(tracker?.total || 0);
   const period = tracker?.period || "monthly";
   return (
     <motion.button
-      whileTap={{ scale: 0.99 }}
-      onClick={onConfigure}
-      className="w-full text-left relative rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-700 p-5 text-white shadow-sm shadow-emerald-500/30 overflow-hidden">
+      whileTap={readOnly ? undefined : { scale: 0.99 }}
+      onClick={readOnly ? undefined : onConfigure}
+      disabled={readOnly}
+      className={`w-full text-left relative rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-700 p-5 text-white shadow-sm shadow-emerald-500/30 overflow-hidden ${readOnly ? "cursor-default" : ""}`}>
       <div className="flex items-start justify-between">
         <div>
           <div className="text-[11px] font-semibold uppercase tracking-[0.14em] opacity-90 flex items-center gap-1.5">
@@ -1968,7 +1972,7 @@ function IncomeTracker({ tracker, theme, darkMode, onConfigure }) {
             <AnimatedNumber value={total} format={fmt} duration={0.6} />
           </div>
           <div className="text-xs opacity-85 mt-1">
-            {fmtPeriodLabel(period, tracker?.periodDays)} · tap to change
+            {fmtPeriodLabel(period, tracker?.periodDays)}{!readOnly && " · tap to change"}
           </div>
         </div>
         <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center">
@@ -1980,14 +1984,17 @@ function IncomeTracker({ tracker, theme, darkMode, onConfigure }) {
 }
 
 // ── Credit usage tracker (only when credit accounts exist) ─────────────────
-function CreditTracker({ tracker, theme, darkMode, onConfigure }) {
+// `readOnly` (true when the user is viewing a past period) disables the
+// tap-to-configure action and hides the "tap to change" hint.
+function CreditTracker({ tracker, theme, darkMode, onConfigure, readOnly = false }) {
   const total = Number(tracker?.total || 0);
   const period = tracker?.period || "monthly";
   return (
     <motion.button
-      whileTap={{ scale: 0.99 }}
-      onClick={onConfigure}
-      className={`w-full text-left ${theme.surface} border ${theme.border} rounded-2xl p-5`}>
+      whileTap={readOnly ? undefined : { scale: 0.99 }}
+      onClick={readOnly ? undefined : onConfigure}
+      disabled={readOnly}
+      className={`w-full text-left ${theme.surface} border ${theme.border} rounded-2xl p-5 ${readOnly ? "cursor-default" : ""}`}>
       <div className="flex items-start justify-between">
         <div className="min-w-0">
           <div className={`text-[11px] font-semibold uppercase tracking-[0.14em] ${theme.textSubtle} flex items-center gap-1.5`}>
@@ -1997,7 +2004,7 @@ function CreditTracker({ tracker, theme, darkMode, onConfigure }) {
             <AnimatedNumber value={total} format={fmt} duration={0.6} />
           </div>
           <div className={`text-xs ${theme.textSubtle} mt-1`}>
-            {fmtPeriodLabel(period, tracker?.periodDays)} · tap to change
+            {fmtPeriodLabel(period, tracker?.periodDays)}{!readOnly && " · tap to change"}
           </div>
           {tracker?.cards?.length > 1 && (
             <div className="flex flex-wrap gap-1.5 mt-3">
@@ -2614,8 +2621,21 @@ function BudgetsTab({ theme, darkMode, toast }) {
         </div>
       </div>
 
-      {/* Income tracker — pinned at top, always shown */}
-      <IncomeTracker tracker={trackers?.income} theme={theme} darkMode={darkMode}
+      {/* Income tracker — pinned at top, always shown.
+          In history view: the displayed total swaps to the snapshot income
+          for the period being viewed (the value already returned by
+          GET /budgets/history and shown in the dropdown rows), and the
+          tap-to-configure action is disabled so the user can't accidentally
+          edit their period settings while reviewing the past. The period
+          label itself stays as the live master cadence — past income
+          snapshots were computed against the user's current cadence, so
+          that's still the accurate label for them. */}
+      <IncomeTracker
+        tracker={viewingHistory && history?.[historyIndex]
+          ? { ...trackers?.income, total: history[historyIndex].income }
+          : trackers?.income}
+        theme={theme} darkMode={darkMode}
+        readOnly={viewingHistory}
         onConfigure={() => setTrackerSheet({
           kind: "income",
           period: trackers?.income?.period || "monthly",
@@ -2625,9 +2645,14 @@ function BudgetsTab({ theme, darkMode, toast }) {
           periodStart: trackers?.income?.periodAnchor || new Date().toISOString().slice(0, 10),
         })} />
 
-      {/* Credit tracker — only if credit account(s) exist */}
+      {/* Credit tracker — only if credit account(s) exist.
+          In history view we don't snapshot credit-card usage (out of scope
+          for budget history), so the displayed total stays as current live
+          usage. We still lock period editing to match the income tracker's
+          read-only behavior in past-period view. */}
       {trackers?.credit && (
         <CreditTracker tracker={trackers.credit} theme={theme} darkMode={darkMode}
+          readOnly={viewingHistory}
           onConfigure={() => setTrackerSheet({
             kind: "credit",
             period: trackers.credit.period || "monthly",
