@@ -147,13 +147,19 @@ export default async function (app) {
     return { token, user: userPayload(user) };
   });
 
-  // ── Send a sample email digest to the signed-in user.
-  // Lets the user (and admin during setup) verify SMTP credentials are
-  // configured correctly without waiting for a real notification event.
+  // ── Send a sample email digest to the signed-in admin.
+  // Used to verify SMTP credentials. Admin-only because every fired test
+  // costs one outbound email from the user's transactional-mail quota,
+  // and there's no business reason a regular member needs to send themselves
+  // a sample. Rate-limited to 3/min as an extra DDoS hygiene measure on
+  // top of the role gate.
   app.post("/me/test-email", {
     preHandler: [app.authenticate],
     config: { rateLimit: { max: 3, timeWindow: "1 minute" } },
   }, async (req, reply) => {
+    if (req.user.role !== "admin") {
+      return reply.code(403).send({ error: "Admin only" });
+    }
     if (!isEmailEnabled()) {
       return reply.code(503).send({ error: "Email is disabled (EMAIL_CONFIG is not enabled on the server)" });
     }

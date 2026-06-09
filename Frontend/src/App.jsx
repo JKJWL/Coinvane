@@ -3461,7 +3461,21 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
       {/* ── App info ── */}
       {info && (
         <div className={`${theme.surface} rounded-2xl border ${theme.border} p-5`}>
-          <h3 className="font-semibold mb-3">App info</h3>
+          <div className="flex items-center justify-between mb-3 gap-3">
+            <h3 className="font-semibold">App info</h3>
+            {info.emailEnabled && (
+              <motion.button whileTap={{ scale: 0.97 }} type="button"
+                onClick={async () => {
+                  try {
+                    const r = await api.sendTestEmail();
+                    toast?.(`Test email sent to ${r.sentTo}`, "success");
+                  } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+                }}
+                className={`text-xs font-medium ${theme.surface} border ${theme.border} px-3 py-1.5 rounded-lg`}>
+                Send sample email
+              </motion.button>
+            )}
+          </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
             <Stat label="Plaid env"      value={info.plaidEnvironment} />
             <Stat label="Email enabled"  value={info.emailEnabled ? "yes" : "no"} />
@@ -4134,18 +4148,9 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
             </div>
           )}
 
-          {emailOn && (
-            <motion.button type="button" whileTap={{ scale: 0.97 }}
-              onClick={async () => {
-                try {
-                  const r = await api.sendTestEmail();
-                  toast?.(`Test email sent to ${r.sentTo}`, "success");
-                } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
-              }}
-              className={`text-xs font-medium ${theme.surface} border ${theme.border} px-3 py-1.5 rounded-lg`}>
-              Send sample email
-            </motion.button>
-          )}
+          {/* "Send sample email" lives on the Admin panel only — it's a
+              rate-limited, quota-spending operation that regular members
+              don't need access to. */}
         </div>
 
         {/* In-app bell — independent of email. */}
