@@ -9,7 +9,7 @@ const SCHEMA = [
     google_id VARCHAR(64) UNIQUE,
     picture VARCHAR(512),
     name VARCHAR(255),
-    role ENUM('admin','user') DEFAULT 'user',
+    role ENUM('owner','admin','user') DEFAULT 'user',
     currency VARCHAR(8) DEFAULT 'USD',
     timezone VARCHAR(64) DEFAULT 'UTC',
     dark_mode BOOLEAN DEFAULT FALSE,
@@ -273,10 +273,16 @@ const SCHEMA = [
     ip VARCHAR(45),
     user_agent VARCHAR(255),
     metadata TEXT,
+    is_major BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_user_time (user_id, created_at),
-    INDEX idx_action_time (action, created_at)
+    INDEX idx_action_time (action, created_at),
+    INDEX idx_major_time (is_major, created_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  // ── Role + audit upgrades for existing installs ──────────────────
+  // MariaDB needs an explicit MODIFY to extend an ENUM in place.
+  `ALTER TABLE users MODIFY COLUMN role ENUM('owner','admin','user') DEFAULT 'user'`,
+  `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS is_major BOOLEAN DEFAULT FALSE`,
 ];
 
 const DEFAULT_CATEGORIES = [
@@ -340,6 +346,23 @@ async function run() {
       );
     }
     console.log(`Backfilled budget_audit: ${orphans.length} budget(s).`);
+  }
+
+  // ── Owner backfill ──────────────────────────────────────────────
+  // Promote the oldest admin to "owner" if there isn't an owner yet.
+  // This makes existing single-instance deployments grant the first
+  // sign-up the new owner privileges automatically.
+  const existingOwner = await queryOne(
+    "SELECT id FROM users WHERE role = 'owner' LIMIT 1"
+  );
+  if (!existingOwner) {
+    const firstAdmin = await queryOne(
+      "SELECT id, email FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1"
+    );
+    if (firstAdmin) {
+      await query("UPDATE users SET role = 'owner' WHERE id = ?", [firstAdmin.id]);
+      console.log(`Promoted first admin (#${firstAdmin.id} ${firstAdmin.email}) to owner.`);
+    }
   }
 
   await pool.end();

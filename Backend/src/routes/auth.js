@@ -126,7 +126,7 @@ export default async function (app) {
       let role = "user";
 
       if (userCount === 0) {
-        role = "admin"; // first user is always admin
+        role = "owner"; // first user is always owner (single-instance pattern)
       } else if (SIGNUP_MODE() === "closed") {
         return reply.code(403).send({ error: "Signups are disabled" });
       }
@@ -157,8 +157,8 @@ export default async function (app) {
     preHandler: [app.authenticate],
     config: { rateLimit: { max: 3, timeWindow: "1 minute" } },
   }, async (req, reply) => {
-    if (req.user.role !== "admin") {
-      return reply.code(403).send({ error: "Admin only" });
+    if (req.user.role !== "owner") {
+      return reply.code(403).send({ error: "Owner only" });
     }
     if (!isEmailEnabled()) {
       return reply.code(503).send({ error: "Email is disabled (EMAIL_CONFIG is not enabled on the server)" });
@@ -252,9 +252,13 @@ export default async function (app) {
     return userPayload(u);
   });
 
-  // ── Users (admin) ───────────────────────────────────────────────
+  // ── Users (owner + admin) ───────────────────────────────────────
+  // Any owner/admin can list members. Members table is read-only for
+  // regular users.
   app.get("/users", { preHandler: [app.authenticate] }, async (req, reply) => {
-    if (req.user.role !== "admin") return reply.code(403).send({ error: "Admin only" });
+    if (req.user.role !== "owner" && req.user.role !== "admin") {
+      return reply.code(403).send({ error: "Admin only" });
+    }
     return query(
       `SELECT id, email, name, role, picture, created_at,
               (SELECT COUNT(*) FROM accounts WHERE user_id = users.id) AS accountCount
@@ -262,12 +266,66 @@ export default async function (app) {
     );
   });
 
+  // Delete a user — permission matrix:
+  //   self:        nobody can delete themselves through this endpoint
+  //   owner:       cannot be deleted by anyone
+  //   admin:       only the owner can delete
+  //   member:      owner or admin can delete
+  // Every successful delete is audited as a major event so the row
+  // survives the 7-day major-retention window.
   app.delete("/users/:id", { preHandler: [app.authenticate] }, async (req, reply) => {
-    if (req.user.role !== "admin") return reply.code(403).send({ error: "Admin only" });
-    if (Number(req.params.id) === req.user.id) {
+    if (req.user.role !== "owner" && req.user.role !== "admin") {
+      return reply.code(403).send({ error: "Admin only" });
+    }
+    const targetId = Number(req.params.id);
+    if (targetId === req.user.id) {
       return reply.code(400).send({ error: "Cannot delete yourself" });
     }
-    await query("DELETE FROM users WHERE id = ?", [req.params.id]);
+    const target = await queryOne(
+      "SELECT id, email, role FROM users WHERE id = ?", [targetId]
+    );
+    if (!target) return reply.code(404).send({ error: "User not found" });
+    if (target.role === "owner") {
+      return reply.code(403).send({ error: "The owner cannot be deleted" });
+    }
+    if (target.role === "admin" && req.user.role !== "owner") {
+      return reply.code(403).send({ error: "Only the owner can remove admins" });
+    }
+    await query("DELETE FROM users WHERE id = ?", [targetId]);
+    await audit(req.user.id, "admin.user_delete", req, {
+      targetId, targetEmail: target.email, targetRole: target.role,
+    }, { major: true });
+    return { ok: true };
+  });
+
+  // Owner-only: promote a member to admin or demote an admin to member.
+  // 'owner' is never an option — there is exactly one owner per instance
+  // and ownership transfer isn't implemented (manual DB edit if needed).
+  app.patch("/users/:id/role", { preHandler: [app.authenticate] }, async (req, reply) => {
+    if (req.user.role !== "owner") {
+      return reply.code(403).send({ error: "Owner only" });
+    }
+    const newRole = String(req.body?.role || "");
+    if (!["admin", "user"].includes(newRole)) {
+      return reply.code(400).send({ error: "role must be 'admin' or 'user'" });
+    }
+    const targetId = Number(req.params.id);
+    if (targetId === req.user.id) {
+      return reply.code(400).send({ error: "Cannot change your own role" });
+    }
+    const target = await queryOne("SELECT id, email, role FROM users WHERE id = ?", [targetId]);
+    if (!target) return reply.code(404).send({ error: "User not found" });
+    if (target.role === "owner") {
+      return reply.code(403).send({ error: "Owner role cannot be changed" });
+    }
+    if (target.role === newRole) {
+      return { ok: true, unchanged: true };
+    }
+    await query("UPDATE users SET role = ? WHERE id = ?", [newRole, targetId]);
+    await audit(req.user.id, "admin.role_change", req, {
+      targetId, targetEmail: target.email,
+      from: target.role, to: newRole,
+    }, { major: true });
     return { ok: true };
   });
 }

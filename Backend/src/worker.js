@@ -91,13 +91,26 @@ new Worker("sync", async (job) => {
   }
 
   if (kind === "audit-cleanup") {
-    const r = await query(
-      `DELETE FROM audit_log WHERE created_at < DATE_SUB(NOW(), INTERVAL 48 HOUR)`
+    // Two-tier retention. Routine entries (sign-in success, allowlist
+    // rejections, etc.) are pruned at 48 h. Major admin actions —
+    // role changes, user deletes, bulk wipes — are flagged is_major=1
+    // and kept for 7 days so an audit reviewer has a full week to spot
+    // unauthorized escalation.
+    const minor = await query(
+      `DELETE FROM audit_log
+       WHERE (is_major = 0 OR is_major IS NULL)
+         AND created_at < DATE_SUB(NOW(), INTERVAL 48 HOUR)`
     );
-    if (r.affectedRows > 0) {
-      console.log(`[audit] pruned ${r.affectedRows} entries older than 48h`);
+    const major = await query(
+      `DELETE FROM audit_log
+       WHERE is_major = 1
+         AND created_at < DATE_SUB(NOW(), INTERVAL 7 DAY)`
+    );
+    const total = (minor.affectedRows || 0) + (major.affectedRows || 0);
+    if (total > 0) {
+      console.log(`[audit] pruned ${minor.affectedRows} routine + ${major.affectedRows} major`);
     }
-    return { ok: true, pruned: r.affectedRows };
+    return { ok: true, pruned: total };
   }
 
   const item = await queryOne("SELECT * FROM plaid_items WHERE id = ?", [itemId]);

@@ -3392,15 +3392,39 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
       setAudit(al);
     } catch (e) { /* swallow — non-admin will 403 elsewhere */ }
   };
-  useEffect(() => { load(); if (currentUser.role === "admin") loadAdmin(); }, []);
+  const isOwner = currentUser.role === "owner";
+  const isAdminish = isOwner || currentUser.role === "admin";
+  useEffect(() => { load(); if (isAdminish) loadAdmin(); }, []);
 
-  if (currentUser.role !== "admin") {
+  if (!isAdminish) {
     return (
       <div className={`${theme.surface} rounded-2xl border ${theme.border} p-6 text-sm ${theme.textSubtle}`}>
         Admin access required to manage users.
       </div>
     );
   }
+
+  // Permission: can the current user delete the given target row?
+  // Mirrors the server-side rules in DELETE /auth/users/:id.
+  const canDelete = (u) => {
+    if (u.id === currentUser.id) return false;
+    if (u.role === "owner") return false;
+    if (u.role === "admin" && !isOwner) return false;
+    return true;
+  };
+  // Permission: can the current user change the given target's role?
+  // Owner-only, target must not be self or another owner.
+  const canChangeRole = (u) => isOwner && u.id !== currentUser.id && u.role !== "owner";
+
+  const setRole = async (u, newRole) => {
+    if (!canChangeRole(u)) return;
+    if (u.role === newRole) return;
+    try {
+      await api.updateUserRole(u.id, newRole);
+      toast?.(`${u.name || u.email} is now ${newRole === "admin" ? "an admin" : "a member"}`, "success");
+      load();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
 
   const performRemove = async () => {
     if (!toRemove) return;
@@ -3463,7 +3487,8 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
         <div className={`${theme.surface} rounded-2xl border ${theme.border} p-5`}>
           <div className="flex items-center justify-between mb-3 gap-3">
             <h3 className="font-semibold">App info</h3>
-            {info.emailEnabled && (
+            {/* Test email is owner-only — costs an outbound email per click. */}
+            {info.emailEnabled && isOwner && (
               <motion.button whileTap={{ scale: 0.97 }} type="button"
                 onClick={async () => {
                   try {
@@ -3490,75 +3515,119 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
         </div>
       )}
 
-      {/* ── Sync interval ── */}
+      {/* ── Sync interval (owner edits, admin reads) ── */}
       <div className={`${theme.surface} rounded-2xl border ${theme.border} p-5 space-y-2`}>
-        <h3 className="font-semibold">Plaid sync interval</h3>
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="font-semibold">Plaid sync interval</h3>
+          {!isOwner && <span className={`text-[10px] ${theme.textSubtle}`}>Owner only</span>}
+        </div>
         <div className={`text-xs ${theme.textSubtle}`}>
           How often the worker re-syncs every Plaid item. Saved value takes effect on the next worker restart.
         </div>
         <div className="flex items-center gap-2">
           <input type="text" inputMode="numeric" pattern="[0-9]*"
-            className={`${inputCls} max-w-[8rem]`} value={syncMin}
+            className={`${inputCls} max-w-[8rem] ${!isOwner ? "opacity-60" : ""}`} value={syncMin}
+            disabled={!isOwner}
             onChange={e => setSyncMin(e.target.value.replace(/[^\d]/g, ""))} />
           <span className={`text-xs ${theme.textSubtle}`}>minutes</span>
-          <motion.button whileTap={{ scale: 0.97 }} type="button" disabled={syncSaving}
-            onClick={saveSync}
-            className="bg-emerald-500 text-white px-3 py-2 rounded-xl text-sm font-semibold disabled:opacity-60">
-            {syncSaving ? "Saving…" : "Save"}
-          </motion.button>
+          {isOwner && (
+            <motion.button whileTap={{ scale: 0.97 }} type="button" disabled={syncSaving}
+              onClick={saveSync}
+              className="bg-emerald-500 text-white px-3 py-2 rounded-xl text-sm font-semibold disabled:opacity-60">
+              {syncSaving ? "Saving…" : "Save"}
+            </motion.button>
+          )}
         </div>
       </div>
 
-      {/* ── Allowlist editor ── */}
+      {/* ── Allowlist editor (owner edits, admin reads) ── */}
       <div className={`${theme.surface} rounded-2xl border ${theme.border} p-5 space-y-2`}>
-        <h3 className="font-semibold">Email allowlist</h3>
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="font-semibold">Email allowlist</h3>
+          {!isOwner && <span className={`text-[10px] ${theme.textSubtle}`}>Owner only</span>}
+        </div>
         <div className={`text-xs ${theme.textSubtle}`}>
           One email per line. Only addresses on this list can sign in via Google.
           Empty list = no restriction (not recommended in production).
         </div>
-        <textarea rows={5} className={`${inputCls} font-mono text-xs leading-relaxed`}
+        <textarea rows={5} disabled={!isOwner}
+          className={`${inputCls} font-mono text-xs leading-relaxed ${!isOwner ? "opacity-60" : ""}`}
           value={allowText} onChange={e => setAllowText(e.target.value)}
           placeholder="jane@example.com&#10;john@example.com" />
-        <motion.button whileTap={{ scale: 0.97 }} type="button" disabled={allowSaving}
-          onClick={saveAllow}
-          className="bg-emerald-500 text-white px-3 py-2 rounded-xl text-sm font-semibold disabled:opacity-60">
-          {allowSaving ? "Saving…" : "Save allowlist"}
-        </motion.button>
+        {isOwner && (
+          <motion.button whileTap={{ scale: 0.97 }} type="button" disabled={allowSaving}
+            onClick={saveAllow}
+            className="bg-emerald-500 text-white px-3 py-2 rounded-xl text-sm font-semibold disabled:opacity-60">
+            {allowSaving ? "Saving…" : "Save allowlist"}
+          </motion.button>
+        )}
       </div>
 
       {/* ── Members ── */}
       <div className={`${theme.surface} rounded-2xl border ${theme.border} p-5`}>
         <h3 className="font-semibold mb-3">Members ({users.length})</h3>
         <div className="space-y-0.5">
-          {users.map(u => (
-            <div key={u.id} className={`flex items-center justify-between py-2.5 border-b ${theme.border} last:border-0`}>
-              <div className="flex items-center gap-3 min-w-0">
-                {u.picture ? (
-                  <img src={u.picture} alt="" className="w-9 h-9 rounded-full flex-shrink-0" />
-                ) : (
-                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center text-white font-semibold text-sm flex-shrink-0">
-                    {(u.name || u.email)[0].toUpperCase()}
+          {users.map(u => {
+            // Per-role pill style. Owner = gold, Admin = violet, Member = slate.
+            const rolePill = u.role === "owner"
+              ? (darkMode ? "bg-amber-500/20 text-amber-300" : "bg-amber-100 text-amber-700")
+              : u.role === "admin"
+                ? (darkMode ? "bg-violet-500/20 text-violet-400" : "bg-violet-100 text-violet-700")
+                : `${darkMode ? "bg-slate-800" : "bg-slate-100"} ${theme.textMuted}`;
+            const showRoleSelect = canChangeRole(u);
+            return (
+              <div key={u.id} className={`flex items-center justify-between py-2.5 border-b ${theme.border} last:border-0`}>
+                <div className="flex items-center gap-3 min-w-0">
+                  {u.picture ? (
+                    <img src={u.picture} alt="" className="w-9 h-9 rounded-full flex-shrink-0" />
+                  ) : (
+                    <div className="w-9 h-9 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center text-white font-semibold text-sm flex-shrink-0">
+                      {(u.name || u.email)[0].toUpperCase()}
+                    </div>
+                  )}
+                  <div className="min-w-0">
+                    <div className="font-medium text-sm truncate">
+                      {u.name || u.email}
+                      {u.id === currentUser.id && (
+                        <span className={`text-[10px] ml-1.5 ${theme.textSubtle}`}>(you)</span>
+                      )}
+                    </div>
+                    <div className={`text-xs ${theme.textSubtle} truncate`}>{u.email} · {u.accountCount} accounts</div>
                   </div>
-                )}
-                <div className="min-w-0">
-                  <div className="font-medium text-sm truncate">{u.name || u.email}</div>
-                  <div className={`text-xs ${theme.textSubtle} truncate`}>{u.email} · {u.accountCount} accounts</div>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {showRoleSelect ? (
+                    // Owner: change Member ⇄ Admin via dropdown. "Owner" is
+                    // intentionally NOT an option — single-owner instance.
+                    <select
+                      value={u.role}
+                      onChange={(e) => setRole(u, e.target.value)}
+                      className={`text-xs px-2 py-1 rounded-full font-medium border ${theme.border} ${theme.surface} focus:outline-none focus:border-emerald-500`}>
+                      <option value="user">Member</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                  ) : (
+                    <span className={`text-xs px-2 py-1 rounded-full font-medium flex items-center gap-1 capitalize ${rolePill}`}>
+                      {u.role === "owner" && <Shield className="w-3 h-3" />}
+                      {u.role === "admin" && <Shield className="w-3 h-3" />}
+                      {u.role === "user" ? "Member" : u.role}
+                    </span>
+                  )}
+                  {canDelete(u) && (
+                    <button onClick={() => setToRemove(u)} title={u.role === "admin" ? "Remove admin" : "Remove member"}>
+                      <Trash2 className={`w-4 h-4 ${theme.textSubtle} hover:text-rose-500 transition-colors`} />
+                    </button>
+                  )}
                 </div>
               </div>
-              <div className="flex items-center gap-2 flex-shrink-0">
-                <span className={`text-xs px-2 py-1 rounded-full font-medium flex items-center gap-1 ${u.role === "admin" ? (darkMode ? "bg-violet-500/20 text-violet-400" : "bg-violet-100 text-violet-700") : `${darkMode ? "bg-slate-800" : "bg-slate-100"} ${theme.textMuted}`}`}>
-                  {u.role === "admin" && <Shield className="w-3 h-3" />}
-                  {u.role}
-                </span>
-                {u.id !== currentUser.id && (
-                  <button onClick={() => setToRemove(u)}>
-                    <Trash2 className={`w-4 h-4 ${theme.textSubtle} hover:text-rose-500 transition-colors`} />
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
+        {!isOwner && (
+          <div className={`text-[11px] ${theme.textSubtle} mt-3`}>
+            Admins can only remove members. Removing or promoting admins is reserved to the owner.
+          </div>
+        )}
       </div>
 
       {/* ── Notification cleanup ── */}
@@ -3581,23 +3650,33 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
         </div>
       </div>
 
-      {/* ── Audit log (last 100, auto-pruned to 48h) ── */}
+      {/* ── Audit log (last 100, tiered retention) ── */}
       <div className={`${theme.surface} rounded-2xl border ${theme.border} p-4`}>
         <div className="flex items-center justify-between mb-2">
           <h3 className="font-semibold text-sm">Audit log</h3>
-          <span className={`text-[10px] ${theme.textSubtle}`}>Auto-pruned every 48 h</span>
+          <span className={`text-[10px] ${theme.textSubtle}`}>Routine: 48 h · Major: 7 d</span>
         </div>
         <div className={`max-h-56 overflow-y-auto rounded-lg border ${theme.border} ${darkMode ? "bg-slate-900/40" : "bg-slate-50"}`}>
           {audit.length === 0 && (
             <div className={`text-xs ${theme.textSubtle} px-3 py-4 text-center`}>No entries.</div>
           )}
           {audit.map(a => (
-            <div key={a.id} className={`text-[11px] px-3 py-1.5 border-b ${theme.border} last:border-0 flex items-center justify-between gap-2`}>
-              <div className="min-w-0 flex-1">
+            <div key={a.id}
+              className={`text-[11px] px-3 py-1.5 border-b ${theme.border} last:border-0 flex items-center justify-between gap-2 ${
+                a.isMajor
+                  ? `border-l-4 ${darkMode ? "border-l-rose-500 bg-rose-500/10" : "border-l-rose-500 bg-rose-50"}`
+                  : ""
+              }`}>
+              <div className="min-w-0 flex-1 flex items-center gap-1.5">
+                {a.isMajor && (
+                  <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${darkMode ? "bg-rose-500/25 text-rose-300" : "bg-rose-200 text-rose-800"}`}>
+                    Major
+                  </span>
+                )}
                 <span className="font-mono">{a.action}</span>
-                {a.userEmail && <span className={`${theme.textSubtle} ml-2`}>{a.userEmail}</span>}
+                {a.userEmail && <span className={`${theme.textSubtle} ml-1`}>{a.userEmail}</span>}
               </div>
-              <div className={`${theme.textSubtle} truncate text-right`} style={{ maxWidth: "60%" }}>
+              <div className={`${theme.textSubtle} truncate text-right`} style={{ maxWidth: "55%" }}>
                 {a.ip || "?"}{a.location ? ` · ${a.location}` : ""}
                 <span className="ml-2">{new Date(a.createdAt).toLocaleString()}</span>
               </div>

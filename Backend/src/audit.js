@@ -27,16 +27,24 @@ export function geoFromIp(ip) {
  * @param {string}      action     short event key, e.g. "auth.success"
  * @param {object}      req        Fastify request (for ip/user-agent)
  * @param {object}      [meta]     extra context, will be JSON-stringified
+ * @param {object}      [opts]
+ * @param {boolean}     [opts.major]  When true, the row is marked is_major=1
+ *                                    so the cleanup worker retains it for
+ *                                    7 days (instead of 48 h) and the admin
+ *                                    UI flags it in red. Use for any high-
+ *                                    impact admin action (role changes,
+ *                                    user deletes, bulk data wipes).
  */
-export async function audit(userId, action, req, meta = null) {
+export async function audit(userId, action, req, meta = null, opts = {}) {
   try {
     const ip = req?.ip || null;
     const ua = req?.headers?.["user-agent"]?.slice(0, 255) || null;
     const metaJson = meta ? JSON.stringify(meta).slice(0, 4000) : null;
+    const major = opts?.major ? 1 : 0;
     await query(
-      `INSERT INTO audit_log (user_id, action, ip, user_agent, metadata)
-       VALUES (?, ?, ?, ?, ?)`,
-      [userId, action.slice(0, 64), ip, ua, metaJson]
+      `INSERT INTO audit_log (user_id, action, ip, user_agent, metadata, is_major)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [userId, action.slice(0, 64), ip, ua, metaJson, major]
     );
   } catch (e) {
     // Audit must never break a request. Just log and move on.

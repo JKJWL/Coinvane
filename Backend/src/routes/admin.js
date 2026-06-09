@@ -2,7 +2,7 @@
 import { query, queryOne } from "../db.js";
 import { getAppSetting, setAppSetting } from "../app-settings.js";
 import { isEmailEnabled } from "../mailer.js";
-import { geoFromIp } from "../audit.js";
+import { geoFromIp, audit } from "../audit.js";
 
 /**
  * Admin-only surface. Every route checks req.user.role === 'admin' and
@@ -25,10 +25,19 @@ import { geoFromIp } from "../audit.js";
 // preHandlers are the real access gate.
 const ADMIN_LIMIT = { max: 60, timeWindow: "1 minute" };
 
+// Owner-only guard for routes that mutate global instance config.
+// Admins can VIEW the admin page but only the owner can change the
+// security-sensitive knobs (sync interval, allowlist).
+const ownerOnly = async (req, reply) => {
+  if (req.user.role !== "owner") {
+    return reply.code(403).send({ error: "Owner only" });
+  }
+};
+
 export default async function (app) {
   app.addHook("preHandler", app.authenticate);
   app.addHook("preHandler", async (req, reply) => {
-    if (req.user.role !== "admin") {
+    if (req.user.role !== "owner" && req.user.role !== "admin") {
       return reply.code(403).send({ error: "Admin only" });
     }
   });
@@ -61,12 +70,16 @@ export default async function (app) {
     return { minutes: Math.max(1, Number(v) || 60) };
   });
 
-  app.patch("/sync-interval", { config: { rateLimit: ADMIN_LIMIT } }, async (req, reply) => {
+  app.patch("/sync-interval", {
+    preHandler: [ownerOnly],
+    config: { rateLimit: ADMIN_LIMIT },
+  }, async (req, reply) => {
     const n = Math.round(Number(req.body?.minutes));
     if (!Number.isFinite(n) || n < 1 || n > 1440) {
       return reply.code(400).send({ error: "minutes must be 1-1440" });
     }
     await setAppSetting("sync_interval_minutes", String(n));
+    await audit(req.user.id, "admin.sync_interval_change", req, { minutes: n }, { major: true });
     return { ok: true, minutes: n, note: "Restart the worker for the new interval to take effect." };
   });
 
@@ -77,7 +90,10 @@ export default async function (app) {
     return { emails: list };
   });
 
-  app.put("/allowlist", { config: { rateLimit: ADMIN_LIMIT } }, async (req, reply) => {
+  app.put("/allowlist", {
+    preHandler: [ownerOnly],
+    config: { rateLimit: ADMIN_LIMIT },
+  }, async (req, reply) => {
     const emails = Array.isArray(req.body?.emails) ? req.body.emails : null;
     if (!emails) return reply.code(400).send({ error: "emails: string[] required" });
     // Dedupe + lowercase + light shape validation. We avoid the simpler
@@ -101,6 +117,7 @@ export default async function (app) {
       emails.map(e => String(e || "").trim().toLowerCase()).filter(isValidEmail)
     )];
     await setAppSetting("allowed_emails", cleaned.join(","));
+    await audit(req.user.id, "admin.allowlist_change", req, { count: cleaned.length }, { major: true });
     return { ok: true, emails: cleaned };
   });
 
@@ -108,7 +125,8 @@ export default async function (app) {
   app.get("/audit", { config: { rateLimit: ADMIN_LIMIT } }, async () => {
     const rows = await query(
       `SELECT al.id, al.user_id, u.email AS userEmail, al.action,
-              al.ip, al.user_agent, al.metadata, al.created_at AS createdAt
+              al.ip, al.user_agent, al.metadata, al.is_major AS isMajor,
+              al.created_at AS createdAt
        FROM audit_log al
        LEFT JOIN users u ON u.id = al.user_id
        ORDER BY al.id DESC
@@ -122,17 +140,23 @@ export default async function (app) {
       ip: r.ip,
       location: geoFromIp(r.ip),
       userAgent: r.user_agent,
+      isMajor: !!r.isMajor,
       createdAt: r.createdAt,
     }));
   });
 
-  // ── Notification cleanup ─────────────────────────────────────
+  // ── Notification cleanup (any admin) ─────────────────────────
+  // Audited as major because it bulk-deletes user-visible records and
+  // is one of the few destructive actions admins can take.
   app.post("/cleanup-notifications", { config: { rateLimit: ADMIN_LIMIT } }, async (req, reply) => {
     const days = Math.max(1, Math.min(365, Math.round(Number(req.body?.days) || 30)));
     const r = await query(
       `DELETE FROM notifications WHERE created_at < DATE_SUB(NOW(), INTERVAL ? DAY)`,
       [days]
     );
+    await audit(req.user.id, "admin.notifications_cleanup", req, {
+      olderThanDays: days, deleted: r.affectedRows || 0,
+    }, { major: true });
     return { ok: true, deleted: r.affectedRows || 0, olderThanDays: days };
   });
 }

@@ -45,6 +45,7 @@ export const api = {
   // admin
   listUsers: () => request("GET", "/auth/users"),
   deleteUser: (id) => request("DELETE", `/auth/users/${id}`),
+  updateUserRole: (id, role) => request("PATCH", `/auth/users/${id}/role`, { role }),
 
   // accounts
   getAccounts: () => request("GET", "/accounts"),
