@@ -3613,6 +3613,18 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
                       {u.role === "user" ? "Member" : u.role}
                     </span>
                   )}
+                  {isOwner && info?.emailEnabled && (
+                    <button
+                      onClick={async () => {
+                        try {
+                          const r = await api.sendUserTestEmail(u.id);
+                          toast?.(`Test email sent to ${r.sentTo}`, "success");
+                        } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+                      }}
+                      title={`Send test email to ${u.email}`}>
+                      <Mail className={`w-4 h-4 ${theme.textSubtle} hover:text-emerald-500 transition-colors`} />
+                    </button>
+                  )}
                   {canDelete(u) && (
                     <button onClick={() => setToRemove(u)} title={u.role === "admin" ? "Remove admin" : "Remove member"}>
                       <Trash2 className={`w-4 h-4 ${theme.textSubtle} hover:text-rose-500 transition-colors`} />

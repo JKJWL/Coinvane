@@ -176,12 +176,62 @@ export default async function (app) {
         title: "75% to Emergency Fund",
         body: "$3,750.00 of $5,000.00 saved." },
     ];
-    const mail = renderNotificationDigest({ userName: u.name, notifications: sample });
+    const mail = renderNotificationDigest({
+      userName: u.name, notifications: sample,
+      disclaimer: "The Content Within This Email is A Test And Is Not Real",
+    });
     try {
       await enqueueMail({ to: u.email, ...mail });
       return { ok: true, sentTo: u.email };
     } catch (e) {
       req.log.warn({ err: e.message }, "test-email failed");
+      return reply.code(500).send({ error: "Could not enqueue mail. Check SMTP env vars." });
+    }
+  });
+
+  // ── Owner-only: send a sample/test email to ANY user. ─────────
+  // Used from the Members section in the Admin panel so the owner can
+  // verify a specific user's address resolves through SMTP without
+  // logging in as them. Same canned 3-notification payload as
+  // /me/test-email, with the same TEST disclaimer banner so the
+  // recipient knows it isn't real notification data.
+  app.post("/users/:id/test-email", {
+    preHandler: [app.authenticate],
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
+    if (req.user.role !== "owner") {
+      return reply.code(403).send({ error: "Owner only" });
+    }
+    if (!isEmailEnabled()) {
+      return reply.code(503).send({ error: "Email is disabled (EMAIL_CONFIG is not enabled on the server)" });
+    }
+    const u = await queryOne(
+      "SELECT email, name FROM users WHERE id = ?", [req.params.id]
+    );
+    if (!u) return reply.code(404).send({ error: "user not found" });
+    const sample = [
+      { type: "budget_warning", color: "amber",
+        title: "Approaching limit: Restaurants",
+        body: "82% of your $200.00 budget used this period." },
+      { type: "large_transaction", color: "amber",
+        title: "Large transaction: Whole Foods",
+        body: "$284.16 on " + new Date().toISOString().slice(0, 10) },
+      { type: "goal_milestone", color: "sky",
+        title: "75% to Emergency Fund",
+        body: "$3,750.00 of $5,000.00 saved." },
+    ];
+    const mail = renderNotificationDigest({
+      userName: u.name, notifications: sample,
+      disclaimer: "The Content Within This Email is A Test And Is Not Real",
+    });
+    try {
+      await enqueueMail({ to: u.email, ...mail });
+      await audit(req.user.id, "admin.test_email", req, {
+        targetId: Number(req.params.id), targetEmail: u.email,
+      });
+      return { ok: true, sentTo: u.email };
+    } catch (e) {
+      req.log.warn({ err: e.message }, "user test-email failed");
       return reply.code(500).send({ error: "Could not enqueue mail. Check SMTP env vars." });
     }
   });

@@ -63,7 +63,7 @@ export async function sendMail({ to, subject, html, text }) {
  * Renders both HTML (rich) and plaintext (fallback for clients that don't
  * support HTML or for accessibility readers).
  */
-export function renderNotificationDigest({ userName, notifications }) {
+export function renderNotificationDigest({ userName, notifications, disclaimer }) {
   const appUrl = process.env.APP_URL || "https://ledger.local";
   const palette = {
     red:     { dot: "#ef4444", bg: "#fef2f2", text: "#b91c1c" },
@@ -93,9 +93,15 @@ export function renderNotificationDigest({ userName, notifications }) {
     ? "1 new notification"
     : `${notifications.length} new notifications`;
 
+  // When a disclaimer is supplied (e.g. for test emails), it gets:
+  //  - prepended to the text/plain body
+  //  - rendered as a yellow banner above the notification cards in HTML
+  //  - tagged "[TEST]" in the subject so it's obvious in the inbox
+  const subjectPrefix = disclaimer ? "[TEST] " : "";
   return {
-    subject: `Ledger — ${heading}`,
+    subject: `${subjectPrefix}Ledger — ${heading}`,
     text: [
+      ...(disclaimer ? [`*** ${disclaimer} ***`, ""] : []),
       `Hi ${userName || "there"},`,
       "",
       `You have ${heading} from Ledger:`,
@@ -125,6 +131,10 @@ export function renderNotificationDigest({ userName, notifications }) {
 
         <!-- Body -->
         <tr><td style="padding:28px">
+          ${disclaimer ? `
+          <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:12px;padding:12px 14px;margin:0 0 18px 0;color:#92400e;font-size:13px;font-weight:600;line-height:1.45">
+            ⚠ ${disclaimer}
+          </div>` : ""}
           <div style="font-size:18px;font-weight:600;color:#0f172a;margin:0 0 6px 0">Hi ${userName || "there"},</div>
           <div style="font-size:14px;color:#64748b;margin:0 0 20px 0">You have ${heading}.</div>
 

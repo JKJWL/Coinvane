@@ -46,6 +46,7 @@ export const api = {
   listUsers: () => request("GET", "/auth/users"),
   deleteUser: (id) => request("DELETE", `/auth/users/${id}`),
   updateUserRole: (id, role) => request("PATCH", `/auth/users/${id}/role`, { role }),
+  sendUserTestEmail: (id) => request("POST", `/auth/users/${id}/test-email`),
 
   // accounts
   getAccounts: () => request("GET", "/accounts"),
