@@ -349,19 +349,27 @@ async function run() {
   }
 
   // ── Owner backfill ──────────────────────────────────────────────
-  // Promote the oldest admin to "owner" if there isn't an owner yet.
-  // This makes existing single-instance deployments grant the first
-  // sign-up the new owner privileges automatically.
+  // Single-instance deployments need exactly one owner. If none exists
+  // yet, promote the oldest admin. If there are also no admins (e.g. an
+  // old deployment where the seed code never set role='admin' for the
+  // first user — or that row was manually edited), fall through and
+  // promote the lowest-id user instead. The "oldest user is the owner"
+  // assumption matches the single-tenant pattern this app is built for.
   const existingOwner = await queryOne(
     "SELECT id FROM users WHERE role = 'owner' LIMIT 1"
   );
   if (!existingOwner) {
-    const firstAdmin = await queryOne(
+    let candidate = await queryOne(
       "SELECT id, email FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1"
     );
-    if (firstAdmin) {
-      await query("UPDATE users SET role = 'owner' WHERE id = ?", [firstAdmin.id]);
-      console.log(`Promoted first admin (#${firstAdmin.id} ${firstAdmin.email}) to owner.`);
+    if (!candidate) {
+      candidate = await queryOne(
+        "SELECT id, email FROM users ORDER BY id ASC LIMIT 1"
+      );
+    }
+    if (candidate) {
+      await query("UPDATE users SET role = 'owner' WHERE id = ?", [candidate.id]);
+      console.log(`Promoted first user (#${candidate.id} ${candidate.email}) to owner.`);
     }
   }
 
