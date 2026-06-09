@@ -206,7 +206,7 @@ function ConfirmDialog({
                 )}
                 <h3 className="font-semibold text-base mb-1">{title}</h3>
                 {message && (
-                  <p className={`text-sm ${theme.textMuted} leading-relaxed`}>{message}</p>
+                  <p className={`text-sm ${theme.textMuted} leading-relaxed whitespace-pre-line`}>{message}</p>
                 )}
               </div>
               <div className={`flex gap-2 px-5 pb-5`}>
@@ -3368,12 +3368,18 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
   // Admin extras
   const [info, setInfo] = useState(null);
   const [syncMin, setSyncMin] = useState("");
-  const [syncSaving, setSyncSaving] = useState(false);
+  const [origSyncMin, setOrigSyncMin] = useState("");
   const [allowText, setAllowText] = useState("");
-  const [allowSaving, setAllowSaving] = useState(false);
+  const [origAllowText, setOrigAllowText] = useState("");
+  // Pending role changes — keyed by user id. Empty when nothing pending.
+  // Cleared after a successful save so the dropdown reflects fresh state.
+  const [roleChanges, setRoleChanges] = useState({});
   const [audit, setAudit] = useState([]);
   const [cleanupDays, setCleanupDays] = useState(30);
   const [cleanupBusy, setCleanupBusy] = useState(false);
+  const [confirmCleanup, setConfirmCleanup] = useState(false);
+  const [confirmRoleChanges, setConfirmRoleChanges] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const load = async () => {
     try { setUsers(await api.listUsers()); } catch {}
@@ -3387,8 +3393,10 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
         api.adminGetAudit(),
       ]);
       setInfo(i);
-      setSyncMin(String(s.minutes));
-      setAllowText((a.emails || []).join("\n"));
+      const sm = String(s.minutes);
+      setSyncMin(sm); setOrigSyncMin(sm);
+      const at = (a.emails || []).join("\n");
+      setAllowText(at); setOrigAllowText(at);
       setAudit(al);
     } catch (e) { /* swallow — non-admin will 403 elsewhere */ }
   };
@@ -3416,15 +3424,96 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
   // Owner-only, target must not be self or another owner.
   const canChangeRole = (u) => isOwner && u.id !== currentUser.id && u.role !== "owner";
 
-  const setRole = async (u, newRole) => {
+  // Stage a role change locally — does NOT hit the API. The change is
+  // applied when the user clicks Save and confirms the dialog. Setting the
+  // dropdown back to the user's current role removes the pending entry so
+  // dirty stays accurate.
+  const stageRoleChange = (u, newRole) => {
     if (!canChangeRole(u)) return;
-    if (u.role === newRole) return;
-    try {
-      await api.updateUserRole(u.id, newRole);
-      toast?.(`${u.name || u.email} is now ${newRole === "admin" ? "an admin" : "a member"}`, "success");
-      load();
-    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    setRoleChanges(prev => {
+      const next = { ...prev };
+      if (newRole === u.role) delete next[u.id];
+      else next[u.id] = newRole;
+      return next;
+    });
   };
+  // Effective role shown in the dropdown — pending change beats the server
+  // value until save lands.
+  const effectiveRole = (u) =>
+    roleChanges[u.id] !== undefined ? roleChanges[u.id] : u.role;
+
+  // Pretty role labels used in the confirmation dialog.
+  const roleLabel = (r) => r === "user" ? "member" : r;
+
+  // Dirty when any of the three things differ from their server snapshot.
+  const dirty =
+    syncMin !== origSyncMin
+    || allowText !== origAllowText
+    || Object.keys(roleChanges).length > 0;
+
+  // Hitting the save bar's Save button. If there are role changes we open
+  // the confirmation dialog first; everything else flows through commitSave.
+  const onSaveClick = () => {
+    if (Object.keys(roleChanges).length > 0) {
+      setConfirmRoleChanges(true);
+      return;
+    }
+    commitSave();
+  };
+
+  const commitSave = async () => {
+    setConfirmRoleChanges(false);
+    setSaving(true);
+    try {
+      // Role changes first — they're the most consequential.
+      for (const [uid, newRole] of Object.entries(roleChanges)) {
+        const u = users.find(x => x.id === Number(uid));
+        await api.updateUserRole(Number(uid), newRole);
+        if (u) toast?.(`${u.name || u.email} is now ${roleLabel(newRole)}`, "success");
+      }
+      // Sync interval (owner-only — the server enforces it too).
+      if (syncMin !== origSyncMin) {
+        const n = Math.round(Number(syncMin));
+        if (!Number.isFinite(n) || n < 1) throw new Error("Sync interval must be a positive number");
+        await api.adminSetSyncInterval(n);
+        setOrigSyncMin(String(n));
+      }
+      // Allowlist.
+      if (allowText !== origAllowText) {
+        const emails = allowText.split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
+        const r = await api.adminSetAllowlist(emails);
+        const at = (r.emails || []).join("\n");
+        setAllowText(at); setOrigAllowText(at);
+      }
+      setRoleChanges({});
+      // Reload users so the dropdown reflects the new server-side roles.
+      await load();
+      // Refresh audit log so the new major entries appear.
+      try { setAudit(await api.adminGetAudit()); } catch {}
+      toast?.("Changes saved", "success");
+    } catch (e) {
+      toast?.("Failed: " + (e.message || ""), "error");
+    } finally { setSaving(false); }
+  };
+
+  // Friendly message for the role-change confirm dialog.
+  // For a single change: matches the wording you asked for.
+  // For multiple: a compact list with one shared confirm.
+  const roleChangeMessage = useMemo(() => {
+    const entries = Object.entries(roleChanges).map(([uid, newRole]) => {
+      const u = users.find(x => x.id === Number(uid));
+      return u ? { name: u.name || u.email, oldRole: u.role, newRole } : null;
+    }).filter(Boolean);
+    if (entries.length === 0) return "";
+    if (entries.length === 1) {
+      const e = entries[0];
+      const action = e.newRole === "admin" ? "promote" : "demote";
+      return `You are about to ${action} this "${roleLabel(e.oldRole)}" to "${roleLabel(e.newRole)}", are you sure you wish to do this?`;
+    }
+    return `You are about to make ${entries.length} role changes:\n\n${
+      entries.map(e => `• ${e.name}: ${roleLabel(e.oldRole)} → ${roleLabel(e.newRole)}`).join("\n")
+    }\n\nAre you sure you wish to do this?`;
+  }, [roleChanges, users]);
 
   const performRemove = async () => {
     if (!toRemove) return;
@@ -3441,33 +3530,17 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
     }
   };
 
-  const saveSync = async () => {
-    const n = Math.round(Number(syncMin));
-    if (!n || n < 1) { toast?.("Enter a positive minute count", "error"); return; }
-    setSyncSaving(true);
-    try {
-      await api.adminSetSyncInterval(n);
-      toast?.("Sync interval saved (restart worker to apply)", "success");
-    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
-    finally { setSyncSaving(false); }
-  };
-
-  const saveAllow = async () => {
-    const emails = allowText.split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
-    setAllowSaving(true);
-    try {
-      const r = await api.adminSetAllowlist(emails);
-      setAllowText((r.emails || []).join("\n"));
-      toast?.(`Allowlist saved (${r.emails.length} email${r.emails.length === 1 ? "" : "s"})`, "success");
-    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
-    finally { setAllowSaving(false); }
-  };
-
+  // Notification cleanup is its own destructive action (not a settings
+  // change), so it goes through a confirm dialog rather than the save bar.
   const runCleanup = async () => {
+    setConfirmCleanup(false);
     setCleanupBusy(true);
     try {
       const r = await api.adminCleanupNotifications(cleanupDays);
       toast?.(`Deleted ${r.deleted} notification${r.deleted === 1 ? "" : "s"}`, "success");
+      // The cleanup is audited as a major event — refresh the log so it
+      // surfaces immediately.
+      try { setAudit(await api.adminGetAudit()); } catch {}
     } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
     finally { setCleanupBusy(false); }
   };
@@ -3482,6 +3555,12 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
 
   return (
     <div className="space-y-4">
+      {/* Sticky save bar appears whenever a non-destructive change is
+          pending (sync interval, allowlist, role staging). Destructive
+          actions (delete user, cleanup notifications) go through their
+          own ConfirmDialog and aren't tracked here. */}
+      <SaveBar dirty={dirty} saving={saving} onSave={onSaveClick} theme={theme} darkMode={darkMode} />
+
       {/* ── App info ── */}
       {info && (
         <div className={`${theme.surface} rounded-2xl border ${theme.border} p-5`}>
@@ -3530,13 +3609,6 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
             disabled={!isOwner}
             onChange={e => setSyncMin(e.target.value.replace(/[^\d]/g, ""))} />
           <span className={`text-xs ${theme.textSubtle}`}>minutes</span>
-          {isOwner && (
-            <motion.button whileTap={{ scale: 0.97 }} type="button" disabled={syncSaving}
-              onClick={saveSync}
-              className="bg-emerald-500 text-white px-3 py-2 rounded-xl text-sm font-semibold disabled:opacity-60">
-              {syncSaving ? "Saving…" : "Save"}
-            </motion.button>
-          )}
         </div>
       </div>
 
@@ -3554,13 +3626,6 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
           className={`${inputCls} font-mono text-xs leading-relaxed ${!isOwner ? "opacity-60" : ""}`}
           value={allowText} onChange={e => setAllowText(e.target.value)}
           placeholder="jane@example.com&#10;john@example.com" />
-        {isOwner && (
-          <motion.button whileTap={{ scale: 0.97 }} type="button" disabled={allowSaving}
-            onClick={saveAllow}
-            className="bg-emerald-500 text-white px-3 py-2 rounded-xl text-sm font-semibold disabled:opacity-60">
-            {allowSaving ? "Saving…" : "Save allowlist"}
-          </motion.button>
-        )}
       </div>
 
       {/* ── Members ── */}
@@ -3599,10 +3664,16 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
                   {showRoleSelect ? (
                     // Owner: change Member ⇄ Admin via dropdown. "Owner" is
                     // intentionally NOT an option — single-owner instance.
+                    // Selecting a new value stages it; the actual API call
+                    // fires from the sticky save bar after confirmation.
                     <select
-                      value={u.role}
-                      onChange={(e) => setRole(u, e.target.value)}
-                      className={`text-xs px-2 py-1 rounded-full font-medium border ${theme.border} ${theme.surface} focus:outline-none focus:border-emerald-500`}>
+                      value={effectiveRole(u)}
+                      onChange={(e) => stageRoleChange(u, e.target.value)}
+                      className={`text-xs px-2 py-1 rounded-full font-medium border ${
+                        roleChanges[u.id] !== undefined
+                          ? (darkMode ? "border-emerald-500 bg-emerald-500/10" : "border-emerald-500 bg-emerald-50")
+                          : `${theme.border} ${theme.surface}`
+                      } focus:outline-none focus:border-emerald-500`}>
                       <option value="user">Member</option>
                       <option value="admin">Admin</option>
                     </select>
@@ -3655,7 +3726,7 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
             onChange={e => setCleanupDays(e.target.value.replace(/[^\d]/g, ""))} />
           <span className={`text-xs ${theme.textSubtle}`}>days</span>
           <motion.button whileTap={{ scale: 0.97 }} type="button" disabled={cleanupBusy}
-            onClick={runCleanup}
+            onClick={() => setConfirmCleanup(true)}
             className={`px-3 py-2 rounded-xl text-sm font-semibold ${darkMode ? "bg-rose-500/15 text-rose-300 border border-rose-500/30" : "bg-rose-50 text-rose-700 border border-rose-200"} disabled:opacity-60`}>
             {cleanupBusy ? "Working…" : "Delete"}
           </motion.button>
@@ -3706,6 +3777,32 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
         title="Remove this user?"
         message={toRemove && `${toRemove.name || toRemove.email} will be deleted along with all their accounts, transactions, budgets, goals, and notes. This cannot be undone.`}
         confirmLabel="Remove user"
+      />
+
+      {/* Role-change confirmation — fired by the save bar when any role
+          dropdown has been staged. Cancelling leaves the staged changes
+          intact so the user can keep editing or undo manually. */}
+      <ConfirmDialog
+        open={confirmRoleChanges}
+        onCancel={() => !saving && setConfirmRoleChanges(false)}
+        onConfirm={commitSave}
+        theme={theme} darkMode={darkMode}
+        busy={saving}
+        title="Confirm role change"
+        message={roleChangeMessage}
+        confirmLabel="Yes, apply"
+      />
+
+      {/* Notification cleanup confirmation — destructive bulk delete. */}
+      <ConfirmDialog
+        open={confirmCleanup}
+        onCancel={() => !cleanupBusy && setConfirmCleanup(false)}
+        onConfirm={runCleanup}
+        theme={theme} darkMode={darkMode}
+        busy={cleanupBusy}
+        title="Delete old notifications?"
+        message={`Every in-app notification older than ${cleanupDays} day${cleanupDays == 1 ? "" : "s"} will be permanently removed across all users. This cannot be undone.`}
+        confirmLabel="Delete notifications"
       />
     </div>
   );
@@ -3893,6 +3990,65 @@ function MobileBanksSection({ theme, darkMode, toast }) {
 }
 
 // ─── Settings Panel ───────────────────────────────────────────────────────────
+// ─── Reusable sticky "unsaved changes" save bar + side ribbon ───────────────
+// Used by Settings and the Admin panel. Pinned at the top of the parent's
+// scroll context when dirty; a small floating ribbon slides in on the right
+// once the user has scrolled past the bar and click-scrolls them back to it.
+function SaveBar({ dirty, saving, onSave, theme, darkMode, label = "You have unsaved changes" }) {
+  const [scrolledFromTop, setScrolledFromTop] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setScrolledFromTop(window.scrollY > 120);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+  const scrollToTop = () => window.scrollTo({ top: 0, behavior: "smooth" });
+  return (
+    <>
+      <AnimatePresence initial={false}>
+        {dirty && (
+          <motion.div
+            key="save-bar"
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.18 }}
+            className="sticky top-0 z-30 -mx-1 px-1">
+            <div className={`flex items-center justify-between gap-3 px-4 py-3 rounded-2xl border shadow-lg ${
+              darkMode
+                ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-50 backdrop-blur"
+                : "bg-emerald-50 border-emerald-200 text-emerald-900 backdrop-blur"
+            }`}>
+              <div className="text-sm font-medium">{label}</div>
+              <motion.button whileTap={{ scale: 0.95 }} type="button"
+                onClick={onSave} disabled={saving}
+                className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold disabled:opacity-60">
+                {saving ? "Saving…" : "Save changes"}
+              </motion.button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {dirty && scrolledFromTop && (
+          <motion.button key="save-ribbon" type="button"
+            onClick={scrollToTop}
+            initial={{ opacity: 0, x: 40 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 40 }}
+            whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.96 }}
+            transition={{ duration: 0.18 }}
+            className="fixed right-0 top-24 z-40 pl-3 pr-4 py-2 rounded-l-xl bg-emerald-500 text-white text-xs font-semibold shadow-lg shadow-emerald-500/30 flex items-center gap-2"
+            aria-label="Scroll to save bar">
+            <ArrowUpRight className="w-3.5 h-3.5 -rotate-90" />
+            Save Changes?
+          </motion.button>
+        )}
+      </AnimatePresence>
+    </>
+  );
+}
+
 const WEEK_DAYS = [
   { v: 0, label: "Sunday" }, { v: 1, label: "Monday" }, { v: 2, label: "Tuesday" },
   { v: 3, label: "Wednesday" }, { v: 4, label: "Thursday" },
@@ -3908,15 +4064,6 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
   const [exportingPdf, setExportingPdf] = useState(false);
   const [importingCsv, setImportingCsv] = useState(false);
   const [saving, setSaving] = useState(false);
-  // Track scroll position so the floating "Save Changes?" ribbon only
-  // appears once the user has scrolled past the sticky save bar.
-  const [scrolledFromTop, setScrolledFromTop] = useState(false);
-  useEffect(() => {
-    const onScroll = () => setScrolledFromTop(window.scrollY > 120);
-    onScroll();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
 
   // Snapshot of "what the server currently has" so we can detect unsaved
   // changes by comparing to `form`. Built lazily once at mount; reset
@@ -3975,9 +4122,6 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
     finally { setSaving(false); }
   };
 
-  // Smooth-scroll the page to the top — used by the side ribbon when the
-  // user has scrolled away from the sticky save bar.
-  const scrollToTop = () => window.scrollTo({ top: 0, behavior: "smooth" });
 
   function Toggle({ checked, onChange, disabled }) {
     return (
@@ -4028,50 +4172,7 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
 
   return (
     <div className="space-y-4" ref={rootRef}>
-      {/* ── Sticky save bar (top of settings, only when there are unsaved changes) ── */}
-      <AnimatePresence initial={false}>
-        {dirty && (
-          <motion.div
-            key="save-bar"
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            transition={{ duration: 0.18 }}
-            className="sticky top-0 z-30 -mx-1 px-1">
-            <div className={`flex items-center justify-between gap-3 px-4 py-3 rounded-2xl border shadow-lg ${
-              darkMode
-                ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-50 backdrop-blur"
-                : "bg-emerald-50 border-emerald-200 text-emerald-900 backdrop-blur"
-            }`}>
-              <div className="text-sm font-medium">You have unsaved changes</div>
-              <motion.button whileTap={{ scale: 0.95 }} type="button"
-                onClick={save} disabled={saving}
-                className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold disabled:opacity-60">
-                {saving ? "Saving…" : "Save changes"}
-              </motion.button>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* ── Floating "Save Changes?" ribbon — visible once you've scrolled
-              past the sticky bar. Click → smooth-scroll back to it. ── */}
-      <AnimatePresence>
-        {dirty && scrolledFromTop && (
-          <motion.button key="save-ribbon" type="button"
-            onClick={scrollToTop}
-            initial={{ opacity: 0, x: 40 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 40 }}
-            whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.96 }}
-            transition={{ duration: 0.18 }}
-            className="fixed right-0 top-24 z-40 pl-3 pr-4 py-2 rounded-l-xl bg-emerald-500 text-white text-xs font-semibold shadow-lg shadow-emerald-500/30 flex items-center gap-2"
-            aria-label="Scroll to save bar">
-            <ArrowUpRight className="w-3.5 h-3.5 -rotate-90" />
-            Save Changes?
-          </motion.button>
-        )}
-      </AnimatePresence>
+      <SaveBar dirty={dirty} saving={saving} onSave={save} theme={theme} darkMode={darkMode} />
 
       {/* ── Appearance + display prefs ── */}
       <div className={`${theme.surface} border ${theme.border} rounded-2xl p-5 space-y-4`}>
