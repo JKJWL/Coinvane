@@ -4112,7 +4112,11 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
           </div>
         </div>
         <div className={`text-xs ${theme.textSubtle} mt-3`}>
-          Signed in with Google · {user.role === "admin" ? "Administrator" : "Member"}
+          Signed in with Google · {
+            user.role === "owner" ? "Owner"
+            : user.role === "admin" ? "Administrator"
+            : "Member"
+          }
         </div>
       </div>
 
@@ -4391,7 +4395,9 @@ function Shell({ user, onLogout, refreshUser }) {
     { id: "notes",        label: "Notes",        icon: FileText    },
     { id: "settings",     label: "Settings",     icon: Settings    },
     // Admin sits AFTER Settings so the dropdown reads Settings → Admin.
-    ...(user.role === "admin" ? [{ id: "admin", label: "Admin", icon: Users }] : []),
+    // Both 'owner' and 'admin' get the Admin tab. The owner has elevated
+    // controls inside the panel but the tab itself is visible to either.
+    ...((user.role === "admin" || user.role === "owner") ? [{ id: "admin", label: "Admin", icon: Users }] : []),
   ];
   const TITLES = { dashboard:"Overview", accounts:"Accounts", transactions:"Transactions", investments:"Investments", budgets:"Budgets", goals:"Goals", notes:"Notes", admin:"Admin", settings:"Settings" };
   const mainTabs = ALL_TABS.slice(0, 7);
