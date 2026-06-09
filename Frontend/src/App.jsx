@@ -1963,14 +1963,27 @@ function DetailRow({ label, value, theme }) {
 }
 
 // ─── Budgets Tab ──────────────────────────────────────────────────────────────
-const BUDGET_PERIODS = [
-  { id: "weekly",      label: "Weekly",       desc: "Resets every Sunday" },
-  { id: "biweekly",    label: "Bi-weekly",    desc: "Resets every 2 weeks" },
-  { id: "semimonthly", label: "Twice a month",desc: "Resets on the 1st & 15th" },
-  { id: "monthly",     label: "Monthly",      desc: "Resets on the 1st" },
-  { id: "yearly",      label: "Yearly",       desc: "Resets January 1" },
-  { id: "custom",      label: "Custom…",      desc: "Choose your own interval" },
-];
+const WEEK_DAY_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+
+// Period option list for the income/credit tracker sheets. weekStart is the
+// user-configured first day of the week (0=Sun … 6=Sat); the weekly option's
+// subtitle reflects it so "Weekly · Resets every Tuesday" stays accurate when
+// the user picks a non-Sunday start day in Settings.
+function getBudgetPeriods(weekStart = 0) {
+  const dayName = WEEK_DAY_NAMES[((Number(weekStart) || 0) % 7 + 7) % 7];
+  return [
+    { id: "weekly",      label: "Weekly",       desc: `Resets every ${dayName}` },
+    { id: "biweekly",    label: "Bi-weekly",    desc: "Resets every 2 weeks" },
+    { id: "semimonthly", label: "Twice a month",desc: "Resets on the 1st & 15th" },
+    { id: "monthly",     label: "Monthly",      desc: "Resets on the 1st" },
+    { id: "yearly",      label: "Yearly",       desc: "Resets January 1" },
+    { id: "custom",      label: "Custom…",      desc: "Choose your own interval" },
+  ];
+}
+// Back-compat alias for the few places that just need labels (no day-name
+// in subtitles). Kept as a constant so existing fmtPeriodLabel etc. don't
+// need to thread weekStart through.
+const BUDGET_PERIODS = getBudgetPeriods(0);
 
 function fmtPeriodLabel(period, days) {
   if (period === "custom" && days) return `Every ${days}d`;
@@ -2369,6 +2382,12 @@ function BudgetCard({ b, theme, darkMode, onEdit, onDelete, reorderLocked,
 }
 
 function BudgetsTab({ theme, darkMode, toast }) {
+  const { user: authUser } = useAuth();
+  // weekStart drives the tracker sheet's "Weekly · Resets every Xday" subtitle.
+  const trackerPeriods = useMemo(
+    () => getBudgetPeriods(Number(authUser?.week_start) || 0),
+    [authUser?.week_start]
+  );
   const { budgets, categories, accounts, trackers, budgetSuggestions, refreshAll } = useData();
   const [showAdd, setShowAdd] = useState(false);           // Add/Edit budget sheet
   const [editing, setEditing] = useState(null);            // budget being edited, or null
@@ -2829,7 +2848,7 @@ function BudgetsTab({ theme, darkMode, toast }) {
             <div>
               <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Reset every</label>
               <div className="grid grid-cols-2 gap-2">
-                {BUDGET_PERIODS.map(p => {
+                {trackerPeriods.map(p => {
                   const active = trackerSheet.period === p.id;
                   return (
                     <button type="button" key={p.id} onClick={() => setTrackerSheet({ ...trackerSheet, period: p.id })}
