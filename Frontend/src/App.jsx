@@ -3564,22 +3564,9 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
       {/* ── App info ── */}
       {info && (
         <div className={`${theme.surface} rounded-2xl border ${theme.border} p-5`}>
-          <div className="flex items-center justify-between mb-3 gap-3">
-            <h3 className="font-semibold">App info</h3>
-            {/* Test email is owner-only — costs an outbound email per click. */}
-            {info.emailEnabled && isOwner && (
-              <motion.button whileTap={{ scale: 0.97 }} type="button"
-                onClick={async () => {
-                  try {
-                    const r = await api.sendTestEmail();
-                    toast?.(`Test email sent to ${r.sentTo}`, "success");
-                  } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
-                }}
-                className={`text-xs font-medium ${theme.surface} border ${theme.border} px-3 py-1.5 rounded-lg`}>
-                Send sample email
-              </motion.button>
-            )}
-          </div>
+          <h3 className="font-semibold mb-3">App info</h3>
+          {/* Test email button moved to the Members section — per-row
+              Mail icon lets the owner target a specific user. */}
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
             <Stat label="Plaid env"      value={info.plaidEnvironment} />
             <Stat label="Email enabled"  value={info.emailEnabled ? "yes" : "no"} />
