@@ -3797,30 +3797,50 @@ const WEEK_DAYS = [
 function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
   const toast = useToast();
   const fileInputRef = useRef(null);
+  const rootRef = useRef(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [importingCsv, setImportingCsv] = useState(false);
-  // All editable preferences sit in a single form object so we can save the
-  // whole sheet with one Save button at the end. Booleans coerced from
-  // possibly-undefined server values to true defaults (matches userPayload).
-  const [form, setForm] = useState({
-    name: user.name || "",
-    notification_email: user.notification_email !== false,
-    notification_push: user.notification_push !== false,
-    notify_large_txn:       user.notify_large_txn       !== false,
-    large_txn_threshold:    Number(user.large_txn_threshold ?? 500),
-    notify_income:          user.notify_income          !== false,
-    income_threshold:       Number(user.income_threshold ?? 100),
-    notify_budget_warning:  user.notify_budget_warning  !== false,
-    budget_warning_pct:     Number(user.budget_warning_pct ?? 80),
-    notify_budget_exceeded: user.notify_budget_exceeded !== false,
-    notify_goal_milestone:  user.notify_goal_milestone  !== false,
-    privacy_mode:           !!user.privacy_mode,
-    week_start:             Number(user.week_start ?? 0),
-    email_frequency:        user.email_frequency || "daily",
-    email_weekday:          Number(user.email_weekday ?? 1),
+  const [saving, setSaving] = useState(false);
+  // Track scroll position so the floating "Save Changes?" ribbon only
+  // appears once the user has scrolled past the sticky save bar.
+  const [scrolledFromTop, setScrolledFromTop] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setScrolledFromTop(window.scrollY > 120);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // Snapshot of "what the server currently has" so we can detect unsaved
+  // changes by comparing to `form`. Built lazily once at mount; reset
+  // every successful save so the dirty flag clears.
+  const buildSnapshot = (u) => ({
+    name: u.name || "",
+    notification_email: u.notification_email !== false,
+    notification_push: u.notification_push !== false,
+    notify_large_txn:       u.notify_large_txn       !== false,
+    large_txn_threshold:    Number(u.large_txn_threshold ?? 500),
+    notify_income:          u.notify_income          !== false,
+    income_threshold:       Number(u.income_threshold ?? 100),
+    notify_budget_warning:  u.notify_budget_warning  !== false,
+    budget_warning_pct:     Number(u.budget_warning_pct ?? 80),
+    notify_budget_exceeded: u.notify_budget_exceeded !== false,
+    notify_goal_milestone:  u.notify_goal_milestone  !== false,
+    privacy_mode:           !!u.privacy_mode,
+    week_start:             Number(u.week_start ?? 0),
+    email_frequency:        u.email_frequency || "daily",
+    email_weekday:          Number(u.email_weekday ?? 1),
   });
+  const [form, setForm] = useState(() => buildSnapshot(user));
+  const [original, setOriginal] = useState(() => buildSnapshot(user));
+  // Cheap deep-equal via stringify — both sides are flat objects of the
+  // same shape so key order is deterministic.
+  const dirty = useMemo(
+    () => JSON.stringify(form) !== JSON.stringify(original),
+    [form, original]
+  );
 
   // Integer input helper that strips non-digits and clamps. Used by the
   // threshold inputs and the budget-warning %.
@@ -3831,7 +3851,9 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
   };
 
   const save = async (e) => {
-    e.preventDefault();
+    e?.preventDefault?.();
+    if (!dirty || saving) return;
+    setSaving(true);
     try {
       // Coerce empty strings → server default by sending the current row's
       // value; the server's COALESCE leaves it alone if null.
@@ -3840,10 +3862,17 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
         if (payload[k] === "" || payload[k] === null) delete payload[k];
       }
       await api.updateMe(payload);
+      // Clear dirty by re-baselining original to the current form.
+      setOriginal(form);
       toast?.("Settings saved", "success");
       onUpdate?.();
     } catch (err) { toast?.("Failed: " + err.message, "error"); }
+    finally { setSaving(false); }
   };
+
+  // Smooth-scroll the page to the top — used by the side ribbon when the
+  // user has scrolled away from the sticky save bar.
+  const scrollToTop = () => window.scrollTo({ top: 0, behavior: "smooth" });
 
   function Toggle({ checked, onChange, disabled }) {
     return (
@@ -3893,7 +3922,52 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" ref={rootRef}>
+      {/* ── Sticky save bar (top of settings, only when there are unsaved changes) ── */}
+      <AnimatePresence initial={false}>
+        {dirty && (
+          <motion.div
+            key="save-bar"
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.18 }}
+            className="sticky top-0 z-30 -mx-1 px-1">
+            <div className={`flex items-center justify-between gap-3 px-4 py-3 rounded-2xl border shadow-lg ${
+              darkMode
+                ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-50 backdrop-blur"
+                : "bg-emerald-50 border-emerald-200 text-emerald-900 backdrop-blur"
+            }`}>
+              <div className="text-sm font-medium">You have unsaved changes</div>
+              <motion.button whileTap={{ scale: 0.95 }} type="button"
+                onClick={save} disabled={saving}
+                className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold disabled:opacity-60">
+                {saving ? "Saving…" : "Save changes"}
+              </motion.button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Floating "Save Changes?" ribbon — visible once you've scrolled
+              past the sticky bar. Click → smooth-scroll back to it. ── */}
+      <AnimatePresence>
+        {dirty && scrolledFromTop && (
+          <motion.button key="save-ribbon" type="button"
+            onClick={scrollToTop}
+            initial={{ opacity: 0, x: 40 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 40 }}
+            whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.96 }}
+            transition={{ duration: 0.18 }}
+            className="fixed right-0 top-24 z-40 pl-3 pr-4 py-2 rounded-l-xl bg-emerald-500 text-white text-xs font-semibold shadow-lg shadow-emerald-500/30 flex items-center gap-2"
+            aria-label="Scroll to save bar">
+            <ArrowUpRight className="w-3.5 h-3.5 -rotate-90" />
+            Save Changes?
+          </motion.button>
+        )}
+      </AnimatePresence>
+
       {/* ── Appearance + display prefs ── */}
       <div className={`${theme.surface} border ${theme.border} rounded-2xl p-5 space-y-4`}>
         <h3 className="font-semibold">Appearance</h3>
@@ -4084,8 +4158,8 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
           </div>
           <Toggle checked={form.notification_push} onChange={v => setForm({ ...form, notification_push: v })} />
         </div>
-
-        <motion.button whileTap={{ scale: 0.97 }} type="submit" className="bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm font-semibold">Save</motion.button>
+        {/* No bottom Save button — the sticky bar at the top of the page is
+            the single save action whenever the form is dirty. */}
       </form>
 
       {/* ── Data tools (CSV / PDF) ── */}
@@ -4212,7 +4286,7 @@ function Shell({ user, onLogout, refreshUser }) {
     }
   }, [refreshUser, toast]);
 
-  const TAB_ORDER = ["dashboard","accounts","transactions","investments","budgets","goals","notes","users","settings"];
+  const TAB_ORDER = ["dashboard","accounts","transactions","investments","budgets","goals","notes","settings","admin"];
   const direction = TAB_ORDER.indexOf(tab) - TAB_ORDER.indexOf(prevTab);
   const navigate = (t) => { setPrevTab(tab); setTab(t); };
 
@@ -4231,10 +4305,11 @@ function Shell({ user, onLogout, refreshUser }) {
     { id: "budgets",      label: "Budgets",      icon: PieChartIcon },
     { id: "goals",        label: "Goals",        icon: Target      },
     { id: "notes",        label: "Notes",        icon: FileText    },
-    ...(user.role === "admin" ? [{ id: "users", label: "Users", icon: Users }] : []),
     { id: "settings",     label: "Settings",     icon: Settings    },
+    // Admin sits AFTER Settings so the dropdown reads Settings → Admin.
+    ...(user.role === "admin" ? [{ id: "admin", label: "Admin", icon: Users }] : []),
   ];
-  const TITLES = { dashboard:"Overview", accounts:"Accounts", transactions:"Transactions", investments:"Investments", budgets:"Budgets", goals:"Goals", notes:"Notes", users:"Users", settings:"Settings" };
+  const TITLES = { dashboard:"Overview", accounts:"Accounts", transactions:"Transactions", investments:"Investments", budgets:"Budgets", goals:"Goals", notes:"Notes", admin:"Admin", settings:"Settings" };
   const mainTabs = ALL_TABS.slice(0, 7);
   const moreTabs = ALL_TABS.slice(7);
   const net = Number(summary?.netWorth || 0);
@@ -4356,7 +4431,7 @@ function Shell({ user, onLogout, refreshUser }) {
                 {tab === "budgets"      && <BudgetsTab       theme={theme} darkMode={darkMode} toast={toast} />}
                 {tab === "goals"        && <GoalsTab         theme={theme} darkMode={darkMode} toast={toast} />}
                 {tab === "notes"        && <NotesTab         theme={theme} darkMode={darkMode} toast={toast} />}
-                {tab === "users"        && <UsersPanel       currentUser={user} theme={theme} darkMode={darkMode} toast={toast} />}
+                {tab === "admin"        && <UsersPanel       currentUser={user} theme={theme} darkMode={darkMode} toast={toast} />}
                 {tab === "settings"     && <SettingsPanel    user={user} onUpdate={refreshUser} theme={theme} darkMode={darkMode} onToggleDark={setDarkMode} />}
               </motion.div>
             </AnimatePresence>
