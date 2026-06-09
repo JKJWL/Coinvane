@@ -70,6 +70,31 @@ export async function generateNotifications(userId) {
     if (n) created.push(n);
   }
 
+  // ── Income received (last 24h, > $100) ──────────────────────────
+  // Positive transactions on non-credit accounts only — credit-card refunds
+  // and card-payments both show as amount > 0 but aren't paychecks, so they
+  // get the same exclusion the income tracker uses. Title suffixes the
+  // merchant so the daily de-dupe key (type + title) still allows multiple
+  // paychecks from different sources on the same day.
+  const income = await query(
+    `SELECT t.merchant, t.amount, t.date
+     FROM transactions t
+     LEFT JOIN accounts a ON a.id = t.account_id
+     WHERE t.user_id = ? AND t.amount > 100
+       AND (a.type IS NULL OR a.type <> 'credit')
+       AND t.date >= DATE_SUB(CURDATE(), INTERVAL 1 DAY)`,
+    [userId]
+  );
+  for (const t of income) {
+    const merchant = (t.merchant || "").trim() || "your account";
+    const n = await insertNotification(userId, {
+      type: "income_received", icon: "TrendingUp", color: "emerald",
+      title: `Congrats You Got Paid! · ${merchant}`,
+      body: `$${Number(t.amount).toFixed(2)} on ${t.date}`,
+    });
+    if (n) created.push(n);
+  }
+
   // ── Goal progress ────────────────────────────────────────────────
   const goals = await query("SELECT * FROM goals WHERE user_id = ?", [userId]);
   for (const g of goals) {
