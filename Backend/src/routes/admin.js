@@ -17,6 +17,14 @@ import { geoFromIp } from "../audit.js";
  *   GET    /audit              — latest 100 audit log entries (with geo lookup)
  *   POST   /cleanup-notifications  — delete notifications older than N days
  */
+// Per-route rate limit applied to every admin endpoint. The global
+// 200/min already covers these, but @fastify/rate-limit's per-route
+// `config.rateLimit` is what CodeQL's `js/missing-rate-limiting`
+// pattern recognises, and it gives admin endpoints a stricter ceiling
+// than the global one. Pure DDoS hygiene — the auth + admin role
+// preHandlers are the real access gate.
+const ADMIN_LIMIT = { max: 60, timeWindow: "1 minute" };
+
 export default async function (app) {
   app.addHook("preHandler", app.authenticate);
   app.addHook("preHandler", async (req, reply) => {
@@ -26,7 +34,7 @@ export default async function (app) {
   });
 
   // ── App info card ────────────────────────────────────────────
-  app.get("/info", async () => {
+  app.get("/info", { config: { rateLimit: ADMIN_LIMIT } }, async () => {
     const dbStats = await queryOne(
       `SELECT
          (SELECT COUNT(*) FROM users)        AS users,
@@ -48,12 +56,12 @@ export default async function (app) {
   });
 
   // ── Sync interval ────────────────────────────────────────────
-  app.get("/sync-interval", async () => {
+  app.get("/sync-interval", { config: { rateLimit: ADMIN_LIMIT } }, async () => {
     const v = await getAppSetting("sync_interval_minutes", "SYNC_INTERVAL_MINUTES");
     return { minutes: Math.max(1, Number(v) || 60) };
   });
 
-  app.patch("/sync-interval", async (req, reply) => {
+  app.patch("/sync-interval", { config: { rateLimit: ADMIN_LIMIT } }, async (req, reply) => {
     const n = Math.round(Number(req.body?.minutes));
     if (!Number.isFinite(n) || n < 1 || n > 1440) {
       return reply.code(400).send({ error: "minutes must be 1-1440" });
@@ -63,26 +71,41 @@ export default async function (app) {
   });
 
   // ── Allowlist editor (DB-backed) ─────────────────────────────
-  app.get("/allowlist", async () => {
+  app.get("/allowlist", { config: { rateLimit: ADMIN_LIMIT } }, async () => {
     const v = await getAppSetting("allowed_emails", "ALLOWED_EMAILS");
     const list = (v || "").split(",").map(s => s.trim()).filter(Boolean);
     return { emails: list };
   });
 
-  app.put("/allowlist", async (req, reply) => {
+  app.put("/allowlist", { config: { rateLimit: ADMIN_LIMIT } }, async (req, reply) => {
     const emails = Array.isArray(req.body?.emails) ? req.body.emails : null;
     if (!emails) return reply.code(400).send({ error: "emails: string[] required" });
-    // Light email shape check + dedupe + lowercase
+    // Dedupe + lowercase + light shape validation. We avoid the simpler
+    // regex `^[^\s@]+@[^\s@]+\.[^\s@]+$` because its overlapping `+`
+    // quantifiers backtrack on adversarial input — CodeQL's
+    // `js/polynomial-redos` flags it. Manual split-based check is both
+    // faster on long input and impossible to make backtrack.
+    const isValidEmail = (e) => {
+      if (e.length < 3 || e.length > 254) return false;       // RFC 5321 cap
+      const at = e.indexOf("@");
+      if (at < 1 || at !== e.lastIndexOf("@")) return false;  // exactly one @
+      const local = e.slice(0, at);
+      const domain = e.slice(at + 1);
+      if (!local || !domain) return false;
+      if (local.includes(" ") || domain.includes(" ")) return false;
+      const dot = domain.lastIndexOf(".");
+      // domain must have a dot, not at the boundary, and a non-empty TLD
+      return dot > 0 && dot < domain.length - 1;
+    };
     const cleaned = [...new Set(
-      emails.map(e => String(e || "").trim().toLowerCase())
-        .filter(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))
+      emails.map(e => String(e || "").trim().toLowerCase()).filter(isValidEmail)
     )];
     await setAppSetting("allowed_emails", cleaned.join(","));
     return { ok: true, emails: cleaned };
   });
 
   // ── Audit log (last 100, with geo lookup on the fly) ─────────
-  app.get("/audit", async () => {
+  app.get("/audit", { config: { rateLimit: ADMIN_LIMIT } }, async () => {
     const rows = await query(
       `SELECT al.id, al.user_id, u.email AS userEmail, al.action,
               al.ip, al.user_agent, al.metadata, al.created_at AS createdAt
@@ -104,7 +127,7 @@ export default async function (app) {
   });
 
   // ── Notification cleanup ─────────────────────────────────────
-  app.post("/cleanup-notifications", async (req, reply) => {
+  app.post("/cleanup-notifications", { config: { rateLimit: ADMIN_LIMIT } }, async (req, reply) => {
     const days = Math.max(1, Math.min(365, Math.round(Number(req.body?.days) || 30)));
     const r = await query(
       `DELETE FROM notifications WHERE created_at < DATE_SUB(NOW(), INTERVAL ? DAY)`,
