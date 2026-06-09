@@ -4,6 +4,7 @@ import { query, queryOne } from "../db.js";
 import { enqueueMail } from "../queue.js";
 import { renderNotificationDigest, isEmailEnabled } from "../mailer.js";
 import { audit } from "../audit.js";
+import { getAllowedEmails } from "../app-settings.js";
 
 // "open" (default): any allowlisted Google account can sign up.
 // "closed": no new users — existing users may still sign in. Use after
@@ -12,14 +13,13 @@ const SIGNUP_MODE = () => process.env.SIGNUP_MODE || "open";
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
 
-// Hard allowlist — if set, ONLY these emails can sign in (case-insensitive).
-// Leave empty (or unset) to disable the allowlist (not recommended for public deployments).
-const ALLOWED_EMAILS = (process.env.ALLOWED_EMAILS || "")
-  .split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
-
-function emailAllowed(email) {
-  if (ALLOWED_EMAILS.length === 0) return true;
-  return ALLOWED_EMAILS.includes((email || "").toLowerCase());
+async function emailAllowed(email) {
+  // Allowlist now lives in the app_settings table (with fallback to the
+  // ALLOWED_EMAILS env). Admin UI mutates the DB row; auth path consults
+  // it on each sign-in. Empty allowlist = no restriction.
+  const list = await getAllowedEmails();
+  if (list.length === 0) return true;
+  return list.includes((email || "").toLowerCase());
 }
 
 const DEFAULT_CATEGORIES = [
@@ -48,6 +48,20 @@ function userPayload(u) {
     dark_mode: !!u.dark_mode,
     notification_email: !!u.notification_email,
     notification_push: !!u.notification_push,
+    // Notification prefs
+    notify_large_txn:       u.notify_large_txn       === undefined ? true  : !!u.notify_large_txn,
+    large_txn_threshold:    Number(u.large_txn_threshold ?? 500),
+    notify_income:          u.notify_income          === undefined ? true  : !!u.notify_income,
+    income_threshold:       Number(u.income_threshold ?? 100),
+    notify_budget_warning:  u.notify_budget_warning  === undefined ? true  : !!u.notify_budget_warning,
+    budget_warning_pct:     Number(u.budget_warning_pct ?? 80),
+    notify_budget_exceeded: u.notify_budget_exceeded === undefined ? true  : !!u.notify_budget_exceeded,
+    notify_goal_milestone:  u.notify_goal_milestone  === undefined ? true  : !!u.notify_goal_milestone,
+    // Misc prefs
+    privacy_mode:    !!u.privacy_mode,
+    week_start:      Number(u.week_start ?? 0),
+    email_frequency: u.email_frequency || "daily",
+    email_weekday:   Number(u.email_weekday ?? 1),
     // Server-side feature flag: tells the frontend whether the email
     // subsystem is enabled (EMAIL_CONFIG=enabled). The UI greys out the
     // Email Notifs toggle and shows a warning when this is false.
@@ -86,7 +100,7 @@ export default async function (app) {
     }
 
     // ── Hard allowlist enforcement ────────────────────────────────
-    if (!emailAllowed(email)) {
+    if (!(await emailAllowed(email))) {
       req.log.warn({ email, ip: req.ip }, "sign-in rejected: email not in allowlist");
       await audit(null, "auth.rejected", req, { reason: "not_in_allowlist", email });
       return reply.code(403).send({ error: "This Google account is not authorized to access this instance." });
@@ -167,16 +181,34 @@ export default async function (app) {
   });
 
   // ── Profile / settings ──────────────────────────────────────────
+  const ME_COLUMNS = `id, email, name, role, picture, currency, timezone, dark_mode,
+        notification_email, notification_push,
+        notify_large_txn, large_txn_threshold,
+        notify_income, income_threshold,
+        notify_budget_warning, budget_warning_pct,
+        notify_budget_exceeded, notify_goal_milestone,
+        privacy_mode, week_start, email_frequency, email_weekday`;
+
   app.get("/me", { preHandler: [app.authenticate] }, async (req) => {
-    const u = await queryOne(
-      `SELECT id, email, name, role, picture, currency, timezone, dark_mode,
-              notification_email, notification_push FROM users WHERE id = ?`, [req.user.id]
-    );
+    const u = await queryOne(`SELECT ${ME_COLUMNS} FROM users WHERE id = ?`, [req.user.id]);
     return userPayload(u);
   });
 
+  // Coerce a body field to (1 | 0 | null). null means "don't update".
+  const bool = (v) => (v === undefined ? null : (v ? 1 : 0));
+  // Clamp + coerce an integer in [min, max], or null if undefined.
+  const int = (v, min, max) => {
+    if (v === undefined || v === null || v === "") return null;
+    const n = Math.round(Number(v));
+    if (!Number.isFinite(n)) return null;
+    return Math.min(max, Math.max(min, n));
+  };
+
   app.patch("/me", { preHandler: [app.authenticate] }, async (req) => {
-    const { name, currency, timezone, dark_mode, notification_email, notification_push } = req.body || {};
+    const b = req.body || {};
+    const allowedFreq = ["instant", "daily", "weekly"];
+    const freq = b.email_frequency && allowedFreq.includes(b.email_frequency)
+      ? b.email_frequency : null;
     await query(
       `UPDATE users SET
          name = COALESCE(?, name),
@@ -184,18 +216,33 @@ export default async function (app) {
          timezone = COALESCE(?, timezone),
          dark_mode = COALESCE(?, dark_mode),
          notification_email = COALESCE(?, notification_email),
-         notification_push = COALESCE(?, notification_push)
+         notification_push = COALESCE(?, notification_push),
+         notify_large_txn = COALESCE(?, notify_large_txn),
+         large_txn_threshold = COALESCE(?, large_txn_threshold),
+         notify_income = COALESCE(?, notify_income),
+         income_threshold = COALESCE(?, income_threshold),
+         notify_budget_warning = COALESCE(?, notify_budget_warning),
+         budget_warning_pct = COALESCE(?, budget_warning_pct),
+         notify_budget_exceeded = COALESCE(?, notify_budget_exceeded),
+         notify_goal_milestone = COALESCE(?, notify_goal_milestone),
+         privacy_mode = COALESCE(?, privacy_mode),
+         week_start = COALESCE(?, week_start),
+         email_frequency = COALESCE(?, email_frequency),
+         email_weekday = COALESCE(?, email_weekday)
        WHERE id = ?`,
-      [name ?? null, currency ?? null, timezone ?? null,
-       (dark_mode === undefined ? null : (dark_mode ? 1 : 0)),
-       (notification_email === undefined ? null : (notification_email ? 1 : 0)),
-       (notification_push === undefined ? null : (notification_push ? 1 : 0)),
-       req.user.id]
+      [
+        b.name ?? null, b.currency ?? null, b.timezone ?? null,
+        bool(b.dark_mode), bool(b.notification_email), bool(b.notification_push),
+        bool(b.notify_large_txn),       int(b.large_txn_threshold, 1, 1_000_000),
+        bool(b.notify_income),          int(b.income_threshold, 1, 1_000_000),
+        bool(b.notify_budget_warning),  int(b.budget_warning_pct, 1, 99),
+        bool(b.notify_budget_exceeded), bool(b.notify_goal_milestone),
+        bool(b.privacy_mode),           int(b.week_start, 0, 6),
+        freq,                           int(b.email_weekday, 0, 6),
+        req.user.id,
+      ]
     );
-    const u = await queryOne(
-      `SELECT id, email, name, role, picture, currency, timezone, dark_mode,
-              notification_email, notification_push FROM users WHERE id = ?`, [req.user.id]
-    );
+    const u = await queryOne(`SELECT ${ME_COLUMNS} FROM users WHERE id = ?`, [req.user.id]);
     return userPayload(u);
   });
 

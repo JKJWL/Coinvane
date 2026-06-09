@@ -32,6 +32,23 @@ const SCHEMA = [
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS credit_period_days INT NULL`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS credit_period_start DATE NULL`,
 
+  // Notification preferences — every notification type has a per-user
+  // enable flag and (where applicable) a threshold. These are read by
+  // notification-engine.js on each daily run.
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_large_txn BOOLEAN DEFAULT TRUE`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS large_txn_threshold INT DEFAULT 500`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_income BOOLEAN DEFAULT TRUE`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS income_threshold INT DEFAULT 100`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_budget_warning BOOLEAN DEFAULT TRUE`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS budget_warning_pct INT DEFAULT 80`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_budget_exceeded BOOLEAN DEFAULT TRUE`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_goal_milestone BOOLEAN DEFAULT TRUE`,
+  // Misc user prefs
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS privacy_mode BOOLEAN DEFAULT FALSE`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS week_start TINYINT DEFAULT 0`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS email_frequency VARCHAR(16) DEFAULT 'daily'`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS email_weekday TINYINT DEFAULT 1`,
+
   `CREATE TABLE IF NOT EXISTS plaid_items (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
@@ -126,10 +143,15 @@ const SCHEMA = [
     user_id INT NOT NULL,
     merchant VARCHAR(255) NOT NULL,
     category VARCHAR(64) NOT NULL,
+    is_default BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     UNIQUE KEY uq_user_merchant (user_id, merchant)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  // is_default flag lets the "clear all merchant rules" admin action skip
+  // app-shipped defaults. Currently every row is user-created (no shipped
+  // defaults exist yet), so all rows have is_default=FALSE.
+  `ALTER TABLE merchant_rules ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE`,
 
   // ── Budget audit log (historical accuracy) ─────────────────────
   // One row per create/update/delete event with a full state snapshot.
@@ -230,6 +252,18 @@ const SCHEMA = [
     FOREIGN KEY (security_id) REFERENCES securities(id) ON DELETE CASCADE,
     INDEX idx_user (user_id),
     INDEX idx_account (account_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // ── App-level admin settings (DB-backed, hot-editable) ────────────
+  // Stores key/value pairs that used to live exclusively in .env. Reads
+  // fall back to env when a key is missing so existing deployments keep
+  // working without manual seeding.
+  //   "sync_interval_minutes" — overrides SYNC_INTERVAL_MINUTES at runtime
+  //   "allowed_emails"        — overrides ALLOWED_EMAILS (CSV of emails)
+  `CREATE TABLE IF NOT EXISTS app_settings (
+    \`key\` VARCHAR(64) PRIMARY KEY,
+    \`value\` TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
   `CREATE TABLE IF NOT EXISTS audit_log (

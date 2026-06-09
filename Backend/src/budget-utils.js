@@ -53,21 +53,28 @@ function parseLocalDate(s) {
   return new Date(y, m - 1, d); // local midnight of the given date
 }
 
-export function currentPeriodBounds(period, periodStart, periodDays, nowDate) {
+export function currentPeriodBounds(period, periodStart, periodDays, nowDate, weekStart = 0) {
   const now = nowDate ? parseLocalDate(nowDate) || new Date(nowDate) : new Date();
   now.setHours(0, 0, 0, 0);
   const y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
+  // weekStart: 0=Sunday … 6=Saturday. Per-user setting threaded through
+  // from the users table so "weekly" can land on whatever day they want.
+  const ws = ((Number(weekStart) || 0) % 7 + 7) % 7;
 
   switch (period) {
     case "weekly": {
       const dow = now.getDay();
-      const start = new Date(y, m, d - dow);
+      // Days since the last weekStart day, wrapped to [0, 6].
+      const offset = (dow - ws + 7) % 7;
+      const start = new Date(y, m, d - offset);
       const end = new Date(start); end.setDate(start.getDate() + 7);
       return { start, end };
     }
     case "biweekly": {
       const anchor = parseLocalDate(periodStart) || (() => {
-        const a = new Date(now); a.setDate(d - now.getDay()); a.setHours(0,0,0,0); return a;
+        const a = new Date(now);
+        const offset = (now.getDay() - ws + 7) % 7;
+        a.setDate(d - offset); a.setHours(0,0,0,0); return a;
       })();
       const daysSince = Math.floor((now - anchor) / 86400000);
       const cyclesSince = Math.floor(daysSince / 14);
@@ -118,16 +125,17 @@ export function isoDate(d) {
  */
 export async function getMasterPeriod(userId, nowDate) {
   const u = await queryOne(
-    `SELECT income_period, income_period_start, income_period_days
+    `SELECT income_period, income_period_start, income_period_days, week_start
      FROM users WHERE id = ?`,
     [userId]
   );
   const period = u?.income_period || "monthly";
   const periodStart = u?.income_period_start || null;
   const periodDays = u?.income_period_days || null;
-  const bounds = currentPeriodBounds(period, periodStart, periodDays, nowDate);
+  const weekStart = Number(u?.week_start) || 0;
+  const bounds = currentPeriodBounds(period, periodStart, periodDays, nowDate, weekStart);
   return {
-    period, periodStart, periodDays,
+    period, periodStart, periodDays, weekStart,
     start: bounds.start, end: bounds.end,
     startStr: isoDate(bounds.start),
     endStr: isoDate(bounds.end),
@@ -141,9 +149,9 @@ export async function getMasterPeriod(userId, nowDate) {
  *   count=1 → just the current period
  *   count=5 → current + 4 past periods
  */
-export function getPastPeriods(period, periodStart, periodDays, count, nowDate) {
+export function getPastPeriods(period, periodStart, periodDays, count, nowDate, weekStart = 0) {
   const result = [];
-  let cursor = currentPeriodBounds(period, periodStart, periodDays, nowDate);
+  let cursor = currentPeriodBounds(period, periodStart, periodDays, nowDate, weekStart);
   for (let i = 0; i < count; i++) {
     result.push({ start: cursor.start, end: cursor.end });
     // Step one calendar day before this period's start; that day belongs to
@@ -153,7 +161,7 @@ export function getPastPeriods(period, periodStart, periodDays, count, nowDate) 
     // transitions, which can land us in the wrong calendar day.
     const s = cursor.start;
     const dayBefore = new Date(s.getFullYear(), s.getMonth(), s.getDate() - 1);
-    cursor = currentPeriodBounds(period, periodStart, periodDays, dayBefore);
+    cursor = currentPeriodBounds(period, periodStart, periodDays, dayBefore, weekStart);
   }
   // Reverse so oldest is first
   return result.reverse();

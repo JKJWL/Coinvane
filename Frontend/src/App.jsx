@@ -280,7 +280,7 @@ function KpiCard({ label, value, icon: Icon, color, negative, theme, darkMode, f
       <div className={`w-10 h-10 rounded-xl ${p.bg} flex items-center justify-center mb-3`}>
         <Icon className={`w-5 h-5 ${p.icon}`} />
       </div>
-      <div className={`text-xl font-bold ${negative ? "text-rose-500" : ""}`}>
+      <div className={`text-xl font-bold private-amount ${negative ? "text-rose-500" : ""}`} tabIndex={0}>
         <AnimatedNumber value={Number(value)} format={format} duration={0.7} />
       </div>
       <div className={`text-xs font-medium ${theme.textSubtle} mt-0.5`}>{label}</div>
@@ -784,7 +784,7 @@ function NetWorthChart({ theme, darkMode, variant = "hero" }) {
       <div className="relative rounded-3xl bg-gradient-to-br from-emerald-400 via-emerald-500 to-emerald-700 p-5 text-white shadow-xl shadow-emerald-500/30 overflow-hidden">
         <div className="relative">
           <div className="text-[11px] font-semibold uppercase tracking-[0.14em] opacity-90">Net Worth</div>
-          <div className="text-[40px] leading-none font-bold mt-1.5 tracking-tight">
+          <div className="text-[40px] leading-none font-bold mt-1.5 tracking-tight private-amount" tabIndex={0}>
             <AnimatedNumber value={last} format={fmt} />
           </div>
           <div className="flex items-center gap-2 mt-2.5">
@@ -828,7 +828,7 @@ function NetWorthChart({ theme, darkMode, variant = "hero" }) {
       <div className="flex items-start justify-between mb-3 gap-4 flex-wrap">
         <div>
           <h3 className="font-semibold">Net Worth</h3>
-          <div className="text-3xl font-bold mt-1">
+          <div className="text-3xl font-bold mt-1 private-amount" tabIndex={0}>
             <AnimatedNumber value={last} format={fmt} />
           </div>
           <div className={`text-xs mt-1 flex items-center gap-1.5 ${deltaUp ? "text-emerald-500" : "text-rose-500"}`}>
@@ -1739,7 +1739,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
                             {isFlat ? `${t.date} · ` : ""}{t.category} · {t.accountName || "—"}
                           </div>
                         </div>
-                        <div className={`font-semibold text-sm flex-shrink-0 ${Number(t.amount) >= 0 ? "text-emerald-500" : ""}`}>
+                        <div className={`font-semibold text-sm flex-shrink-0 private-amount ${Number(t.amount) >= 0 ? "text-emerald-500" : ""}`} tabIndex={0}>
                           {Number(t.amount) >= 0 ? "+" : "−"}{fmt(Math.abs(Number(t.amount)))}
                         </div>
                       </motion.button>
@@ -3346,10 +3346,34 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
   const [users, setUsers] = useState([]);
   const [toRemove, setToRemove] = useState(null); // user pending delete
   const [removing, setRemoving] = useState(false);
+  // Admin extras
+  const [info, setInfo] = useState(null);
+  const [syncMin, setSyncMin] = useState("");
+  const [syncSaving, setSyncSaving] = useState(false);
+  const [allowText, setAllowText] = useState("");
+  const [allowSaving, setAllowSaving] = useState(false);
+  const [audit, setAudit] = useState([]);
+  const [cleanupDays, setCleanupDays] = useState(30);
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+
   const load = async () => {
     try { setUsers(await api.listUsers()); } catch {}
   };
-  useEffect(() => { load(); }, []);
+  const loadAdmin = async () => {
+    try {
+      const [i, s, a, al] = await Promise.all([
+        api.adminInfo(),
+        api.adminGetSyncInterval(),
+        api.adminGetAllowlist(),
+        api.adminGetAudit(),
+      ]);
+      setInfo(i);
+      setSyncMin(String(s.minutes));
+      setAllowText((a.emails || []).join("\n"));
+      setAudit(al);
+    } catch (e) { /* swallow — non-admin will 403 elsewhere */ }
+  };
+  useEffect(() => { load(); if (currentUser.role === "admin") loadAdmin(); }, []);
 
   if (currentUser.role !== "admin") {
     return (
@@ -3374,18 +3398,102 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
     }
   };
 
+  const saveSync = async () => {
+    const n = Math.round(Number(syncMin));
+    if (!n || n < 1) { toast?.("Enter a positive minute count", "error"); return; }
+    setSyncSaving(true);
+    try {
+      await api.adminSetSyncInterval(n);
+      toast?.("Sync interval saved (restart worker to apply)", "success");
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    finally { setSyncSaving(false); }
+  };
+
+  const saveAllow = async () => {
+    const emails = allowText.split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
+    setAllowSaving(true);
+    try {
+      const r = await api.adminSetAllowlist(emails);
+      setAllowText((r.emails || []).join("\n"));
+      toast?.(`Allowlist saved (${r.emails.length} email${r.emails.length === 1 ? "" : "s"})`, "success");
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    finally { setAllowSaving(false); }
+  };
+
+  const runCleanup = async () => {
+    setCleanupBusy(true);
+    try {
+      const r = await api.adminCleanupNotifications(cleanupDays);
+      toast?.(`Deleted ${r.deleted} notification${r.deleted === 1 ? "" : "s"}`, "success");
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    finally { setCleanupBusy(false); }
+  };
+
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+  const Stat = ({ label, value }) => (
+    <div className={`px-3 py-2 rounded-lg ${darkMode ? "bg-slate-800/60" : "bg-slate-50"} flex items-center justify-between gap-2`}>
+      <span className={`text-xs ${theme.textSubtle}`}>{label}</span>
+      <span className="text-xs font-semibold">{value}</span>
+    </div>
+  );
+
   return (
     <div className="space-y-4">
-      <div className={`${theme.surface} rounded-2xl border ${theme.border} p-5`}>
-        <h3 className="font-semibold mb-2">Adding new users</h3>
-        <p className={`text-sm ${theme.textMuted} leading-relaxed`}>
-          Add the Gmail address to <code className={`px-1.5 py-0.5 rounded ${darkMode ? "bg-slate-800" : "bg-slate-100"} text-[12px]`}>ALLOWED_EMAILS</code> in
-          the server environment and restart the backend. The user then signs
-          in with their own Google account — each account gets its own
-          isolated data.
-        </p>
+      {/* ── App info ── */}
+      {info && (
+        <div className={`${theme.surface} rounded-2xl border ${theme.border} p-5`}>
+          <h3 className="font-semibold mb-3">App info</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            <Stat label="Plaid env"      value={info.plaidEnvironment} />
+            <Stat label="Email enabled"  value={info.emailEnabled ? "yes" : "no"} />
+            <Stat label="SMTP host"      value={info.smtpHost || "—"} />
+            <Stat label="Signup mode"    value={info.signupMode} />
+            <Stat label="Node env"       value={info.nodeEnv} />
+            <Stat label="Users"          value={info.stats?.users ?? "?"} />
+            <Stat label="Accounts"       value={info.stats?.accounts ?? "?"} />
+            <Stat label="Transactions"   value={info.stats?.transactions ?? "?"} />
+            <Stat label="Notifications"  value={info.stats?.notifications ?? "?"} />
+          </div>
+        </div>
+      )}
+
+      {/* ── Sync interval ── */}
+      <div className={`${theme.surface} rounded-2xl border ${theme.border} p-5 space-y-2`}>
+        <h3 className="font-semibold">Plaid sync interval</h3>
+        <div className={`text-xs ${theme.textSubtle}`}>
+          How often the worker re-syncs every Plaid item. Saved value takes effect on the next worker restart.
+        </div>
+        <div className="flex items-center gap-2">
+          <input type="text" inputMode="numeric" pattern="[0-9]*"
+            className={`${inputCls} max-w-[8rem]`} value={syncMin}
+            onChange={e => setSyncMin(e.target.value.replace(/[^\d]/g, ""))} />
+          <span className={`text-xs ${theme.textSubtle}`}>minutes</span>
+          <motion.button whileTap={{ scale: 0.97 }} type="button" disabled={syncSaving}
+            onClick={saveSync}
+            className="bg-emerald-500 text-white px-3 py-2 rounded-xl text-sm font-semibold disabled:opacity-60">
+            {syncSaving ? "Saving…" : "Save"}
+          </motion.button>
+        </div>
       </div>
 
+      {/* ── Allowlist editor ── */}
+      <div className={`${theme.surface} rounded-2xl border ${theme.border} p-5 space-y-2`}>
+        <h3 className="font-semibold">Email allowlist</h3>
+        <div className={`text-xs ${theme.textSubtle}`}>
+          One email per line. Only addresses on this list can sign in via Google.
+          Empty list = no restriction (not recommended in production).
+        </div>
+        <textarea rows={5} className={`${inputCls} font-mono text-xs leading-relaxed`}
+          value={allowText} onChange={e => setAllowText(e.target.value)}
+          placeholder="jane@example.com&#10;john@example.com" />
+        <motion.button whileTap={{ scale: 0.97 }} type="button" disabled={allowSaving}
+          onClick={saveAllow}
+          className="bg-emerald-500 text-white px-3 py-2 rounded-xl text-sm font-semibold disabled:opacity-60">
+          {allowSaving ? "Saving…" : "Save allowlist"}
+        </motion.button>
+      </div>
+
+      {/* ── Members ── */}
       <div className={`${theme.surface} rounded-2xl border ${theme.border} p-5`}>
         <h3 className="font-semibold mb-3">Members ({users.length})</h3>
         <div className="space-y-0.5">
@@ -3414,6 +3522,51 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
                     <Trash2 className={`w-4 h-4 ${theme.textSubtle} hover:text-rose-500 transition-colors`} />
                   </button>
                 )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Notification cleanup ── */}
+      <div className={`${theme.surface} rounded-2xl border ${theme.border} p-5 space-y-2`}>
+        <h3 className="font-semibold">Clear old notifications</h3>
+        <div className={`text-xs ${theme.textSubtle}`}>
+          Permanently delete in-app notifications older than the threshold.
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`text-xs ${theme.textSubtle}`}>Older than</span>
+          <input type="text" inputMode="numeric" pattern="[0-9]*"
+            className={`${inputCls} max-w-[6rem]`} value={cleanupDays}
+            onChange={e => setCleanupDays(e.target.value.replace(/[^\d]/g, ""))} />
+          <span className={`text-xs ${theme.textSubtle}`}>days</span>
+          <motion.button whileTap={{ scale: 0.97 }} type="button" disabled={cleanupBusy}
+            onClick={runCleanup}
+            className={`px-3 py-2 rounded-xl text-sm font-semibold ${darkMode ? "bg-rose-500/15 text-rose-300 border border-rose-500/30" : "bg-rose-50 text-rose-700 border border-rose-200"} disabled:opacity-60`}>
+            {cleanupBusy ? "Working…" : "Delete"}
+          </motion.button>
+        </div>
+      </div>
+
+      {/* ── Audit log (last 100, auto-pruned to 48h) ── */}
+      <div className={`${theme.surface} rounded-2xl border ${theme.border} p-4`}>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="font-semibold text-sm">Audit log</h3>
+          <span className={`text-[10px] ${theme.textSubtle}`}>Auto-pruned every 48 h</span>
+        </div>
+        <div className={`max-h-56 overflow-y-auto rounded-lg border ${theme.border} ${darkMode ? "bg-slate-900/40" : "bg-slate-50"}`}>
+          {audit.length === 0 && (
+            <div className={`text-xs ${theme.textSubtle} px-3 py-4 text-center`}>No entries.</div>
+          )}
+          {audit.map(a => (
+            <div key={a.id} className={`text-[11px] px-3 py-1.5 border-b ${theme.border} last:border-0 flex items-center justify-between gap-2`}>
+              <div className="min-w-0 flex-1">
+                <span className="font-mono">{a.action}</span>
+                {a.userEmail && <span className={`${theme.textSubtle} ml-2`}>{a.userEmail}</span>}
+              </div>
+              <div className={`${theme.textSubtle} truncate text-right`} style={{ maxWidth: "60%" }}>
+                {a.ip || "?"}{a.location ? ` · ${a.location}` : ""}
+                <span className="ml-2">{new Date(a.createdAt).toLocaleString()}</span>
               </div>
             </div>
           ))}
@@ -3558,7 +3711,7 @@ function MobileBanksSection({ theme, darkMode, toast }) {
               <div key={a.id} className="flex items-center justify-between px-3 py-2.5">
                 <div className="min-w-0">
                   <div className="font-medium text-sm truncate">{a.name}</div>
-                  <div className={`text-[11px] ${theme.textSubtle} truncate`}>{a.institution || a.type} · {fmt(a.balance)}</div>
+                  <div className={`text-[11px] ${theme.textSubtle} truncate`}>{a.institution || a.type} · <span className="private-amount" tabIndex={0}>{fmt(a.balance)}</span></div>
                 </div>
                 <button onClick={() => removeAccount(a)}
                   className={`text-xs font-medium px-2.5 py-1 rounded-lg ${darkMode ? "text-rose-400 hover:bg-rose-500/10" : "text-rose-600 hover:bg-rose-50"}`}>
@@ -3616,27 +3769,70 @@ function MobileBanksSection({ theme, darkMode, toast }) {
 }
 
 // ─── Settings Panel ───────────────────────────────────────────────────────────
+const WEEK_DAYS = [
+  { v: 0, label: "Sunday" }, { v: 1, label: "Monday" }, { v: 2, label: "Tuesday" },
+  { v: 3, label: "Wednesday" }, { v: 4, label: "Thursday" },
+  { v: 5, label: "Friday" }, { v: 6, label: "Saturday" },
+];
+
 function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
   const toast = useToast();
+  const fileInputRef = useRef(null);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
+  const [importingCsv, setImportingCsv] = useState(false);
+  // All editable preferences sit in a single form object so we can save the
+  // whole sheet with one Save button at the end. Booleans coerced from
+  // possibly-undefined server values to true defaults (matches userPayload).
   const [form, setForm] = useState({
     name: user.name || "",
     notification_email: user.notification_email !== false,
     notification_push: user.notification_push !== false,
+    notify_large_txn:       user.notify_large_txn       !== false,
+    large_txn_threshold:    Number(user.large_txn_threshold ?? 500),
+    notify_income:          user.notify_income          !== false,
+    income_threshold:       Number(user.income_threshold ?? 100),
+    notify_budget_warning:  user.notify_budget_warning  !== false,
+    budget_warning_pct:     Number(user.budget_warning_pct ?? 80),
+    notify_budget_exceeded: user.notify_budget_exceeded !== false,
+    notify_goal_milestone:  user.notify_goal_milestone  !== false,
+    privacy_mode:           !!user.privacy_mode,
+    week_start:             Number(user.week_start ?? 0),
+    email_frequency:        user.email_frequency || "daily",
+    email_weekday:          Number(user.email_weekday ?? 1),
   });
+
+  // Integer input helper that strips non-digits and clamps. Used by the
+  // threshold inputs and the budget-warning %.
+  const intChange = (key, max = 1_000_000) => (e) => {
+    const raw = e.target.value.replace(/[^\d]/g, "");
+    const n = raw === "" ? "" : Math.min(max, Math.max(1, Number(raw)));
+    setForm(f => ({ ...f, [key]: n }));
+  };
 
   const save = async (e) => {
     e.preventDefault();
     try {
-      await api.updateMe(form);
+      // Coerce empty strings → server default by sending the current row's
+      // value; the server's COALESCE leaves it alone if null.
+      const payload = { ...form };
+      for (const k of ["large_txn_threshold", "income_threshold", "budget_warning_pct"]) {
+        if (payload[k] === "" || payload[k] === null) delete payload[k];
+      }
+      await api.updateMe(payload);
       toast?.("Settings saved", "success");
       onUpdate?.();
     } catch (err) { toast?.("Failed: " + err.message, "error"); }
   };
 
-  function Toggle({ checked, onChange }) {
+  function Toggle({ checked, onChange, disabled }) {
     return (
-      <button type="button" onClick={() => onChange(!checked)}
-        className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${checked ? "bg-emerald-500" : darkMode ? "bg-slate-700" : "bg-slate-300"}`}>
+      <button type="button" onClick={() => !disabled && onChange(!checked)}
+        disabled={disabled}
+        className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${
+          disabled ? "opacity-50 cursor-not-allowed" : ""
+        } ${checked ? "bg-emerald-500" : darkMode ? "bg-slate-700" : "bg-slate-300"}`}>
         <motion.div animate={{ x: checked ? 20 : 0 }} transition={{ type: "spring", damping: 25, stiffness: 500 }}
           className="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow-sm" />
       </button>
@@ -3644,17 +3840,67 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
   }
 
   const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+  const numCls   = `w-28 px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500 text-right`;
+  // Notifications all live under the email switch — when email is off OR the
+  // server-side EMAIL_CONFIG is disabled, everything below is greyed out.
+  const emailOn = form.notification_email && user.email_enabled;
+
+  // Inline notification row helper (toggle on left, optional threshold input)
+  const NotifRow = ({ label, hint, checked, onToggle, children }) => (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-medium">{label}</div>
+          {hint && <div className={`text-xs ${theme.textSubtle} mt-0.5`}>{hint}</div>}
+        </div>
+        <Toggle checked={checked} onChange={onToggle} disabled={!emailOn} />
+      </div>
+      {checked && emailOn && children && <div className="pl-1">{children}</div>}
+    </div>
+  );
+
+  // CSV import: pick a file, read text, POST it.
+  const handleCsvFile = async (file) => {
+    if (!file) return;
+    setImportingCsv(true);
+    try {
+      const text = await file.text();
+      const r = await api.importTransactionsCSV(text);
+      toast?.(`Imported ${r.imported} (skipped ${r.skipped})`, "success");
+      onUpdate?.();
+    } catch (e) {
+      toast?.("Import failed: " + (e.message || ""), "error");
+    } finally { setImportingCsv(false); }
+  };
 
   return (
     <div className="space-y-4">
-      <div className={`${theme.surface} border ${theme.border} rounded-2xl p-5`}>
-        <h3 className="font-semibold mb-4">Appearance</h3>
+      {/* ── Appearance + display prefs ── */}
+      <div className={`${theme.surface} border ${theme.border} rounded-2xl p-5 space-y-4`}>
+        <h3 className="font-semibold">Appearance</h3>
         <div className="flex items-center justify-between">
           <div>
             <div className="text-sm font-medium">Dark mode</div>
             <div className={`text-xs ${theme.textSubtle} mt-0.5`}>Synced across all your devices</div>
           </div>
           <Toggle checked={darkMode} onChange={onToggleDark} />
+        </div>
+        <div className="flex items-center justify-between">
+          <div className="min-w-0">
+            <div className="text-sm font-medium">Privacy mode</div>
+            <div className={`text-xs ${theme.textSubtle} mt-0.5`}>Blur dollar amounts; hover to reveal. Good for screenshots.</div>
+          </div>
+          <Toggle checked={form.privacy_mode} onChange={v => setForm({ ...form, privacy_mode: v })} />
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-sm font-medium">Week starts on</div>
+            <div className={`text-xs ${theme.textSubtle} mt-0.5`}>Used by weekly budgets and date grouping.</div>
+          </div>
+          <select className={`${inputCls} max-w-[10rem]`} value={form.week_start}
+            onChange={e => setForm({ ...form, week_start: Number(e.target.value) })}>
+            {WEEK_DAYS.map(d => <option key={d.v} value={d.v}>{d.label}</option>)}
+          </select>
         </div>
       </div>
 
@@ -3663,6 +3909,7 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
         <MobileBanksSection theme={theme} darkMode={darkMode} toast={toast} />
       </div>
 
+      {/* ── Account ── */}
       <div className={`${theme.surface} border ${theme.border} rounded-2xl p-5`}>
         <h3 className="font-semibold mb-4">Account</h3>
         <div className="flex items-center gap-3 mb-1">
@@ -3683,22 +3930,24 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
         </div>
       </div>
 
+      {/* ── Big save form (profile + all notification prefs) ── */}
       <form onSubmit={save} className={`${theme.surface} border ${theme.border} rounded-2xl p-5 space-y-4`}>
         <h3 className="font-semibold">Profile</h3>
         <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Display name" className={inputCls} />
 
-        {/* EMAIL_CONFIG is the server-side master switch. When disabled,
-            the toggle is locked off and a red warning is shown. */}
         {!user.email_enabled && (
           <div className={`text-xs font-semibold text-rose-500 ${darkMode ? "bg-rose-500/10" : "bg-rose-50"} border ${darkMode ? "border-rose-500/20" : "border-rose-100"} rounded-lg px-3 py-2`}>
             ⚠ Email Config Not Enabled — set <code className="font-mono">EMAIL_CONFIG=enabled</code> in <code className="font-mono">.env</code> and restart the backend to use email notifications.
           </div>
         )}
+
+        {/* Master email-on switch. Every notification setting below nests
+            under this — when it's off the whole block greys out. */}
         <div className={`flex items-center justify-between gap-3 ${!user.email_enabled ? "opacity-50" : ""}`}>
           <div className="min-w-0">
-            <div className="text-sm font-medium">Email Notifs</div>
+            <div className="text-sm font-medium">Email notifications</div>
             <div className={`text-xs ${theme.textSubtle} mt-0.5`}>
-              Get a branded email digest of budget alerts, large transactions, and goal milestones.
+              Master switch — turn this off to silence every email notification below.
             </div>
           </div>
           <Toggle
@@ -3712,31 +3961,184 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
             }}
           />
         </div>
-        {user.email_enabled && form.notification_email && (
-          <motion.button type="button" whileTap={{ scale: 0.97 }}
-            onClick={async () => {
-              try {
-                const r = await api.sendTestEmail();
-                toast?.(`Test email sent to ${r.sentTo}`, "success");
-              } catch (e) {
-                toast?.("Failed: " + (e.message || ""), "error");
-              }
-            }}
-            className={`text-xs font-medium ${theme.surface} border ${theme.border} px-3 py-1.5 rounded-lg`}>
-            Send sample email
-          </motion.button>
-        )}
+
+        {/* Nested notification controls — greyed out when emailOn is false. */}
+        <div className={`pl-4 border-l-2 ${darkMode ? "border-slate-700" : "border-slate-200"} space-y-3 ${!emailOn ? "opacity-50 pointer-events-none" : ""}`}>
+          <NotifRow
+            label="Large transactions"
+            hint="Alert when a single expense exceeds your threshold."
+            checked={form.notify_large_txn}
+            onToggle={v => setForm({ ...form, notify_large_txn: v })}>
+            <div className="flex items-center gap-2">
+              <span className={`text-xs ${theme.textSubtle}`}>Threshold $</span>
+              <input type="text" inputMode="numeric" pattern="[0-9]*"
+                className={numCls} value={form.large_txn_threshold}
+                onChange={intChange("large_txn_threshold")} />
+            </div>
+          </NotifRow>
+
+          <NotifRow
+            label="Income received"
+            hint='Alert when a deposit lands above the threshold ("Congrats You Got Paid!").'
+            checked={form.notify_income}
+            onToggle={v => setForm({ ...form, notify_income: v })}>
+            <div className="flex items-center gap-2">
+              <span className={`text-xs ${theme.textSubtle}`}>Threshold $</span>
+              <input type="text" inputMode="numeric" pattern="[0-9]*"
+                className={numCls} value={form.income_threshold}
+                onChange={intChange("income_threshold")} />
+            </div>
+          </NotifRow>
+
+          <NotifRow
+            label="Approaching budget limit"
+            hint="Alert when a budget reaches a percentage of its cap."
+            checked={form.notify_budget_warning}
+            onToggle={v => setForm({ ...form, notify_budget_warning: v })}>
+            <div className="flex items-center gap-2">
+              <span className={`text-xs ${theme.textSubtle}`}>Warn at</span>
+              <input type="text" inputMode="numeric" pattern="[0-9]*"
+                className={numCls} value={form.budget_warning_pct}
+                onChange={intChange("budget_warning_pct", 99)} />
+              <span className={`text-xs ${theme.textSubtle}`}>%</span>
+            </div>
+          </NotifRow>
+
+          <NotifRow
+            label="Budget exceeded"
+            hint="Alert when a budget goes over 100%."
+            checked={form.notify_budget_exceeded}
+            onToggle={v => setForm({ ...form, notify_budget_exceeded: v })} />
+
+          <NotifRow
+            label="Goal milestones"
+            hint="Alert at 75% progress and when a goal completes."
+            checked={form.notify_goal_milestone}
+            onToggle={v => setForm({ ...form, notify_goal_milestone: v })} />
+
+          {/* Email frequency — not "digest" per request. */}
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium">Email frequency</div>
+              <div className={`text-xs ${theme.textSubtle} mt-0.5`}>
+                When to send the email roll-up.
+              </div>
+            </div>
+            <select className={`${inputCls} max-w-[10rem]`} value={form.email_frequency}
+              onChange={e => setForm({ ...form, email_frequency: e.target.value })}>
+              <option value="instant">As they happen</option>
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+            </select>
+          </div>
+          {form.email_frequency === "weekly" && (
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm font-medium">Weekly send day</div>
+              <select className={`${inputCls} max-w-[10rem]`} value={form.email_weekday}
+                onChange={e => setForm({ ...form, email_weekday: Number(e.target.value) })}>
+                {WEEK_DAYS.map(d => <option key={d.v} value={d.v}>{d.label}</option>)}
+              </select>
+            </div>
+          )}
+
+          {emailOn && (
+            <motion.button type="button" whileTap={{ scale: 0.97 }}
+              onClick={async () => {
+                try {
+                  const r = await api.sendTestEmail();
+                  toast?.(`Test email sent to ${r.sentTo}`, "success");
+                } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+              }}
+              className={`text-xs font-medium ${theme.surface} border ${theme.border} px-3 py-1.5 rounded-lg`}>
+              Send sample email
+            </motion.button>
+          )}
+        </div>
+
+        {/* In-app bell — independent of email. */}
         <div className="flex items-center justify-between">
           <div>
             <div className="text-sm font-medium">In-app notifications</div>
             <div className={`text-xs ${theme.textSubtle} mt-0.5`}>
-              Show alerts in the bell icon menu.
+              Show alerts in the bell icon menu (independent of email).
             </div>
           </div>
           <Toggle checked={form.notification_push} onChange={v => setForm({ ...form, notification_push: v })} />
         </div>
+
         <motion.button whileTap={{ scale: 0.97 }} type="submit" className="bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm font-semibold">Save</motion.button>
       </form>
+
+      {/* ── Data tools (CSV / PDF) ── */}
+      <div className={`${theme.surface} border ${theme.border} rounded-2xl p-5 space-y-3`}>
+        <h3 className="font-semibold">Data</h3>
+        <div className="flex flex-wrap gap-2">
+          <motion.button whileTap={{ scale: 0.97 }} type="button"
+            onClick={async () => {
+              try { await api.exportTransactionsCSV(); toast?.("CSV downloaded", "success"); }
+              catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+            }}
+            className={`text-sm font-medium ${theme.surface} border ${theme.border} px-3 py-2 rounded-xl`}>
+            Export transactions (CSV)
+          </motion.button>
+          <motion.button whileTap={{ scale: 0.97 }} type="button"
+            disabled={importingCsv}
+            onClick={() => fileInputRef.current?.click()}
+            className={`text-sm font-medium ${theme.surface} border ${theme.border} px-3 py-2 rounded-xl disabled:opacity-60`}>
+            {importingCsv ? "Importing…" : "Import transactions (CSV)"}
+          </motion.button>
+          <input ref={fileInputRef} type="file" accept=".csv,text/csv" className="hidden"
+            onChange={e => { handleCsvFile(e.target.files?.[0]); e.target.value = ""; }} />
+          <motion.button whileTap={{ scale: 0.97 }} type="button"
+            disabled={exportingPdf}
+            onClick={async () => {
+              setExportingPdf(true);
+              try { await api.exportFullPDF(); toast?.("PDF downloaded", "success"); }
+              catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+              finally { setExportingPdf(false); }
+            }}
+            className={`text-sm font-medium ${theme.surface} border ${theme.border} px-3 py-2 rounded-xl disabled:opacity-60`}>
+            {exportingPdf ? "Building…" : "Export full report (PDF)"}
+          </motion.button>
+        </div>
+        <div className={`text-xs ${theme.textSubtle}`}>
+          CSV columns: date, merchant, category, amount, account, note, pending.
+          On import, the account column is matched to your existing accounts by name; unknown names import as manual rows.
+        </div>
+      </div>
+
+      {/* ── Danger zone ── */}
+      <div className={`${theme.surface} border ${darkMode ? "border-rose-500/30" : "border-rose-200"} rounded-2xl p-5 space-y-3`}>
+        <h3 className={`font-semibold ${darkMode ? "text-rose-400" : "text-rose-600"}`}>Danger zone</h3>
+        <div className={`text-xs ${theme.textSubtle}`}>
+          Clearing merchant rules removes every "always categorize X as Y" rule you've set.
+          App-shipped defaults (none currently) are preserved.
+        </div>
+        <motion.button whileTap={{ scale: 0.97 }} type="button"
+          onClick={() => setConfirmClear(true)}
+          className={`text-sm font-semibold px-3 py-2 rounded-xl ${darkMode ? "bg-rose-500/15 text-rose-300 border border-rose-500/30" : "bg-rose-50 text-rose-700 border border-rose-200"}`}>
+          Clear all merchant rules
+        </motion.button>
+      </div>
+
+      <ConfirmDialog
+        open={confirmClear}
+        onCancel={() => !clearing && setConfirmClear(false)}
+        onConfirm={async () => {
+          setClearing(true);
+          try {
+            const r = await api.clearMerchantRules();
+            toast?.(`Deleted ${r.deleted} rule${r.deleted === 1 ? "" : "s"}`, "success");
+            setConfirmClear(false);
+          } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+          finally { setClearing(false); }
+        }}
+        theme={theme} darkMode={darkMode}
+        busy={clearing}
+        title="Clear all merchant rules?"
+        message="Every per-merchant categorization rule you've created will be removed. Existing transactions keep their current category — only future auto-categorization is affected."
+        confirmLabel="Clear rules"
+      />
     </div>
   );
 }
@@ -3770,6 +4172,14 @@ function Shell({ user, onLogout, refreshUser }) {
 
   // Keep local state in sync if user is refreshed from server
   useEffect(() => { setDarkModeLocal(!!user?.dark_mode); }, [user?.dark_mode]);
+
+  // Privacy mode — adds a class to <body> so a CSS rule in index.css can
+  // blur every element marked .private-amount. Toggle reveals on hover.
+  useEffect(() => {
+    if (user?.privacy_mode) document.body.classList.add("privacy-on");
+    else document.body.classList.remove("privacy-on");
+    return () => document.body.classList.remove("privacy-on");
+  }, [user?.privacy_mode]);
 
   // Persist dark mode change to backend so it follows you across devices
   const setDarkMode = useCallback(async (v) => {

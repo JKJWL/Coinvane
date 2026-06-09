@@ -1,5 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { query } from "./db.js";
+import geoip from "geoip-lite";
+
+/**
+ * Best-effort offline GeoIP lookup for an IPv4/IPv6 address. Returns a
+ * short human-readable string like "Atlanta, US" or null. The MaxMind
+ * GeoLite2 dataset bundled with geoip-lite ships with the package; no
+ * network call is made.
+ */
+export function geoFromIp(ip) {
+  if (!ip) return null;
+  // Trim IPv6-mapped IPv4 (::ffff:1.2.3.4 → 1.2.3.4)
+  const clean = String(ip).replace(/^::ffff:/, "");
+  try {
+    const g = geoip.lookup(clean);
+    if (!g) return null;
+    const parts = [g.city, g.region, g.country].filter(Boolean);
+    return parts.join(", ") || null;
+  } catch { return null; }
+}
 
 /**
  * Write an entry to the audit log. Best-effort — never throws.

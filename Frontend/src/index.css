@@ -3,6 +3,24 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Privacy mode ────────────────────────────────────────────────────
+   When the user has Privacy Mode enabled, the Shell adds `privacy-on`
+   to <body>. Any element with the `private-amount` class is blurred,
+   restored on hover/focus. We don't try to scrub every dollar render —
+   just the dominant places (hero net worth, KPI cards, account balances,
+   transaction amount column). If you need more sites covered, add the
+   class there too. */
+body.privacy-on .private-amount {
+  filter: blur(10px);
+  transition: filter 0.18s ease;
+  cursor: pointer;
+}
+body.privacy-on .private-amount:hover,
+body.privacy-on .private-amount:focus,
+body.privacy-on .private-amount:focus-within {
+  filter: none;
+}
+
 /* ── iOS-native PWA reset ─────────────────────────────────────────── */
 html, body, #root { height: 100%; }
 

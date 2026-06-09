@@ -7,48 +7,52 @@ import { query, queryOne, pool } from "./db.js";
 import { sendMail } from "./mailer.js";
 import { generateNotifications } from "./notification-engine.js";
 import { syncQueue } from "./queue.js";
+import { getSyncIntervalMinutes } from "./app-settings.js";
 
 const connection = {
   host: process.env.REDIS_HOST || "redis",
   port: Number(process.env.REDIS_PORT || 6379),
 };
 
-// How often the periodic full sync runs, in minutes. Tunable via env so
-// the cadence can be adjusted without redeploying code. Default is 60
-// minutes; Plaid's general guidance is 4-6 hours for polling, but more
-// frequent is reasonable as a safety net for missed webhooks. Going
-// below ~15 min is rarely useful — banks themselves don't push to
-// Plaid faster than that, and you'll just burn Plaid API quota.
-// Webhook-driven syncs continue to fire regardless of this interval.
-const SYNC_INTERVAL_MIN = Math.max(
-  1,
-  Number(process.env.SYNC_INTERVAL_MINUTES) || 60
-);
+// Sync interval is now stored in the `app_settings` table so an admin can
+// change it without restarting the worker. The value falls back to
+// SYNC_INTERVAL_MINUTES env when the row is missing. The worker still
+// needs a restart for the new schedule to be picked up (we sweep + reseed
+// repeatables on every startup); a future enhancement could subscribe to
+// a Redis pub/sub channel for live updates.
 
 async function schedulePeriodic() {
   // BullMQ repeatable jobs are keyed by a hash of their full schedule
   // signature (name + interval + jobId). If we just `add()` with a new
   // `repeat.every`, BullMQ will register a SECOND schedule alongside
-  // the old one — both would fire forever. To make the env var
-  // hot-swappable across restarts, sweep any existing periodic-sync
-  // repeatables first, then add the one matching the current env.
+  // the old one — both would fire forever. Sweep first, then re-add.
   const existing = await syncQueue.getRepeatableJobs();
   for (const r of existing) {
-    if (r.name === "periodic-full-sync" || r.name === "daily-notifications") {
+    if (r.name === "periodic-full-sync"
+        || r.name === "daily-notifications"
+        || r.name === "audit-log-cleanup") {
       await syncQueue.removeRepeatableByKey(r.key);
     }
   }
 
+  const intervalMin = await getSyncIntervalMinutes();
   await syncQueue.add(
     "periodic-full-sync",
     { kind: "periodic" },
-    { repeat: { every: SYNC_INTERVAL_MIN * 60 * 1000 }, jobId: "periodic-full-sync" }
+    { repeat: { every: intervalMin * 60 * 1000 }, jobId: "periodic-full-sync" }
   );
-  console.log(`Scheduled periodic full sync every ${SYNC_INTERVAL_MIN} min.`);
+  console.log(`Scheduled periodic full sync every ${intervalMin} min.`);
   await syncQueue.add(
     "daily-notifications",
     { kind: "notifications" },
     { repeat: { pattern: "0 8 * * *" }, jobId: "daily-notifications" }
+  );
+  // Audit log gets pruned to a rolling 48h window so the table never grows
+  // unbounded and the admin viewer stays cheap to query.
+  await syncQueue.add(
+    "audit-log-cleanup",
+    { kind: "audit-cleanup" },
+    { repeat: { pattern: "0 * * * *" }, jobId: "audit-log-cleanup" }
   );
 }
 
@@ -84,6 +88,16 @@ new Worker("sync", async (job) => {
       catch (e) { console.error(`notifications failed for user ${u.id}:`, e.message); }
     }
     return { ok: true };
+  }
+
+  if (kind === "audit-cleanup") {
+    const r = await query(
+      `DELETE FROM audit_log WHERE created_at < DATE_SUB(NOW(), INTERVAL 48 HOUR)`
+    );
+    if (r.affectedRows > 0) {
+      console.log(`[audit] pruned ${r.affectedRows} entries older than 48h`);
+    }
+    return { ok: true, pruned: r.affectedRows };
   }
 
   const item = await queryOne("SELECT * FROM plaid_items WHERE id = ?", [itemId]);

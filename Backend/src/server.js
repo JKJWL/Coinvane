@@ -17,6 +17,8 @@ import categoriesRoutes from "./routes/categories.js";
 import notificationsRoutes from "./routes/notifications.js";
 import investmentsRoutes from "./routes/investments.js";
 import plaidRoutes from "./routes/plaid.js";
+import adminRoutes from "./routes/admin.js";
+import exportRoutes from "./routes/export.js";
 
 const isProd = process.env.NODE_ENV === "production";
 
@@ -160,6 +162,8 @@ await app.register(categoriesRoutes,   { prefix: "/api/categories" });
 await app.register(notificationsRoutes,{ prefix: "/api/notifications" });
 await app.register(investmentsRoutes,  { prefix: "/api/investments" });
 await app.register(plaidRoutes,        { prefix: "/api/plaid" });
+await app.register(adminRoutes,        { prefix: "/api/admin" });
+await app.register(exportRoutes,       { prefix: "/api/export" });
 
 const port = Number(process.env.PORT || 4000);
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {

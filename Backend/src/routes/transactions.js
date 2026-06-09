@@ -171,4 +171,107 @@ export default async function (app) {
       [req.params.id, req.user.id]);
     return { ok: true };
   });
+
+  // Clear ALL user-created merchant rules. App-shipped defaults
+  // (is_default=TRUE) are preserved so future seeded rules survive.
+  app.delete("/merchant-rules", async (req) => {
+    const r = await query(
+      `DELETE FROM merchant_rules WHERE user_id = ? AND (is_default = 0 OR is_default IS NULL)`,
+      [req.user.id]
+    );
+    return { ok: true, deleted: r.affectedRows || 0 };
+  });
+
+  // ── CSV export ─────────────────────────────────────────────────
+  // Streams CSV of the user's transactions. Schema:
+  //   date,merchant,category,amount,account,note,pending
+  // Header line included.
+  app.get("/export.csv", async (req, reply) => {
+    const rows = await query(
+      `SELECT t.date, t.merchant, t.category, t.amount, t.note, t.pending,
+              a.name AS accountName
+       FROM transactions t
+       LEFT JOIN accounts a ON a.id = t.account_id
+       WHERE t.user_id = ?
+       ORDER BY t.date DESC, t.id DESC`,
+      [req.user.id]
+    );
+    const escape = (s) => {
+      if (s === null || s === undefined) return "";
+      const v = String(s);
+      return /[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+    };
+    const lines = ["date,merchant,category,amount,account,note,pending"];
+    for (const r of rows) {
+      lines.push([
+        r.date, escape(r.merchant), escape(r.category), r.amount,
+        escape(r.accountName), escape(r.note), r.pending ? "1" : "0",
+      ].join(","));
+    }
+    reply
+      .header("Content-Type", "text/csv; charset=utf-8")
+      .header("Content-Disposition", `attachment; filename="ledger-transactions.csv"`);
+    return lines.join("\n");
+  });
+
+  // ── CSV import ─────────────────────────────────────────────────
+  // Accepts the same schema we export. Body is the raw CSV string
+  // (Content-Type: text/csv). Accounts are matched by NAME against the
+  // user's accounts; rows whose account name doesn't match an existing
+  // account are imported as account-less (manual transactions with no
+  // balance adjustment). Returns counts.
+  app.post("/import.csv", {
+    // The default 512KB body limit applies to JSON; CSV imports can be
+    // bigger. Bump just this route to 5MB. (Fastify v5: bodyLimit is a
+    // top-level route option, NOT nested in `config`.)
+    bodyLimit: 5 * 1024 * 1024,
+    config: {
+      rateLimit: { max: 5, timeWindow: "1 minute" },
+    },
+  }, async (req, reply) => {
+    const raw = typeof req.body === "string"
+      ? req.body
+      : req.body?.csv || "";
+    if (!raw || raw.length < 5) {
+      return reply.code(400).send({ error: "Empty CSV body" });
+    }
+    // Lazy import — papaparse is only loaded when this route fires
+    const Papa = (await import("papaparse")).default;
+    const parsed = Papa.parse(raw.trim(), { header: true, skipEmptyLines: true });
+    if (parsed.errors?.length) {
+      return reply.code(400).send({ error: "CSV parse error: " + parsed.errors[0].message });
+    }
+    const accounts = await query(
+      "SELECT id, name FROM accounts WHERE user_id = ?",
+      [req.user.id]
+    );
+    const acctByName = new Map(
+      accounts.map(a => [a.name.toLowerCase().trim(), a.id])
+    );
+    let imported = 0, skipped = 0;
+    for (const row of parsed.data) {
+      const date = String(row.date || "").slice(0, 10);
+      const merchant = String(row.merchant || "").trim();
+      const category = String(row.category || "Other").trim() || "Other";
+      const amount = Number(row.amount);
+      const accountName = String(row.account || "").toLowerCase().trim();
+      const note = row.note ? String(row.note) : null;
+      const pending = row.pending === "1" || row.pending === 1 || row.pending === true;
+      if (!date || !merchant || !Number.isFinite(amount)) { skipped++; continue; }
+      const accountId = acctByName.get(accountName) || null;
+      try {
+        await query(
+          `INSERT INTO transactions (user_id, account_id, date, merchant, category, amount, note, pending)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [req.user.id, accountId, date, merchant, category, amount, note, pending ? 1 : 0]
+        );
+        imported++;
+      } catch (e) {
+        // Duplicate plaid_transaction_id unique constraint won't bite since
+        // we don't set it on imports; any other failure → skip.
+        skipped++;
+      }
+    }
+    return { ok: true, imported, skipped };
+  });
 }

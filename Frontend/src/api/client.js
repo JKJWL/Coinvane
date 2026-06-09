@@ -123,4 +123,44 @@ export const api = {
   listPlaidItems: () => request("GET", "/plaid/items"),
   deletePlaidItem: (id) => request("DELETE", `/plaid/items/${id}`),
   syncPlaid: () => request("POST", "/plaid/sync"),
+
+  // merchant rules — danger zone
+  clearMerchantRules: () => request("DELETE", "/transactions/merchant-rules"),
+
+  // CSV / PDF — non-JSON download endpoints
+  exportTransactionsCSV: () => downloadAuthed("/transactions/export.csv", "ledger-transactions.csv"),
+  importTransactionsCSV: (csv) => request("POST", "/transactions/import.csv", { csv }),
+  exportFullPDF: () => downloadAuthed("/export/full.pdf", "ledger-export.pdf"),
+
+  // admin
+  adminInfo: () => request("GET", "/admin/info"),
+  adminGetSyncInterval: () => request("GET", "/admin/sync-interval"),
+  adminSetSyncInterval: (minutes) => request("PATCH", "/admin/sync-interval", { minutes }),
+  adminGetAllowlist: () => request("GET", "/admin/allowlist"),
+  adminSetAllowlist: (emails) => request("PUT", "/admin/allowlist", { emails }),
+  adminGetAudit: () => request("GET", "/admin/audit"),
+  adminCleanupNotifications: (days) => request("POST", "/admin/cleanup-notifications", { days }),
 };
+
+// Authed file-download helper. fetch() with Authorization → blob → save.
+// Used for CSV / PDF endpoints that return non-JSON payloads.
+async function downloadAuthed(path, filename) {
+  const res = await fetch(`${API_URL}${path}`, {
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+  });
+  if (!res.ok) {
+    const ct = res.headers.get("content-type") || "";
+    const err = ct.includes("application/json")
+      ? (await res.json())?.error || res.statusText
+      : res.statusText;
+    throw new Error(err);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  return { ok: true };
+}

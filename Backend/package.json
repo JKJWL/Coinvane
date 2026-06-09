@@ -23,6 +23,9 @@
     "bullmq": "^5.12.0",
     "ioredis": "^5.4.1",
     "nodemailer": "^8.0.5",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "pdfkit": "^0.15.0",
+    "geoip-lite": "^1.4.10",
+    "papaparse": "^5.4.1"
   }
 }

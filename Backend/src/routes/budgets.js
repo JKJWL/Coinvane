@@ -181,7 +181,7 @@ export default async function (app) {
   app.get("/history", async (req) => {
     const count = Math.min(24, Math.max(1, Number(req.query?.count) || 6));
     const masterUser = await queryOne(
-      `SELECT income_period, income_period_start, income_period_days
+      `SELECT income_period, income_period_start, income_period_days, week_start
        FROM users WHERE id = ?`,
       [req.user.id]
     );
@@ -189,7 +189,9 @@ export default async function (app) {
       masterUser?.income_period || "monthly",
       masterUser?.income_period_start || null,
       masterUser?.income_period_days || null,
-      count
+      count,
+      undefined,
+      Number(masterUser?.week_start) || 0
     );
     // Sort-order + accountName lookups come from current state; everything
     // else is snapshotted in budget_audit.
