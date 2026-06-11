@@ -51,14 +51,16 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 ## Features
 
 ### Accounts & transactions
-- **Bank sync** — connect any institution Plaid supports (most US banks, brokerages, credit unions). Polls Plaid on a configurable interval (default every 60 min, tunable via `SYNC_INTERVAL_MINUTES`), plus webhook-driven near-real-time updates when your bank pushes them.
+- **Bank sync** — connect any institution Plaid supports (most US banks, brokerages, credit unions). Polls Plaid on a configurable interval (default every 60 min, editable from the in-app Admin panel without a redeploy), plus webhook-driven near-real-time updates when your bank pushes them.
 - **Pending transactions** — when your bank reports a charge as pending, it shows up immediately with an amber "Pending" badge so you can tell authorized-but-not-yet-settled spending apart from posted activity.
 - **Manual accounts** — for banks Plaid doesn't support; balances auto-adjust when you record transactions.
 - **Transactions** — date-grouped activity feed with filter by account / category, sort options, tap-to-edit.
+- **Cash / Credit split** — the Transactions tab has a Cash⇄Credit pill at the top. Defaults to Cash on every visit. Credit-card transactions never bleed into your income, cashflow, by-category, or budget totals; they're tallied only by the credit-usage tracker.
 - **Per-merchant rules** — recategorise a transaction and choose "all future from this merchant"; the rule is saved per-user and applied to every subsequent sync.
+- **CSV import / export** — full transaction roundtrip from the Settings → Data section. CSV columns: `date, merchant, category, amount, account, note, pending`. On import, accounts are matched by name; unknown names fall back to manual rows.
 
 ### Budgets
-- **Master period** — one reset rhythm drives every budget AND the credit-usage tracker. Pick a cadence on the Income card (weekly, bi-weekly, semi-monthly, monthly, yearly, or every N days from a date) and "this week's groceries", "this week's income", and "this week's allocation total" all line up exactly.
+- **Master period** — one reset rhythm drives every budget AND the credit-usage tracker. Pick a cadence on the Income card (weekly, bi-weekly, semi-monthly, monthly, yearly, or every N days from a date) and "this week's groceries", "this week's income", and "this week's allocation total" all line up exactly. The "Weekly" option's reset day follows your global *Week starts on* setting (any day of the week, set in Settings → Appearance).
 - **Two budget types** — category-based (default) or credit-card-account-based; credit-card transactions are excluded from category budgets to avoid double-counting (swipe + payment).
 - **Drag to reorder** — touch and mouse both work; order persists across devices. A lock toggle prevents accidental drags on mobile.
 - **Edit any budget** — amount editable after creation. Category and account are locked once a budget is created (use delete + recreate if you need to change either).
@@ -71,20 +73,40 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 
 ### Goals
 - **Savings goals** with target / progress
-- **Contribute** button + quick-add chips ($25 / $50 / $100 / $250 / $500)
+- **Contribute** button + quick-add chips for deposits or withdrawals (negative amounts clamp at $0)
+- **Link to a bank account** — when linked, the goal's saved amount is the linked account's live balance, no manual contributions needed (and they're explicitly refused server-side to keep the source of truth single)
+- **Themed delete confirmation** instead of the native browser dialog
 
 ### Net worth
-- **Net Worth chart** with WTD / MTD / YTD / 1M / 3M / 1Y / ALL toggle (mobile gradient hero + desktop full chart)
+- **Net Worth chart** with ALL / MTD / YTD / 1M / 3M / 1Y toggle (defaults to ALL — mobile gradient hero + desktop full chart)
 - **Spending pulse** — compact monthly category breakdown card
 
 ### Investments
 - **Holdings, gains/losses** — brokerage syncing via Plaid
 
+### Notifications & per-user settings
+- **Per-type toggles** — large transactions, income received ("Congrats You Got Paid!"), approaching budget limit, budget exceeded, goal milestones. Each independently on/offable.
+- **Configurable thresholds** — large-transaction $ amount, income $ amount, and budget-warning percentage are all editable in Settings.
+- **Email frequency** — instant / daily / weekly (with a weekly send-day picker). Daily and instant are functionally identical until the engine runs more than once a day.
+- **Privacy mode** — blurs dollar amounts on the dominant surfaces (hero net worth, KPI cards, account balances, transaction amounts). Hover/focus reveals.
+- **Sticky save bar** — Settings and the Admin panel share one save UX: a sticky top bar appears only when something is dirty, plus a floating "Save Changes?" ribbon on the right edge once you've scrolled past it.
+
+### Admin (Owner / Admin roles)
+- **Owner** — the first sign-up. Single per instance. Only role that can edit the Plaid sync interval, edit the email allowlist, promote/demote admins, delete admins, and send sample emails.
+- **Admin** — can view the admin page and run two destructive actions: removing members and clearing old notifications. Both are audit-logged as "major" events.
+- **Members section** with per-row role dropdown (Member ⇄ Admin, owner-only). Promotions are staged locally and require Save + a confirmation dialog before they hit the database.
+- **Allowlist editor** — DB-backed, edits live without restarting the backend. Falls back to the `ALLOWED_EMAILS` env on a fresh deploy.
+- **App info card** — Plaid environment, email status, SMTP host, signup mode, row counts.
+- **Notification cleanup** — bulk-delete in-app notifications older than N days. Audit-logged as a major event.
+- **Audit log viewer** — last 100 entries with IP + offline GeoIP location. Routine entries auto-prune at 48 h; major entries (role changes, user deletes, bulk wipes, settings edits) survive 7 days and render with a red left border.
+- **Per-user test email** — owner-only Mail icon next to each Members row sends a sample digest (with a "this is a test" banner) to verify SMTP delivery to that user without logging in as them.
+
 ### Misc
 - **Notes** — free-form notes, content encrypted at rest
 - **Mobile PWA** — install to iPhone home screen, full-screen, frosted iOS-style nav, Dynamic Island safe
-- **Multi-device** — your dark mode, settings, and data sync between devices
+- **Multi-device** — dark mode, theme, and every per-user setting follow you across devices
 - **Google SSO** — no passwords stored; locked to an email allowlist so only you can sign in
+- **Full PDF export** — Settings → Data → *Export full report (PDF)*. Server-side rendered (no headless browser) cover + summary + accounts + budgets + goals + last 500 transactions + decrypted notes
 
 ---
 
@@ -92,8 +114,9 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 
 | Layer       | Tech                                                   |
 | ----------- | ------------------------------------------------------ |
-| Backend     | Node.js 20, Fastify, MariaDB 11, BullMQ + Redis, Plaid |
-| Frontend    | React 18, Vite, Tailwind, Framer Motion, Recharts      |
+| Backend     | Node.js 20, Fastify 5, MariaDB 11, BullMQ + Redis, Plaid SDK v27, Nodemailer 8 |
+| Frontend    | React 18, Vite 6, Tailwind 3, Framer Motion 11, Recharts 2 |
+| Server-side rendering | pdfkit (PDF export), papaparse (CSV import), geoip-lite (offline IP→location for audit log) |
 | Auth        | Google Sign-In (ID-token verification, no client secret needed) |
 | Encryption  | AES-256-GCM for Plaid access tokens + note content     |
 | Infra       | Docker Compose (5 services)                            |
@@ -145,7 +168,8 @@ This creates all tables. Idempotent — safe to re-run after upgrades.
 
 Open http://localhost:8080 (or whatever you've configured), click **Continue with
 Google**, and sign in with the email you whitelisted. The first sign-in
-automatically promotes you to admin.
+automatically becomes the **owner** of the instance — single-owner pattern, no UI
+to transfer (manual `UPDATE users SET role='owner'` if you ever need to).
 
 ---
 
@@ -389,18 +413,17 @@ For institutions Plaid doesn't support (e.g., smaller credit unions):
 
 This app is designed to be exposed to the public internet safely.
 
-- **Email allowlist** (`ALLOWED_EMAILS` in `.env`) — only Google accounts on this
-  comma-separated list can sign in. Anyone else gets a 403, regardless of whether
-  Google would otherwise let them through.
-- **Rate limiting** — 200 req/min global, 10 req/min on `/api/auth/google` (blocks token-spray).
+- **Email allowlist** — only Google accounts on the list can sign in; anyone else gets 403 regardless of whether Google would otherwise let them through. Live-editable from the Admin panel (DB-backed in `app_settings.allowed_emails`); falls back to the `ALLOWED_EMAILS` env on fresh deploys.
+- **Three-tier role model** — Owner / Admin / Member. Owner is exclusive per instance and the only role that can edit cross-cutting config (sync interval, allowlist, role promotions, sample emails). Admins are scoped to two destructive actions (delete members, clear notifications), both audit-logged as major.
+- **Rate limiting** — 200 req/min global, 10 req/min on `/api/auth/google`, 60 req/min on every admin route, 300 req/min on the public `/api/plaid/webhook`.
 - **Helmet** — HSTS, X-Frame-Options DENY, strict Referrer-Policy, no `X-Powered-By`.
 - **Strict CORS** — refuses to start in production if `CORS_ORIGIN` isn't set.
-- **JWT 30-day expiration** — sessions auto-expire; sign back in with one Google click.
+- **JWT 30-day expiration** — sessions auto-expire; sign back in with one Google click. Role changes require a re-login to take effect (JWTs aren't auto-refreshed).
 - **Encryption at rest** — Plaid access tokens and note content encrypted with AES-256-GCM.
 - **Prepared statements** — every DB query uses parameterized `?` placeholders; no string concatenation, no SQL injection surface.
 - **Error masking** — production 5xx responses return a generic message; stack traces stay in logs.
-- **Audit log** — every sign-in (success and failure) recorded with IP and user agent.
-- **Body limit** — 512KB.
+- **Tiered audit log** — every sign-in (success and failure) recorded with IP, user-agent, and offline GeoIP location. Routine entries prune at 48 h; major entries (role changes, user deletes, settings edits, bulk notification wipes) survive 7 days.
+- **Body limit** — 512 KB on JSON, 5 MB on the CSV import route only.
 - **CSP** — nginx serves a strict Content-Security-Policy locking script sources
   to self, Google, and Plaid.
 - **No client-side caching** — every response (HTML, JS, CSS, API, images) is
@@ -455,9 +478,17 @@ A few notes:
   re-downloads the (small) JS bundle, so a hard refresh after deploy is
   unnecessary in practice. Your session in `localStorage` survives across
   reloads, deploys, and container rebuilds; you stay signed in.
-- **Restart just the worker** if you change `SYNC_INTERVAL_MINUTES`. The
+- **Restart just the worker** if you change `SYNC_INTERVAL_MINUTES` via env, or
+  if you've updated the in-app sync-interval value from the Admin panel. The
   worker sweeps and re-registers BullMQ schedules at startup, so a
   `docker compose up -d worker` is enough; backend and frontend can stay up.
+- **Allowlist + sync interval edits in the Admin panel** don't need a restart
+  for the **next** request to see them — but the BullMQ schedule is only
+  re-read at worker boot, so changing the sync interval still requires
+  `docker compose up -d worker` to take effect.
+- **Role changes require a re-login.** JWTs are stamped with the role at
+  sign-in and aren't auto-refreshed. Promoting/demoting a signed-in user
+  needs them to log out + back in to see the change.
 
 ---
 
@@ -524,31 +555,49 @@ come from Plaid sync.
 ledger/
 ├── Backend/
 │   ├── src/
-│   │   ├── server.js           # Fastify entry, security middleware
-│   │   ├── worker.js           # BullMQ worker (Plaid syncs, email)
-│   │   ├── migrate.js          # Schema bootstrap + ALTER migrations
-│   │   ├── db.js               # mysql2 pool (prepared statements only)
-│   │   ├── crypto.js           # AES-256-GCM encrypt/decrypt
-│   │   ├── audit.js            # Audit log helper
-│   │   ├── plaid-client.js     # Plaid SDK init
+│   │   ├── server.js              # Fastify entry, security middleware
+│   │   ├── worker.js              # BullMQ worker (Plaid syncs, email, audit cleanup)
+│   │   ├── migrate.js             # Schema bootstrap + ALTER migrations + owner backfill
+│   │   ├── db.js                  # mysql2 pool (prepared statements only)
+│   │   ├── crypto.js              # AES-256-GCM encrypt/decrypt
+│   │   ├── audit.js               # Audit log helper + offline GeoIP (geoip-lite)
+│   │   ├── app-settings.js        # DB-backed app config (allowlist, sync interval) with env fallback
+│   │   ├── budget-utils.js        # Master-period math, budget audit helpers
+│   │   ├── notification-engine.js # Daily notification generator + email digest dispatch
+│   │   ├── plaid-client.js        # Plaid SDK init
 │   │   ├── plaid-webhook-verify.js
-│   │   ├── queue.js            # BullMQ queue/job helpers
-│   │   ├── sync.js             # Plaid sync orchestration
-│   │   ├── mailer.js           # SMTP / Nodemailer
-│   │   └── routes/             # Fastify route plugins
+│   │   ├── queue.js               # BullMQ queue/job helpers
+│   │   ├── sync.js                # Plaid sync orchestration
+│   │   ├── mailer.js              # SMTP / Nodemailer + notification-digest template
+│   │   └── routes/
+│   │       ├── auth.js            # Google SSO, /me, members, role updates, test-email
+│   │       ├── accounts.js
+│   │       ├── transactions.js    # Plus CSV import/export, merchant rules
+│   │       ├── budgets.js
+│   │       ├── goals.js
+│   │       ├── notes.js
+│   │       ├── categories.js
+│   │       ├── notifications.js
+│   │       ├── investments.js
+│   │       ├── plaid.js
+│   │       ├── admin.js           # Owner/admin admin-panel surface (info, sync-interval, allowlist, audit, cleanup)
+│   │       └── export.js          # PDF full-export (pdfkit, server-side, no headless browser)
 │   ├── Dockerfile
 │   └── package.json
 ├── Frontend/
 │   ├── src/
 │   │   ├── App.jsx             # The whole UI (single-file by design)
 │   │   ├── main.jsx
-│   │   ├── index.css           # Tailwind + iOS PWA reset
-│   │   ├── api/client.js       # Thin fetch wrapper
+│   │   ├── index.css           # Tailwind + iOS PWA reset + privacy-mode blur rule
+│   │   ├── api/client.js       # Thin fetch wrapper + authed file-download helper
 │   │   ├── hooks/useAuth.js
 │   │   └── context/DateContext.jsx  # Global data store
-│   ├── public/manifest.webmanifest  # PWA manifest
+│   ├── public/favicon.svg      # Single source of truth for every PWA icon
+│   ├── public/manifest.webmanifest
+│   ├── scripts/generate-icons.mjs   # `prebuild` step: SVG → 4 PNG icons via sharp
 │   ├── index.html              # PWA meta tags + Google GIS script
-│   ├── nginx.conf              # Security headers, CSP, caching
+│   ├── nginx.conf              # Routing, gzip, expires
+│   ├── nginx-headers.conf      # Shared snippet: cache + security headers (works around add_header inheritance footgun)
 │   ├── Dockerfile
 │   ├── tailwind.config.js
 │   ├── vite.config.js
@@ -571,13 +620,13 @@ ledger/
 | `ENCRYPTION_KEY`          | Yes      | 32-byte (64 hex chars), AES-256 for Plaid tokens + notes. **BACK UP** |
 | `GOOGLE_CLIENT_ID`        | Yes      | Backend ID-token verification                                        |
 | `VITE_GOOGLE_CLIENT_ID`   | Yes      | Frontend Google button (build-time, same value as above)             |
-| `ALLOWED_EMAILS`          | Recommended | Comma-separated Gmail allowlist. Empty = anyone with a Google account can sign in |
+| `ALLOWED_EMAILS`          | Recommended | Comma-separated Gmail allowlist used until the owner edits it in the Admin panel; after that the DB-backed allowlist takes over. Empty = anyone with a Google account can sign in. |
 | `PLAID_CLIENT_ID` / `PLAID_SECRET` / `PLAID_ENV` | Yes | Plaid keys; env is `sandbox` or `production`               |
 | `PLAID_REDIRECT_URI`      | Production-only | OAuth return URL, must match Plaid dashboard exactly         |
 | `PLAID_WEBHOOK_URL`       | Optional | Auto-sync push endpoint; verified by signature                       |
-| `APP_URL` / `CORS_ORIGIN` | Yes      | Your full HTTPS URL; CORS won't start without it in production       |
-| `SIGNUP_MODE`             | Optional | `closed` for single-user, `invite` to use the invitation system, `open` for anything-goes |
-| `SYNC_INTERVAL_MINUTES`   | Optional | How often the worker polls Plaid for new transactions. Default 60. Webhook-driven syncs fire regardless. |
+| `APP_URL` / `CORS_ORIGIN` | Yes      | Your full HTTPS URL; CORS won't start without it in production. `APP_URL` is also used as the "Open Ledger" link target in notification emails. |
+| `SIGNUP_MODE`             | Optional | `open` (default) — any allowlisted Google account can sign up. `closed` — no new users; existing users may still sign in. Use `closed` after your household roster is finalised to harden the deployment. |
+| `SYNC_INTERVAL_MINUTES`   | Optional | Initial polling cadence for Plaid; default 60. Owners can override this live from the Admin panel (the DB value wins). Webhook-driven syncs fire regardless. |
 | `EMAIL_CONFIG`            | Optional | `disabled` (default) or `enabled`. Master kill-switch for outbound email. UI greys out email-notification settings when disabled. |
 | `SMTP_*`                  | Optional | SMTP credentials, only consulted when `EMAIL_CONFIG=enabled`. Leave `SMTP_HOST` blank to log emails to console for testing. |
 
