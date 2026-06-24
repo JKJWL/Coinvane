@@ -30,25 +30,72 @@ function getTransporter() {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS,
     } : undefined,
+    // ── Defense-in-depth flags (Nodemailer's documented sandboxing) ──
+    // We never intentionally pass {path:…} or {href:…} content shapes, but
+    // setting these at the transport level means a future contributor who
+    // accidentally introduces such a code path can't turn it into arbitrary
+    // file disclosure or SSRF. Every well-known advisory in this class
+    // (GHSA-wqvq-jvpq-h66f, the raw-option bypass closed in 9.0.1) lists
+    // "application sets disableFileAccess/disableUrlAccess on the
+    // transporter" as the protective baseline — we set both, always.
+    disableFileAccess: true,
+    disableUrlAccess: true,
   });
   return transporter;
 }
 
-export async function sendMail({ to, subject, html, text }) {
+// Strict allowlist of fields we accept from internal callers. Anything else
+// is dropped before it reaches Nodemailer. The point isn't to scrub user
+// input (callers are our own routes) — it's to make it structurally
+// impossible for a future maintainer to feed `raw`, `attachments`,
+// `icalEvent`, `watchHtml`, `amp`, `dkim`, etc. into sendMail without an
+// explicit code change to this allowlist. Same posture every "untrusted
+// input + sandbox flags" advisory in the Nodemailer ecosystem expects.
+const ALLOWED_MAIL_FIELDS = ["from", "to", "subject", "html", "text"];
+
+export async function sendMail(payload = {}) {
   // Hard kill-switch — controlled by EMAIL_CONFIG env var.
   if (!isEmailEnabled()) {
-    console.log(`[mail:disabled] EMAIL_CONFIG=disabled. Would send to: ${to} | Subject: ${subject}`);
+    console.log(`[mail:disabled] EMAIL_CONFIG=disabled. Would send to: ${payload.to} | Subject: ${payload.subject}`);
     return { ok: true, disabled: true };
+  }
+
+  // Rebuild the message from the allowlist — every other key is silently
+  // dropped. This is the structural guarantee against raw-option bypass and
+  // every related "untrusted shape" advisory.
+  const message = {};
+  for (const k of ALLOWED_MAIL_FIELDS) {
+    if (payload[k] !== undefined) message[k] = payload[k];
+  }
+  // Type-check the four user-facing fields. Anything that isn't a plain
+  // string is rejected so attacker-controlled objects like { path } /
+  // { href } can never slip in even if a future caller forgot to coerce.
+  for (const k of ["to", "subject", "html", "text"]) {
+    if (message[k] !== undefined && typeof message[k] !== "string") {
+      throw new Error(`mailer: field "${k}" must be a string, got ${typeof message[k]}`);
+    }
   }
 
   const t = getTransporter();
   const from = process.env.SMTP_FROM || "Ledger <noreply@ledger.local>";
+  message.from = message.from || from;
   if (!t) {
-    console.log(`[mail:dev] To: ${to} | Subject: ${subject}\n${text || html}`);
+    console.log(`[mail:dev] To: ${message.to} | Subject: ${message.subject}\n${message.text || message.html}`);
     return { ok: true, dev: true };
   }
-  const info = await t.sendMail({ from, to, subject, html, text });
-  return { ok: true, messageId: info.messageId };
+
+  // Paranoia-mode logging. Any throw from Nodemailer surfaces with the
+  // full stack + the recipient (NOT the body, which can contain PII) so a
+  // surprise 9.x regression — or an SMTP-side rejection — is debuggable
+  // from `docker compose logs worker` without re-running the failing send.
+  try {
+    const info = await t.sendMail(message);
+    return { ok: true, messageId: info.messageId };
+  } catch (err) {
+    console.error(`[mail:error] to=${message.to} subject="${message.subject}" — ${err?.message || err}`);
+    if (err?.stack) console.error(err.stack);
+    throw err;
+  }
 }
 
 /**
