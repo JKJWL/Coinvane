@@ -788,7 +788,7 @@ function NetWorthChart({ theme, darkMode, variant = "hero" }) {
             <AnimatedNumber value={last} format={fmt} />
           </div>
           <div className="flex items-center gap-2 mt-2.5">
-            <div className="flex items-center gap-0.5 px-2 py-0.5 rounded-full text-xs font-semibold bg-white/25 backdrop-blur-sm">
+            <div className="flex items-center gap-0.5 px-2 py-0.5 rounded-full text-xs font-semibold bg-white/25 backdrop-blur-sm private-amount" tabIndex={0}>
               <ArrowUpRight className={`w-3.5 h-3.5 ${deltaUp ? "" : "rotate-90"}`} />
               {deltaUp ? "+" : ""}{fmtShort(delta)}
             </div>
@@ -833,7 +833,7 @@ function NetWorthChart({ theme, darkMode, variant = "hero" }) {
           </div>
           <div className={`text-xs mt-1 flex items-center gap-1.5 ${deltaUp ? "text-emerald-500" : "text-rose-500"}`}>
             <ArrowUpRight className={`w-3.5 h-3.5 ${deltaUp ? "" : "rotate-90"}`} />
-            <span className="font-semibold">{deltaUp ? "+" : ""}{fmt(delta)}</span>
+            <span className="font-semibold private-amount" tabIndex={0}>{deltaUp ? "+" : ""}{fmt(delta)}</span>
             <span className={theme.textSubtle}>over {range.toUpperCase()}</span>
           </div>
         </div>
