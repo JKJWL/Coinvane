@@ -1713,7 +1713,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
                     <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider`}>
                       {fmtGroupDate(group.date)}
                     </div>
-                    <div className={`text-[11px] font-semibold ${total >= 0 ? "text-emerald-500" : theme.textSubtle}`}>
+                    <div className={`text-[11px] font-semibold private-amount ${total >= 0 ? "text-emerald-500" : theme.textSubtle}`} tabIndex={0}>
                       {total >= 0 ? "+" : "−"}{fmt(Math.abs(total))}
                     </div>
                   </div>
