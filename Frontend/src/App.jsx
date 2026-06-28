@@ -694,16 +694,16 @@ function SidebarGroup({ type, label, icon: Icon, accounts, theme }) {
           <Icon className={`w-4 h-4 ${theme.textSubtle}`} />
           <span className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider`}>{label}</span>
         </div>
-        <span className={`text-sm font-semibold ${total < 0 ? "text-rose-500" : ""}`}>{fmt(total)}</span>
+        <span className={`text-sm font-semibold private-amount ${total < 0 ? "text-rose-500" : ""}`} tabIndex={0}>{fmt(total)}</span>
       </div>
       <div className="space-y-0.5">
         {visible.map(acc => (
           <div key={acc.id} className={`w-full flex items-center justify-between p-2 rounded-md ${theme.hover}`}>
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium truncate">{acc.name}</div>
-              <div className={`text-xs ${theme.textSubtle} truncate`}>{acc.institution}</div>
+              <div className="text-sm font-medium truncate private-name" tabIndex={0}>{acc.name}</div>
+              <div className={`text-xs ${theme.textSubtle} truncate private-name`} tabIndex={0}>{acc.institution}</div>
             </div>
-            <span className={`text-sm font-semibold ml-2 flex-shrink-0 ${Number(acc.balance) < 0 ? "text-rose-500" : ""}`}>
+            <span className={`text-sm font-semibold ml-2 flex-shrink-0 private-amount ${Number(acc.balance) < 0 ? "text-rose-500" : ""}`} tabIndex={0}>
               {fmtShort(Number(acc.balance))}
             </span>
           </div>
@@ -795,7 +795,7 @@ function NetWorthChart({ theme, darkMode, variant = "hero" }) {
             <span className="text-xs opacity-85">over {range.toUpperCase()}</span>
           </div>
         </div>
-        <div className="relative h-24 -mx-5 -mb-5 mt-4">
+        <div className="relative h-24 -mx-5 -mb-5 mt-4 private-chart" tabIndex={0}>
           {points.length > 1 ? (
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={points} margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
@@ -839,7 +839,7 @@ function NetWorthChart({ theme, darkMode, variant = "hero" }) {
         </div>
         {chips}
       </div>
-      <div className="h-52">
+      <div className="h-52 private-chart" tabIndex={0}>
         {points.length > 1 ? (
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={points}>
@@ -1278,7 +1278,7 @@ function AccountsTab({ theme, darkMode, toast }) {
                     <Building2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
                   </div>
                   <div className="min-w-0">
-                    <div className="font-medium text-sm truncate">{item.institutionName || "Bank"}</div>
+                    <div className="font-medium text-sm truncate private-name" tabIndex={0}>{item.institutionName || "Bank"}</div>
                     <div className={`text-xs ${theme.textSubtle}`}>
                       {item.lastSyncAt
                         ? `Last sync ${new Date(item.lastSyncAt).toLocaleString()}`
@@ -1313,8 +1313,8 @@ function AccountsTab({ theme, darkMode, toast }) {
                     <AIcon className="w-5 h-5" />
                   </div>
                   <div>
-                    <div className="font-semibold text-sm">{a.name}</div>
-                    <div className={`text-xs ${theme.textSubtle}`}>{a.institution || "Manual"}</div>
+                    <div className="font-semibold text-sm private-name" tabIndex={0}>{a.name}</div>
+                    <div className={`text-xs ${theme.textSubtle} private-name`} tabIndex={0}>{a.institution || "Manual"}</div>
                   </div>
                 </div>
                 <div className="flex items-center gap-1">
@@ -1326,7 +1326,7 @@ function AccountsTab({ theme, darkMode, toast }) {
                   )}
                 </div>
               </div>
-              <div className={`text-2xl font-bold ${Number(a.balance) < 0 ? "text-rose-500" : ""}`}>
+              <div className={`text-2xl font-bold private-amount ${Number(a.balance) < 0 ? "text-rose-500" : ""}`} tabIndex={0}>
                 {fmt(Math.abs(Number(a.balance)))}
               </div>
               <div className="flex items-center justify-between mt-2">
@@ -1736,7 +1736,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
                             <PendingPill pending={t.pending} darkMode={darkMode} />
                           </div>
                           <div className={`text-xs ${theme.textSubtle} truncate`}>
-                            {isFlat ? `${t.date} · ` : ""}{t.category} · {t.accountName || "—"}
+                            {isFlat ? `${t.date} · ` : ""}{t.category} · <span className="private-name" tabIndex={0}>{t.accountName || "—"}</span>
                           </div>
                         </div>
                         <div className={`font-semibold text-sm flex-shrink-0 private-amount ${Number(t.amount) >= 0 ? "text-emerald-500" : ""}`} tabIndex={0}>
@@ -3885,7 +3885,7 @@ function MobileBanksSection({ theme, darkMode, toast }) {
                     <Building2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
                   </div>
                   <div className="min-w-0">
-                    <div className="font-medium text-sm truncate">{item.institutionName || "Bank"}</div>
+                    <div className="font-medium text-sm truncate private-name" tabIndex={0}>{item.institutionName || "Bank"}</div>
                     <div className={`text-[11px] ${theme.textSubtle} truncate`}>
                       {item.lastSyncAt ? `Synced ${new Date(item.lastSyncAt).toLocaleDateString()}` : "Not yet synced"}
                     </div>
@@ -3918,8 +3918,8 @@ function MobileBanksSection({ theme, darkMode, toast }) {
             {manualAccounts.map(a => (
               <div key={a.id} className="flex items-center justify-between px-3 py-2.5">
                 <div className="min-w-0">
-                  <div className="font-medium text-sm truncate">{a.name}</div>
-                  <div className={`text-[11px] ${theme.textSubtle} truncate`}>{a.institution || a.type} · <span className="private-amount" tabIndex={0}>{fmt(a.balance)}</span></div>
+                  <div className="font-medium text-sm truncate private-name" tabIndex={0}>{a.name}</div>
+                  <div className={`text-[11px] ${theme.textSubtle} truncate`}><span className="private-name" tabIndex={0}>{a.institution || a.type}</span> · <span className="private-amount" tabIndex={0}>{fmt(a.balance)}</span></div>
                 </div>
                 <button onClick={() => removeAccount(a)}
                   className={`text-xs font-medium px-2.5 py-1 rounded-lg ${darkMode ? "text-rose-400 hover:bg-rose-500/10" : "text-rose-600 hover:bg-rose-50"}`}>
