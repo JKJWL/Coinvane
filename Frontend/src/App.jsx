@@ -890,15 +890,15 @@ function MobileSpendingPulse({ byCategory, cashflow, theme, darkMode }) {
       <div className="flex items-end justify-between mb-3">
         <div>
           <div className={`text-[11px] font-semibold uppercase tracking-[0.12em] ${theme.textSubtle}`}>This Month</div>
-          <div className="text-2xl font-bold mt-1">
+          <div className="text-2xl font-bold mt-1 private-amount" tabIndex={0}>
             <AnimatedNumber value={thisSpend} format={fmt} />
           </div>
         </div>
         {top.length > 0 && (
-          <div className={`flex items-center gap-0.5 text-xs font-semibold px-2 py-1 rounded-full ${
+          <div className={`flex items-center gap-0.5 text-xs font-semibold px-2 py-1 rounded-full private-amount ${
             down ? (darkMode ? "bg-emerald-500/15 text-emerald-400" : "bg-emerald-50 text-emerald-700")
                  : (darkMode ? "bg-rose-500/15 text-rose-400" : "bg-rose-50 text-rose-700")
-          }`}>
+          }`} tabIndex={0}>
             <ArrowUpRight className={`w-3 h-3 ${down ? "rotate-90" : ""}`} />
             {down ? "" : "+"}{fmtShort(delta)}
           </div>
@@ -907,7 +907,7 @@ function MobileSpendingPulse({ byCategory, cashflow, theme, darkMode }) {
 
       {top.length > 0 ? (
         <>
-          <div className={`flex h-2.5 rounded-full overflow-hidden ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+          <div className={`flex h-2.5 rounded-full overflow-hidden private-chart ${darkMode ? "bg-slate-800" : "bg-slate-100"}`} tabIndex={0}>
             {top.map((c, i) => (
               <motion.div key={c.name}
                 initial={{ width: 0 }}
@@ -921,7 +921,7 @@ function MobileSpendingPulse({ byCategory, cashflow, theme, darkMode }) {
               <div key={c.name} className="flex items-center gap-2 text-xs">
                 <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: c.color }} />
                 <span className={`flex-1 truncate ${theme.textMuted}`}>{c.name}</span>
-                <span className="font-semibold">{fmtShort(c.value)}</span>
+                <span className="font-semibold private-amount" tabIndex={0}>{fmtShort(c.value)}</span>
               </div>
             ))}
           </div>
@@ -988,7 +988,7 @@ function MobileInsights({ cashflow, budgets, theme, darkMode }) {
             </div>
             <div className="flex-1 min-w-0">
               <div className="font-semibold text-sm">{ins.title}</div>
-              <div className={`text-xs mt-0.5 ${theme.textMuted}`}>{ins.body}</div>
+              <div className={`text-xs mt-0.5 private-amount ${theme.textMuted}`} tabIndex={0}>{ins.body}</div>
             </div>
           </motion.div>
         );
@@ -1055,7 +1055,7 @@ function OverviewTab({ theme, darkMode, onNavigate }) {
             <p className={`text-xs ${theme.textSubtle}`}>Last 12 months</p>
           </div>
           {cf.length > 0 ? (
-            <div className="h-52">
+            <div className="h-52 private-chart" tabIndex={0}>
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={cf}>
                   <defs>
@@ -1088,7 +1088,7 @@ function OverviewTab({ theme, darkMode, onNavigate }) {
           <h3 className="font-semibold mb-4">Spending by category</h3>
           {catData.length > 0 ? (
             <>
-              <div className="h-36">
+              <div className="h-36 private-chart" tabIndex={0}>
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie data={catData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={35} outerRadius={62} paddingAngle={2}>
@@ -1105,7 +1105,7 @@ function OverviewTab({ theme, darkMode, onNavigate }) {
                       <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: c.color }} />
                       <span className={theme.textMuted}>{c.name}</span>
                     </span>
-                    <span className="font-semibold">{fmt(c.value)}</span>
+                    <span className="font-semibold private-amount" tabIndex={0}>{fmt(c.value)}</span>
                   </div>
                 ))}
               </div>
@@ -1160,7 +1160,7 @@ function OverviewTab({ theme, darkMode, onNavigate }) {
                   </div>
                   <div className={`text-xs ${theme.textSubtle}`}>{t.date} · {t.category}</div>
                 </div>
-                <div className={`font-semibold text-sm ${Number(t.amount) >= 0 ? "text-emerald-500" : ""}`}>
+                <div className={`font-semibold text-sm private-amount ${Number(t.amount) >= 0 ? "text-emerald-500" : ""}`} tabIndex={0}>
                   {Number(t.amount) >= 0 ? "+" : "−"}{fmt(Math.abs(Number(t.amount)))}
                 </div>
               </div>
