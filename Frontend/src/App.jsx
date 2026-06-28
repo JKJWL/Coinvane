@@ -2024,7 +2024,7 @@ function IncomeTracker({ tracker, theme, darkMode, onConfigure, readOnly = false
           <div className="text-[11px] font-semibold uppercase tracking-[0.14em] opacity-90 flex items-center gap-1.5">
             <ArrowUpRight className="w-3.5 h-3.5 rotate-180" /> Income
           </div>
-          <div className="text-3xl font-bold mt-1 tracking-tight">
+          <div className="text-3xl font-bold mt-1 tracking-tight private-amount" tabIndex={0}>
             <AnimatedNumber value={total} format={fmt} duration={0.6} />
           </div>
           <div className="text-xs opacity-85 mt-1">
@@ -2056,7 +2056,7 @@ function CreditTracker({ tracker, theme, darkMode, onConfigure, readOnly = false
           <div className={`text-[11px] font-semibold uppercase tracking-[0.14em] ${theme.textSubtle} flex items-center gap-1.5`}>
             <CreditCard className="w-3.5 h-3.5" /> Credit Card Usage
           </div>
-          <div className="text-2xl font-bold mt-1 tracking-tight text-rose-500">
+          <div className="text-2xl font-bold mt-1 tracking-tight text-rose-500 private-amount" tabIndex={0}>
             <AnimatedNumber value={total} format={fmt} duration={0.6} />
           </div>
           <div className={`text-xs ${theme.textSubtle} mt-1`}>
@@ -2067,7 +2067,7 @@ function CreditTracker({ tracker, theme, darkMode, onConfigure, readOnly = false
               {tracker.cards.map(c => (
                 <div key={c.accountId}
                   className={`text-[10px] font-semibold px-2 py-1 rounded-full ${darkMode ? "bg-rose-500/10 text-rose-400" : "bg-rose-50 text-rose-600"}`}>
-                  {c.accountName}: {fmtShort(c.used)}
+                  <span className="private-name" tabIndex={0}>{c.accountName}</span>: <span className="private-amount" tabIndex={0}>{fmtShort(c.used)}</span>
                 </div>
               ))}
             </div>
@@ -2104,11 +2104,11 @@ function ZeroBudgetSummary({ zb, theme, darkMode }) {
             <Check className="w-3 h-3" /> Fully allocated
           </div>
         ) : remaining > 0 ? (
-          <div className="text-[11px] font-semibold text-amber-500">
+          <div className="text-[11px] font-semibold text-amber-500 private-amount" tabIndex={0}>
             {fmt(remaining)} left to budget
           </div>
         ) : (
-          <div className="text-[11px] font-semibold text-rose-500">
+          <div className="text-[11px] font-semibold text-rose-500 private-amount" tabIndex={0}>
             {fmt(Math.abs(remaining))} over-allocated
           </div>
         )}
@@ -2127,10 +2127,10 @@ function ZeroBudgetSummary({ zb, theme, darkMode }) {
       </div>
       <div className="flex items-center justify-between text-[11px] mt-2">
         <div className="flex items-center gap-1 text-rose-500 font-semibold">
-          <span className="w-2 h-2 rounded-full bg-rose-500" /> Budgeted {fmt(allocated)}
+          <span className="w-2 h-2 rounded-full bg-rose-500" /> Budgeted <span className="private-amount" tabIndex={0}>{fmt(allocated)}</span>
         </div>
         <div className="flex items-center gap-1 text-emerald-500 font-semibold">
-          Income {fmt(income)} <span className="w-2 h-2 rounded-full bg-emerald-500" />
+          Income <span className="private-amount" tabIndex={0}>{fmt(income)}</span> <span className="w-2 h-2 rounded-full bg-emerald-500" />
         </div>
       </div>
     </div>
@@ -2246,7 +2246,7 @@ function BudgetHistoryDropdown({ theme, darkMode, history, open, onOpen, onClose
                             {p.isCurrent ? "Current" : fmtRange(p.periodStart, p.periodEnd)}
                           </div>
                           <div className={`text-[10px] ${theme.textSubtle}`}>
-                            Income {fmt(p.income)} · {p.budgets.length} budget{p.budgets.length !== 1 ? "s" : ""}
+                            Income <span className="private-amount" tabIndex={0}>{fmt(p.income)}</span> · {p.budgets.length} budget{p.budgets.length !== 1 ? "s" : ""}
                           </div>
                         </div>
                         {isPicked && <Check className="w-4 h-4 text-emerald-500 flex-shrink-0" />}
@@ -2364,9 +2364,9 @@ function BudgetCard({ b, theme, darkMode, onEdit, onDelete, reorderLocked,
                           <div className="font-medium text-xs truncate">{t.merchant}</div>
                           <PendingPill pending={t.pending} darkMode={darkMode} size="xs" />
                         </div>
-                        <div className={`text-[10px] ${theme.textSubtle}`}>{t.date} · {t.accountName || "—"}</div>
+                        <div className={`text-[10px] ${theme.textSubtle}`}>{t.date} · <span className="private-name" tabIndex={0}>{t.accountName || "—"}</span></div>
                       </div>
-                      <div className="font-semibold text-xs flex-shrink-0">
+                      <div className="font-semibold text-xs flex-shrink-0 private-amount" tabIndex={0}>
                         −{fmt(Math.abs(Number(t.amount)))}
                       </div>
                     </div>
@@ -3136,7 +3136,7 @@ function GoalsTab({ theme, darkMode, toast }) {
                     {linked && (
                       <div className={`text-[11px] ${theme.textSubtle} flex items-center gap-1 mt-0.5`}>
                         <Link2 className="w-3 h-3" />
-                        <span className="truncate">{g.accountName || "Linked account"}</span>
+                        <span className="truncate private-name" tabIndex={0}>{g.accountName || "Linked account"}</span>
                       </div>
                     )}
                   </div>
@@ -3166,14 +3166,14 @@ function GoalsTab({ theme, darkMode, toast }) {
                 </div>
               </div>
               <div className={`flex justify-between text-sm mb-2 ${theme.textMuted}`}>
-                <span>{fmt(saved)}</span>
+                <span className="private-amount" tabIndex={0}>{fmt(saved)}</span>
                 <span className="font-medium">{fmt(target)}</span>
               </div>
               <ProgressBar value={pct} color={bg} darkMode={darkMode} />
               <div className={`flex items-center justify-between mt-2`}>
                 <span className={`text-xs ${theme.textSubtle}`}>
                   {Math.round(pct)}% complete
-                  {!completed && saved < target && <span className="ml-1">· {fmt(target - saved)} to go</span>}
+                  {!completed && saved < target && <span className="ml-1 private-amount" tabIndex={0}>· {fmt(target - saved)} to go</span>}
                 </span>
                 {g.deadline && (
                   <span className={`text-xs ${theme.textSubtle} flex items-center gap-1`}>
@@ -3196,7 +3196,7 @@ function GoalsTab({ theme, darkMode, toast }) {
           <form onSubmit={contribute} className="space-y-4">
             <div className="text-center py-2">
               <div className={`text-xs ${theme.textSubtle}`}>Currently saved</div>
-              <div className="text-2xl font-bold mt-1">{fmt(contribFor.goal.saved)}</div>
+              <div className="text-2xl font-bold mt-1 private-amount" tabIndex={0}>{fmt(contribFor.goal.saved)}</div>
               <div className={`text-xs ${theme.textSubtle} mt-0.5`}>of {fmt(contribFor.goal.target)}</div>
             </div>
             {/* Mode toggle — flip between Add and Withdraw without closing
@@ -3292,8 +3292,8 @@ function InvestmentsTab({ theme, darkMode }) {
                 <div className={`text-xs ${theme.textSubtle}`}>{h.securityName}</div>
               </div>
               <div className="text-right">
-                <div className="font-semibold text-sm">{fmt(h.value)}</div>
-                <div className={`text-xs ${gain >= 0 ? "text-emerald-500" : "text-rose-500"}`}>
+                <div className="font-semibold text-sm private-amount" tabIndex={0}>{fmt(h.value)}</div>
+                <div className={`text-xs private-amount ${gain >= 0 ? "text-emerald-500" : "text-rose-500"}`} tabIndex={0}>
                   {gain >= 0 ? "+" : ""}{fmt(gain)}
                 </div>
               </div>
@@ -4591,7 +4591,7 @@ function Shell({ user, onLogout, refreshUser }) {
         <aside className={`hidden lg:flex flex-col w-72 p-4 border-r ${theme.border} ${theme.surface} min-h-[calc(100vh-57px)] sticky top-[57px]`}>
           <div className="mb-6 p-2 rounded-xl cursor-default">
             <div className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1`}>Net Worth</div>
-            <div className="text-2xl font-bold">
+            <div className="text-2xl font-bold private-amount" tabIndex={0}>
               <AnimatedNumber value={net} format={fmt} />
             </div>
           </div>
