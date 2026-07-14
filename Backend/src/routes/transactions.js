@@ -29,9 +29,27 @@ export default async function (app) {
     if (from)      { where.push("t.date >= ?"); params.push(from); }
     if (to)        { where.push("t.date <= ?"); params.push(to); }
 
+    // Collapse detected transfer pairs to a SINGLE row in the list. Both
+    // sides still exist in the DB (so account balances remain accurate) but
+    // for display we keep just the outgoing (most negative) leg — that's
+    // the row the source account "sees". The correlated `transfer_group_id`
+    // is returned so the client can render a blue Transfer pill.
+    where.push(`(
+      t.transfer_group_id IS NULL
+      OR t.id = (
+        SELECT MIN(t2.id) FROM transactions t2
+        WHERE t2.transfer_group_id = t.transfer_group_id
+          AND t2.amount = (
+            SELECT MIN(t3.amount) FROM transactions t3
+            WHERE t3.transfer_group_id = t.transfer_group_id
+          )
+      )
+    )`);
+
     params.push(Number(limit), Number(offset));
     return query(
       `SELECT t.id, t.date, t.merchant, t.category, t.amount, t.pending, t.note,
+              t.is_transfer AS isTransfer, t.transfer_group_id AS transferGroupId,
               a.name AS accountName, a.id AS accountId, a.plaid_item_id AS plaidItemId
        FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
        WHERE ${where.join(" AND ")} ORDER BY t.date DESC, t.id DESC LIMIT ? OFFSET ?`,
@@ -109,6 +127,7 @@ export default async function (app) {
        LEFT JOIN accounts a ON a.id = t.account_id
        WHERE t.user_id = ? AND t.amount < 0
          AND (a.type IS NULL OR a.type <> 'credit')
+         AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
          ${dateClause}
        GROUP BY t.category ORDER BY total DESC`,
       params
@@ -119,6 +138,8 @@ export default async function (app) {
     // Credit-card transactions are excluded so the dashboard income/spending
     // bars line up with the budget + income trackers, all of which treat
     // credit accounts as their own world (see budgets.js for the same rule).
+    // Internal transfers are also excluded — moving money between your own
+    // accounts is not income or spending.
     return query(
       `SELECT DATE_FORMAT(t.date, '%Y-%m') AS month,
               SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END) AS income,
@@ -128,6 +149,7 @@ export default async function (app) {
        WHERE t.user_id = ?
          AND t.date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
          AND (a.type IS NULL OR a.type <> 'credit')
+         AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
        GROUP BY month ORDER BY month`,
       [req.user.id]
     );

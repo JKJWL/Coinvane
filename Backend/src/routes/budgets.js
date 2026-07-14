@@ -28,26 +28,31 @@ const PERIODS = ["weekly","biweekly","semimonthly","monthly","yearly","custom"];
 async function sumIncomeInWindow(userId, startStr, endStr) {
   // Credit-account positive entries (refunds, payments made to the card)
   // aren't real income, so they're excluded — matches the same posture
-  // category budgets take with credit-account expenses.
+  // category budgets take with credit-account expenses. Internal transfers
+  // are also excluded so a savings→checking move doesn't fake income.
   const row = await queryOne(
     `SELECT COALESCE(SUM(t.amount), 0) AS total
      FROM transactions t
      LEFT JOIN accounts a ON a.id = t.account_id
      WHERE t.user_id = ? AND t.amount > 0
        AND t.date >= ? AND t.date < ?
-       AND (a.type IS NULL OR a.type <> 'credit')`,
+       AND (a.type IS NULL OR a.type <> 'credit')
+       AND (t.is_transfer = 0 OR t.is_transfer IS NULL)`,
     [userId, startStr, endStr]
   );
   return Number(row.total) || 0;
 }
 
 async function creditUsageInWindow(userId, startStr, endStr) {
+  // Internal transfers to/from the credit account (e.g. paying the card
+  // from checking) are excluded so the tracker only reflects real swipes.
   const rows = await query(
     `SELECT a.id AS accountId, a.name AS accountName, a.institution,
             COALESCE(SUM(ABS(t.amount)), 0) AS used
      FROM accounts a
      LEFT JOIN transactions t ON t.account_id = a.id AND t.amount < 0
        AND t.date >= ? AND t.date < ?
+       AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
      WHERE a.user_id = ? AND a.type = 'credit'
      GROUP BY a.id, a.name, a.institution`,
     [startStr, endStr, userId]
@@ -417,6 +422,7 @@ export default async function (app) {
          LEFT JOIN accounts a ON a.id = t.account_id
          WHERE t.user_id = ? AND t.account_id = ? AND t.amount < 0
            AND t.date >= ? AND t.date < ?
+           AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
          ORDER BY t.date DESC, t.id DESC`,
         [req.user.id, b.account_id, startStr, endStr]
       );
@@ -429,6 +435,7 @@ export default async function (app) {
          WHERE t.user_id = ? AND t.category = ? AND t.amount < 0
            AND t.date >= ? AND t.date < ?
            AND (a.type IS NULL OR a.type <> 'credit')
+           AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
          ORDER BY t.date DESC, t.id DESC`,
         [req.user.id, b.category, startStr, endStr]
       );

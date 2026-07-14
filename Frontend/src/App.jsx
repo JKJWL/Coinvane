@@ -251,6 +251,26 @@ function PendingPill({ pending, darkMode, size = "sm" }) {
   );
 }
 
+// ─── TransferPill ─────────────────────────────────────────────────────────────
+// Blue chip on transactions that represent internal transfers between two of
+// the user's own accounts. These rows exist in the DB (their account
+// balances still need to reflect them) but they don't count toward income
+// or budget spending. Rendered anywhere a Pending pill can appear.
+function TransferPill({ isTransfer, darkMode, size = "sm" }) {
+  if (!isTransfer) return null;
+  const cls = size === "xs"
+    ? "text-[9px] px-1.5 py-px"
+    : "text-[10px] px-1.5 py-0.5";
+  return (
+    <span className={`inline-flex items-center gap-1 ${cls} rounded-full font-semibold uppercase tracking-wide ${
+      darkMode ? "bg-sky-500/15 text-sky-400" : "bg-sky-50 text-sky-700"
+    }`}>
+      <span className="w-1 h-1 rounded-full bg-sky-500" />
+      Transfer
+    </span>
+  );
+}
+
 // ─── IconButton ───────────────────────────────────────────────────────────────
 function IconButton({ children, onClick, theme }) {
   return (
@@ -1157,11 +1177,14 @@ function OverviewTab({ theme, darkMode, onNavigate }) {
                   <div className="flex items-center gap-1.5 min-w-0">
                     <div className="font-medium text-sm truncate">{t.merchant}</div>
                     <PendingPill pending={t.pending} darkMode={darkMode} />
+                    <TransferPill isTransfer={t.isTransfer} darkMode={darkMode} />
                   </div>
                   <div className={`text-xs ${theme.textSubtle}`}>{t.date} · {t.category}</div>
                 </div>
-                <div className={`font-semibold text-sm private-amount ${Number(t.amount) >= 0 ? "text-emerald-500" : ""}`} tabIndex={0}>
-                  {Number(t.amount) >= 0 ? "+" : "−"}{fmt(Math.abs(Number(t.amount)))}
+                <div className={`font-semibold text-sm private-amount ${
+                  t.isTransfer ? "text-sky-500" : Number(t.amount) >= 0 ? "text-emerald-500" : ""
+                }`} tabIndex={0}>
+                  {t.isTransfer ? "±" : Number(t.amount) >= 0 ? "+" : "−"}{fmt(Math.abs(Number(t.amount)))}
                 </div>
               </div>
             );
@@ -1549,8 +1572,11 @@ function TransactionsTab({ theme, darkMode, toast }) {
     });
   };
 
+  // Skip internal transfers when totalling a day — moving money between
+  // your own accounts isn't income or spending, so it shouldn't skew the
+  // day's net line at the top of the group.
   const groupTotal = (items) =>
-    items.reduce((s, t) => s + Number(t.amount), 0);
+    items.reduce((s, t) => (t.isTransfer ? s : s + Number(t.amount)), 0);
 
   // Group accounts by institution for the filter dropdown.
   // Scoped to the current side so the dropdown only ever offers accounts
@@ -1734,13 +1760,16 @@ function TransactionsTab({ theme, darkMode, toast }) {
                           <div className="flex items-center gap-1.5 min-w-0">
                             <div className="font-medium text-sm truncate">{t.merchant}</div>
                             <PendingPill pending={t.pending} darkMode={darkMode} />
+                            <TransferPill isTransfer={t.isTransfer} darkMode={darkMode} />
                           </div>
                           <div className={`text-xs ${theme.textSubtle} truncate`}>
                             {isFlat ? `${t.date} · ` : ""}{t.category} · <span className="private-name" tabIndex={0}>{t.accountName || "—"}</span>
                           </div>
                         </div>
-                        <div className={`font-semibold text-sm flex-shrink-0 private-amount ${Number(t.amount) >= 0 ? "text-emerald-500" : ""}`} tabIndex={0}>
-                          {Number(t.amount) >= 0 ? "+" : "−"}{fmt(Math.abs(Number(t.amount)))}
+                        <div className={`font-semibold text-sm flex-shrink-0 private-amount ${
+                          t.isTransfer ? "text-sky-500" : Number(t.amount) >= 0 ? "text-emerald-500" : ""
+                        }`} tabIndex={0}>
+                          {t.isTransfer ? "±" : Number(t.amount) >= 0 ? "+" : "−"}{fmt(Math.abs(Number(t.amount)))}
                         </div>
                       </motion.button>
                     );
@@ -1907,17 +1936,26 @@ function TransactionsTab({ theme, darkMode, toast }) {
                 <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-3 ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
                   <Icon className="w-7 h-7" style={{ color }} />
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap justify-center">
                   <div className="text-xl font-semibold">{detail.merchant}</div>
                   <PendingPill pending={detail.pending} darkMode={darkMode} />
+                  <TransferPill isTransfer={detail.isTransfer} darkMode={darkMode} />
                 </div>
-                <div className={`text-3xl font-bold mt-2 ${isIncome ? "text-emerald-500" : ""}`}>
-                  {isIncome ? "+" : "−"}{fmt(Math.abs(Number(detail.amount)))}
+                <div className={`text-3xl font-bold mt-2 ${
+                  detail.isTransfer ? "text-sky-500" : isIncome ? "text-emerald-500" : ""
+                }`}>
+                  {detail.isTransfer ? "±" : isIncome ? "+" : "−"}{fmt(Math.abs(Number(detail.amount)))}
                 </div>
                 {!!detail.pending && (
                   <p className={`text-[11px] ${theme.textSubtle} mt-2 max-w-[260px]`}>
                     Authorized but not yet settled by your bank. The amount or
                     merchant name may change once it posts.
+                  </p>
+                )}
+                {!!detail.isTransfer && (
+                  <p className={`text-[11px] ${theme.textSubtle} mt-2 max-w-[260px]`}>
+                    Internal transfer between your own accounts — excluded
+                    from income, spending, and budget totals.
                   </p>
                 )}
               </div>

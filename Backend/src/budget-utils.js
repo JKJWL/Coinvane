@@ -178,7 +178,8 @@ export async function spentForBudgetInWindow(userId, b, startStr, endStr) {
       `SELECT COALESCE(SUM(ABS(t.amount)), 0) AS spent
        FROM transactions t
        WHERE t.user_id = ? AND t.account_id = ? AND t.amount < 0
-         AND t.date >= ? AND t.date < ?`,
+         AND t.date >= ? AND t.date < ?
+         AND (t.is_transfer = 0 OR t.is_transfer IS NULL)`,
       [userId, b.account_id, startStr, endStr]
     );
     return Number(row.spent) || 0;
@@ -189,7 +190,8 @@ export async function spentForBudgetInWindow(userId, b, startStr, endStr) {
      LEFT JOIN accounts a ON a.id = t.account_id
      WHERE t.user_id = ? AND t.category = ? AND t.amount < 0
        AND t.date >= ? AND t.date < ?
-       AND (a.type IS NULL OR a.type <> 'credit')`,
+       AND (a.type IS NULL OR a.type <> 'credit')
+       AND (t.is_transfer = 0 OR t.is_transfer IS NULL)`,
     [userId, b.category, startStr, endStr]
   );
   return Number(row.spent) || 0;

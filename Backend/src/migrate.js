@@ -283,6 +283,22 @@ const SCHEMA = [
   // MariaDB needs an explicit MODIFY to extend an ENUM in place.
   `ALTER TABLE users MODIFY COLUMN role ENUM('owner','admin','user') DEFAULT 'user'`,
   `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS is_major BOOLEAN DEFAULT FALSE`,
+
+  // ── Internal-transfer detection (Bug fix) ────────────────────────
+  // When money moves between two of the user's own accounts (savings →
+  // checking, etc), Plaid reports it as TWO rows — one negative on the
+  // source, one positive on the destination. Both flags below get set
+  // for either half of a detected pair:
+  //   is_transfer         = TRUE  → excluded from income/spending rollups
+  //                                 and from category-budget spent totals
+  //   transfer_group_id   = UUID  → used to collapse the pair to a single
+  //                                 row in the transactions list
+  // Detection lives in sync.js and runs after every Plaid sync:
+  //   (a) Plaid tagged the txn as TRANSFER_IN / TRANSFER_OUT       — strong signal
+  //   (b) opposite-signed match on another of user's accounts       — fallback
+  //       (same |amount| within $0.01, within ±3 days)
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_transfer BOOLEAN DEFAULT FALSE`,
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS transfer_group_id VARCHAR(64) NULL`,
 ];
 
 const DEFAULT_CATEGORIES = [
@@ -309,6 +325,10 @@ const SOFT_SCHEMA = [
   `ALTER TABLE goals ADD INDEX idx_goal_account (account_id)`,
   `ALTER TABLE goals ADD CONSTRAINT fk_goals_account
      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE SET NULL`,
+  // Transfer-group index — MariaDB pre-10.5 doesn't support IF NOT EXISTS on
+  // ADD INDEX, so this lives in SOFT_SCHEMA and errors are swallowed on
+  // subsequent runs where the index already exists.
+  `ALTER TABLE transactions ADD INDEX idx_transfer_group (transfer_group_id)`,
 ];
 
 async function run() {

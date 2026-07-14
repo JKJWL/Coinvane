@@ -2,6 +2,7 @@
 import { plaid } from "./plaid-client.js";
 import { query, queryOne } from "./db.js";
 import { decrypt } from "./crypto.js";
+import crypto from "node:crypto";
 
 const PLAID_TO_INTERNAL_TYPE = {
   depository: "cash", credit: "credit", loan: "loan",
@@ -85,16 +86,22 @@ export async function syncTransactions(userId, itemId, accessToken) {
     const plaidCat = t.personal_finance_category?.primary || (t.category?.[0]) || "Other";
     // User-defined rule takes precedence over Plaid's category
     const finalCat = ruleMap.get(merchant.toLowerCase()) || normalizeCategory(plaidCat);
+    // Plaid tagged transfer (strong signal). We flag the row now so the
+    // pairing pass below can match it up with the other side even if that
+    // side wasn't itself tagged.
+    const plaidIsTransfer =
+      plaidCat === "TRANSFER_IN" || plaidCat === "TRANSFER_OUT";
     if (t.pending) pendingAdded++; else postedAdded++;
     await query(
       `INSERT INTO transactions (user_id, account_id, plaid_transaction_id, date, merchant,
-                                  category, amount, pending)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                  category, amount, pending, is_transfer)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE date = VALUES(date), merchant = VALUES(merchant),
                                 category = VALUES(category), amount = VALUES(amount),
-                                pending = VALUES(pending)`,
+                                pending = VALUES(pending),
+                                is_transfer = GREATEST(is_transfer, VALUES(is_transfer))`,
       [userId, accId, t.transaction_id, t.date,
-       merchant, finalCat, -t.amount, t.pending ? 1 : 0]
+       merchant, finalCat, -t.amount, t.pending ? 1 : 0, plaidIsTransfer ? 1 : 0]
     );
   }
 
@@ -102,6 +109,10 @@ export async function syncTransactions(userId, itemId, accessToken) {
     await query("DELETE FROM transactions WHERE plaid_transaction_id = ? AND user_id = ?",
       [r.transaction_id, userId]);
   }
+
+  // Pair up two-sided transfers across the user's own accounts. Runs after
+  // every sync so newly landed rows get grouped in the same pass.
+  const pairedCount = await pairInternalTransfers(userId);
 
   await query("UPDATE plaid_items SET sync_cursor = ?, last_sync_at = NOW() WHERE id = ?",
     [cursor, itemId]);
@@ -111,7 +122,105 @@ export async function syncTransactions(userId, itemId, accessToken) {
     removed: removed.length,
     pending: pendingAdded,
     posted: postedAdded,
+    pairedTransfers: pairedCount,
   };
+}
+
+/**
+ * Match unpaired transactions across the user's own accounts and give each
+ * matched pair a shared `transfer_group_id`. The row that already carries an
+ * `is_transfer` flag (Plaid tagged one side) drags its partner in too.
+ *
+ * Pairing rule: same |amount| within $0.01, opposite signs, on TWO DIFFERENT
+ * accounts owned by the same user, dated within ±3 days.
+ *
+ * Only runs on rows that don't already have a group_id, so re-runs are
+ * cheap. If a row has multiple candidate partners we pick the closest by
+ * (date-delta, then id) so a user with two identical amounts spread out
+ * doesn't get the wrong pairing.
+ */
+export async function pairInternalTransfers(userId) {
+  // Pool of every non-null-account row for this user that hasn't been
+  // paired yet. We keep this in memory because the O(n^2) match is trivial
+  // for a single user's unpaired set (bounded by pending sync volume),
+  // and it keeps the SQL simple.
+  const candidates = await query(
+    `SELECT id, account_id, date, amount, is_transfer
+     FROM transactions
+     WHERE user_id = ?
+       AND account_id IS NOT NULL
+       AND transfer_group_id IS NULL
+     ORDER BY date DESC, id DESC`,
+    [userId]
+  );
+  if (candidates.length < 2) return 0;
+
+  // Bucket by date so range queries stay O(n). Key = "YYYY-MM-DD".
+  const byDate = new Map();
+  for (const c of candidates) {
+    const key = String(c.date).slice(0, 10);
+    if (!byDate.has(key)) byDate.set(key, []);
+    byDate.get(key).push(c);
+  }
+
+  const DAY_MS = 86400000;
+  const WINDOW_DAYS = 3;
+  const CENTS_EPS = 0.01;
+  const used = new Set();
+  let paired = 0;
+
+  for (const outgoing of candidates) {
+    if (used.has(outgoing.id)) continue;
+    // Only iterate from the "out" side (amount < 0). This avoids matching
+    // the same pair twice from opposite directions.
+    if (Number(outgoing.amount) >= 0) continue;
+
+    const target = -Number(outgoing.amount);
+    const anchor = new Date(String(outgoing.date));
+    let best = null;
+    let bestDayDelta = Infinity;
+
+    for (let d = -WINDOW_DAYS; d <= WINDOW_DAYS; d++) {
+      const probe = new Date(anchor.getTime() + d * DAY_MS);
+      const key = probe.toISOString().slice(0, 10);
+      const bucket = byDate.get(key);
+      if (!bucket) continue;
+      for (const cand of bucket) {
+        if (cand.id === outgoing.id) continue;
+        if (used.has(cand.id)) continue;
+        if (cand.account_id === outgoing.account_id) continue;
+        if (Number(cand.amount) <= 0) continue;
+        if (Math.abs(Number(cand.amount) - target) > CENTS_EPS) continue;
+        const dayDelta = Math.abs(d);
+        // Prefer closer-in-time; tie-break by lower id (deterministic).
+        if (
+          dayDelta < bestDayDelta
+          || (dayDelta === bestDayDelta && (!best || cand.id < best.id))
+        ) {
+          best = cand;
+          bestDayDelta = dayDelta;
+        }
+      }
+    }
+
+    if (!best) continue;
+    // Only auto-pair when at least one side carries Plaid's TRANSFER hint.
+    // Without a signal we'd risk false positives — two coincidentally
+    // equal-and-opposite unrelated transactions.
+    if (!outgoing.is_transfer && !best.is_transfer) continue;
+
+    const groupId = crypto.randomUUID();
+    await query(
+      `UPDATE transactions
+         SET transfer_group_id = ?, is_transfer = 1
+       WHERE id IN (?, ?) AND user_id = ?`,
+      [groupId, outgoing.id, best.id, userId]
+    );
+    used.add(outgoing.id);
+    used.add(best.id);
+    paired++;
+  }
+  return paired;
 }
 
 export async function syncHoldings(userId, itemId, accessToken) {
