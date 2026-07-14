@@ -4282,6 +4282,18 @@ function BudgetsTab({ theme, darkMode, toast }) {
   // destructive action is about to happen, and lets us spell out
   // exactly what's preserved (history) vs lost (the live budget).
   const [confirmDelete, setConfirmDelete] = useState(null); // budget object or null
+  // Holds the timeout scheduled by performDeleteBudget so we can cancel it
+  // if BudgetsTab unmounts before it fires. See the fire-site comment for
+  // why cancelling matters.
+  const refreshTimerRef = useRef(null);
+  useEffect(() => {
+    return () => {
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+  }, []);
   const [deletingBudget, setDeletingBudget] = useState(false);
   const deleteBudget = (b) => setConfirmDelete(b);
   const performDeleteBudget = async () => {
@@ -4291,17 +4303,27 @@ function BudgetsTab({ theme, darkMode, toast }) {
     try {
       await api.deleteBudget(budgetId);
       toast?.("Budget removed", "success");
-      // Optimistic local removal — Reorder.Group's values array (of ids)
-      // updates immediately. Because it's an array of primitives, the
-      // only ref change is the array itself; framer-motion sees exactly
-      // one item disappear and reconciles cleanly instead of remounting
-      // every survivor.
+      // Optimistic local removal — Budgets tab shows N-1 items
+      // immediately without waiting for a refetch.
       setOrderedIds(prev => prev.filter(id => id !== budgetId));
       setConfirmDelete(null);
-      // Give the ConfirmDialog's ~180ms exit animation a full beat to
-      // land before we cascade the setState calls refreshAll fires,
-      // so the exit doesn't race the render cascade.
-      setTimeout(refreshAll, 250);
+      // Cancel any prior queued refresh (rapid multi-delete).
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+      // Schedule the cross-tab data refresh, BUT cancel it if the user
+      // leaves Budgets before it fires (cleanup effect below). Rationale:
+      // the refresh cascade is 14 setState calls firing over ~500ms.
+      // If those land while a destination tab is mid-mount-animation,
+      // framer-motion 11.3 sometimes fails to commit its "hidden →
+      // visible" variant transition and leaves the motion.div's stuck
+      // at opacity:0 — the bug reproduced consistently every previous
+      // attempt tried to isolate. Cancelling on unmount trades stale
+      // data on other tabs (until the next natural refresh) for a
+      // guaranteed stable animation state. F5 fixes the staleness;
+      // no fix has fixed the freeze.
+      refreshTimerRef.current = setTimeout(() => {
+        refreshTimerRef.current = null;
+        refreshAll();
+      }, 400);
     } catch (e) {
       toast?.("Failed: " + (e.message || ""), "error");
     } finally {
@@ -4549,16 +4571,6 @@ function BudgetsTab({ theme, darkMode, toast }) {
           prop is permanently `ordered` — history view does NOT rebind it. */}
       {keepReorderMounted && (
         <div className={viewingHistory ? "hidden" : ""}>
-          {/* LayoutGroup creates an ISOLATED framer-motion projection
-              context around the Reorder.Group. Any projection-tracker
-              churn caused by Reorder.Item remount/unmount cycles
-              (during delete or refreshAll) is confined to this scope —
-              it cannot leak into the global tracker and freeze
-              motion.div's on other tabs at opacity:0. This is the fix
-              that actually addresses the mechanism; the earlier
-              refactors (ID-tracked values, callback stabilisation,
-              refreshAll delay) are still useful but insufficient on
-              their own for framer-motion 11.3's projection model. */}
           <LayoutGroup id="budgets-reorder">
             <Reorder.Group axis="y"
               values={orderedIds}
@@ -4566,7 +4578,7 @@ function BudgetsTab({ theme, darkMode, toast }) {
               className="space-y-3">
               {orderedIds.map(id => {
                 const b = budgetsById.get(id);
-                if (!b) return null; // sync-effect will drop stale ids next render
+                if (!b) return null;
                 const lockDrag = reorderLocked;
                 return (
                   <Reorder.Item key={id} value={id}
