@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence, Reorder, animate as framerAnimate } from "framer-motion";
 import {
   Home, Receipt, PieChart as PieChartIcon, Target, TrendingUp, FileText,
@@ -2809,13 +2810,39 @@ function ScheduleSheet({ open, onClose, copyFrom, accounts, catList, theme, dark
 // label pulled from ACTION_META. Clicking picks one and closes.
 function ActionAddMenu({ available, onPick, theme, darkMode }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef(null);
+  const [pos, setPos] = useState(null); // { top, right } in viewport coords
+  const btnRef = useRef(null);
+  const menuRef = useRef(null);
+
+  // Recompute anchor position whenever the menu opens. Uses fixed
+  // positioning + a body portal so the dropdown ESCAPES the Sheet's
+  // scroll/overflow context — same as how a native <select> works. Fixes
+  // the "dropdown gets clipped inside the sheet" glitch that made the
+  // Actions menu feel cramped compared to Add Transaction's category
+  // <select>.
+  useEffect(() => {
+    if (!open || !btnRef.current) return;
+    const rect = btnRef.current.getBoundingClientRect();
+    setPos({
+      top: rect.bottom + 4,
+      right: Math.max(8, window.innerWidth - rect.right),
+    });
+  }, [open]);
+
+  // Click-outside: close when clicking anywhere that isn't the button
+  // OR the portaled menu. Both refs must be checked because the menu
+  // lives at document.body (outside the sheet's DOM subtree).
   useEffect(() => {
     if (!open) return;
-    const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
+    const onDown = (e) => {
+      const inBtn  = btnRef.current  && btnRef.current.contains(e.target);
+      const inMenu = menuRef.current && menuRef.current.contains(e.target);
+      if (!inBtn && !inMenu) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
+
   if (!available?.length) {
     return (
       <span className={`text-[11px] ${theme.textSubtle}`}>
@@ -2823,14 +2850,26 @@ function ActionAddMenu({ available, onPick, theme, darkMode }) {
       </span>
     );
   }
+
   return (
-    <div ref={ref} className="relative">
-      <button type="button" onClick={() => setOpen(o => !o)}
+    <>
+      <button ref={btnRef} type="button" onClick={() => setOpen(o => !o)}
         className="text-[11px] font-semibold text-emerald-500 flex items-center gap-1">
         <Plus className="w-3 h-3" /> Add action
       </button>
-      {open && (
-        <div className={`absolute right-0 top-full mt-1 w-56 z-40 ${theme.surface} border ${theme.border} rounded-xl shadow-xl overflow-hidden`}>
+      {open && pos && createPortal(
+        <div ref={menuRef}
+          // z-index above Sheet (z-40) and its backdrop; max-height caps
+          // the dropdown so it stays "not too far down" and the menu
+          // itself becomes the scroll region.
+          style={{
+            position: "fixed",
+            top: pos.top,
+            right: pos.right,
+            maxHeight: "min(24rem, 55vh)",
+            zIndex: 90,
+          }}
+          className={`w-64 ${theme.surface} border ${theme.border} rounded-xl shadow-xl overflow-y-auto`}>
           {available.map(k => {
             const meta = ACTION_META[k] || { label: k };
             return (
@@ -2844,9 +2883,10 @@ function ActionAddMenu({ available, onPick, theme, darkMode }) {
               </button>
             );
           })}
-        </div>
+        </div>,
+        document.body
       )}
-    </div>
+    </>
   );
 }
 
