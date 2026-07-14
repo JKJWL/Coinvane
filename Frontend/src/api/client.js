@@ -64,6 +64,7 @@ export const api = {
   createTransaction: (data) => request("POST", "/transactions", data),
   updateTransaction: (id, data) => request("PATCH", `/transactions/${id}`, data),
   deleteTransaction: (id) => request("DELETE", `/transactions/${id}`),
+  savePaystub: (id, paystub) => request("PUT", `/transactions/${id}/paystub`, { paystub }),
   getByCategory: (params = {}) => {
     const q = new URLSearchParams(params).toString();
     return request("GET", `/transactions/by-category${q ? "?" + q : ""}`);

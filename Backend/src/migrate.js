@@ -299,6 +299,23 @@ const SCHEMA = [
   //       (same |amount| within $0.01, within ±3 days)
   `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_transfer BOOLEAN DEFAULT FALSE`,
   `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS transfer_group_id VARCHAR(64) NULL`,
+
+  // ── Paystub / income breakdown (Feature: paystub detail sheet) ──
+  // JSON blob attached to any positive-amount transaction. Structure:
+  //   {
+  //     companyName: "Foo Inc",
+  //     memo: "PPD ID: …",
+  //     earnings: [{ name, category, amount }],
+  //     preTax:   [{ name, category, amount }],
+  //     taxes:    [{ name, category, amount }],
+  //     postTax:  [{ name, category, amount }],
+  //     deposits: [{ accountId?, memo, amount }],
+  //   }
+  // Stored as LONGTEXT (MariaDB JSON is an alias) to keep the migration
+  // simple and let us iterate the shape without more ALTERs. Server never
+  // parses the payload — it's opaque to backend queries — the client owns
+  // rendering + validation.
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS paystub_json LONGTEXT NULL`,
 ];
 
 const DEFAULT_CATEGORIES = [

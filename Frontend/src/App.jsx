@@ -1461,6 +1461,10 @@ function TransactionsTab({ theme, darkMode, toast }) {
   const [deleting, setDeleting] = useState(false);
   // Category-edit flow: 'pick' = pick new category, 'scope' = ask just-this/all-future
   const [catEdit, setCatEdit] = useState(null); // { stage, newCategory }
+  // Paystub editor sheet — open when set, holds the transaction being edited.
+  // Saved via api.savePaystub, then refreshAll picks up the new blob for the
+  // detail sheet's summary render.
+  const [paystubEdit, setPaystubEdit] = useState(null);
   const today = new Date().toISOString().slice(0, 10);
   const [form, setForm] = useState({
     date: today, merchant: "", amount: "", category: "Other",
@@ -2003,6 +2007,65 @@ function TransactionsTab({ theme, darkMode, toast }) {
                 <DetailRow label="Account"  value={detail.accountName || "—"} theme={theme} />
                 {detail.note && <DetailRow label="Note" value={detail.note} theme={theme} />}
               </div>
+
+              {/* Paystub detail — only offered on positive-amount rows.
+                  Skipped for transfers since those aren't real income. */}
+              {isIncome && !detail.isTransfer && (
+                <div className={`rounded-2xl border ${theme.border} p-4`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider flex items-center gap-1.5`}>
+                      <FileText className="w-3 h-3" /> Paystub detail
+                    </div>
+                    <button type="button"
+                      onClick={() => setPaystubEdit(detail)}
+                      className="text-xs font-semibold text-emerald-500 flex items-center gap-1">
+                      <Pencil className="w-3 h-3" />
+                      {detail.paystub ? "Edit" : "Add detail"}
+                    </button>
+                  </div>
+                  {detail.paystub ? (
+                    <div className="space-y-1.5 text-xs">
+                      {detail.paystub.companyName && (
+                        <div className="flex justify-between">
+                          <span className={theme.textSubtle}>Company</span>
+                          <span className="font-medium">{detail.paystub.companyName}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between">
+                        <span className={theme.textSubtle}>Gross</span>
+                        <span className="font-semibold">{fmt(sumRows(detail.paystub.earnings))}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className={theme.textSubtle}>Deductions</span>
+                        <span className="font-semibold text-rose-500">
+                          −{fmt(
+                            sumRows(detail.paystub.preTax)
+                            + sumRows(detail.paystub.taxes)
+                            + sumRows(detail.paystub.postTax)
+                          )}
+                        </span>
+                      </div>
+                      <div className={`flex justify-between pt-1 border-t ${theme.border}`}>
+                        <span className="font-semibold">Net (calculated)</span>
+                        <span className="font-bold text-emerald-500">
+                          {fmt(
+                            sumRows(detail.paystub.earnings)
+                            - sumRows(detail.paystub.preTax)
+                            - sumRows(detail.paystub.taxes)
+                            - sumRows(detail.paystub.postTax)
+                          )}
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className={`text-xs ${theme.textSubtle}`}>
+                      Break this paycheck out by earnings, taxes, deductions,
+                      and deposits — matches what your paystub shows.
+                    </p>
+                  )}
+                </div>
+              )}
+
               {detail.plaidItemId && (
                 <p className={`text-xs ${theme.textSubtle} text-center`}>
                   This is a synced transaction. Deleting it here won't remove it from your bank.
@@ -2017,6 +2080,21 @@ function TransactionsTab({ theme, darkMode, toast }) {
           );
         })()}
       </Sheet>
+
+      {/* Paystub editor — mounted whenever the user taps "Add detail" /
+          "Edit" on an income row. Uses the transaction snapshot in
+          `paystubEdit` for its initial state; refresh on save so the
+          summary in the detail sheet updates in place. */}
+      <PaystubSheet
+        open={!!paystubEdit}
+        onClose={() => setPaystubEdit(null)}
+        transaction={paystubEdit}
+        initial={paystubEdit?.paystub || null}
+        accounts={accounts}
+        theme={theme} darkMode={darkMode}
+        toast={toast}
+        onSaved={refreshAll}
+      />
     </div>
   );
 }
@@ -2027,6 +2105,266 @@ function DetailRow({ label, value, theme }) {
       <span className={`text-sm ${theme.textSubtle}`}>{label}</span>
       <span className="text-sm font-medium text-right ml-3 break-words">{value}</span>
     </div>
+  );
+}
+
+// ─── Paystub detail editor ────────────────────────────────────────────────────
+// Attaches an itemised breakdown to a positive-amount transaction:
+//   Earnings → Pre-Tax Deductions → Taxes → After-Tax Deductions → Deposits
+//
+// Section shapes are all identical rows of { name, category, amount } (deposits
+// swap category for an optional accountId). We keep the sections orthogonal so
+// the UI grid stays consistent; totals summed across sections give
+// Gross → Net so the user gets a sanity check at the bottom.
+//
+// The whole payload is opaque to the backend (LONGTEXT JSON). If the user
+// clears every row we PUT `null` to remove the attachment.
+const EMPTY_ROW      = { name: "", category: "", amount: "" };
+const EMPTY_DEPOSIT  = { accountId: "", memo: "", amount: "" };
+const emptyPaystub = () => ({
+  companyName: "",
+  memo: "",
+  earnings: [{ ...EMPTY_ROW }],
+  preTax:   [{ ...EMPTY_ROW }],
+  taxes:    [{ ...EMPTY_ROW }],
+  postTax:  [{ ...EMPTY_ROW }],
+  deposits: [{ ...EMPTY_DEPOSIT }],
+});
+function normalizePaystub(p) {
+  if (!p) return emptyPaystub();
+  return {
+    companyName: p.companyName || "",
+    memo:        p.memo        || "",
+    earnings:    (p.earnings || []).map(r => ({ ...EMPTY_ROW,     ...r })),
+    preTax:      (p.preTax   || []).map(r => ({ ...EMPTY_ROW,     ...r })),
+    taxes:       (p.taxes    || []).map(r => ({ ...EMPTY_ROW,     ...r })),
+    postTax:     (p.postTax  || []).map(r => ({ ...EMPTY_ROW,     ...r })),
+    deposits:    (p.deposits || []).map(r => ({ ...EMPTY_DEPOSIT, ...r })),
+  };
+}
+function sumRows(rows) {
+  return (rows || []).reduce((s, r) => s + (Number(r.amount) || 0), 0);
+}
+
+function PaystubSheet({ open, onClose, transaction, initial, accounts, theme, darkMode, onSaved, toast }) {
+  const [form, setForm] = useState(() => normalizePaystub(initial));
+  const [saving, setSaving] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
+  // Re-seed when the sheet opens for a different transaction, or when the
+  // saved payload changes underneath us.
+  useEffect(() => { if (open) setForm(normalizePaystub(initial)); }, [open, transaction?.id, initial]);
+
+  const grossEarnings = sumRows(form.earnings);
+  const preTaxTotal   = sumRows(form.preTax);
+  const taxesTotal    = sumRows(form.taxes);
+  const postTaxTotal  = sumRows(form.postTax);
+  const depositsTotal = sumRows(form.deposits);
+  const computedNet   = grossEarnings - preTaxTotal - taxesTotal - postTaxTotal;
+  const inputCls = `w-full px-2.5 py-1.5 ${theme.inputBg} border ${theme.border} rounded-lg text-xs focus:outline-none focus:border-emerald-500`;
+
+  const setSection = (key, updater) =>
+    setForm(f => ({ ...f, [key]: typeof updater === "function" ? updater(f[key]) : updater }));
+
+  const addRow = (key) => setSection(key,
+    rows => [...rows, key === "deposits" ? { ...EMPTY_DEPOSIT } : { ...EMPTY_ROW }]
+  );
+  const removeRow = (key, i) => setSection(key, rows => rows.filter((_, idx) => idx !== i));
+  const patchRow  = (key, i, patch) => setSection(key,
+    rows => rows.map((r, idx) => idx === i ? { ...r, ...patch } : r)
+  );
+
+  // Any row with a real amount counts as non-empty. Everything else (blank
+  // name / zero amount rows) is treated as untouched scaffolding — that
+  // way opening → closing without changing anything doesn't accidentally
+  // save an empty-shell blob.
+  const hasContent = (form.companyName || form.memo)
+    || ["earnings","preTax","taxes","postTax","deposits"].some(k =>
+      (form[k] || []).some(r => Number(r.amount) > 0)
+    );
+
+  const save = async () => {
+    if (!transaction?.id) return;
+    setSaving(true);
+    try {
+      // Strip fully-blank rows on save so we don't persist scaffolding.
+      const clean = (rows, isDeposit = false) => (rows || [])
+        .filter(r => Number(r.amount) > 0 || (r.name && r.name.trim()) || (isDeposit && (r.accountId || r.memo)))
+        .map(r => isDeposit
+          ? { accountId: r.accountId || null, memo: r.memo || "", amount: Number(r.amount) || 0 }
+          : { name: r.name || "", category: r.category || "", amount: Number(r.amount) || 0 });
+      const payload = hasContent ? {
+        companyName: form.companyName || "",
+        memo: form.memo || "",
+        earnings: clean(form.earnings),
+        preTax:   clean(form.preTax),
+        taxes:    clean(form.taxes),
+        postTax:  clean(form.postTax),
+        deposits: clean(form.deposits, true),
+      } : null;
+      await api.savePaystub(transaction.id, payload);
+      toast?.(payload ? "Paystub saved" : "Paystub cleared", "success");
+      onSaved?.();
+      onClose?.();
+    } catch (e) {
+      toast?.("Failed: " + (e.message || ""), "error");
+    } finally { setSaving(false); }
+  };
+
+  const clearDetail = async () => {
+    setConfirmClear(false);
+    if (!transaction?.id) return;
+    setSaving(true);
+    try {
+      await api.savePaystub(transaction.id, null);
+      toast?.("Paystub cleared", "success");
+      onSaved?.();
+      onClose?.();
+    } catch (e) {
+      toast?.("Failed: " + (e.message || ""), "error");
+    } finally { setSaving(false); }
+  };
+
+  // Renders a section header + rows + Add button. Deposits section uses a
+  // slightly different row shape (accountId dropdown instead of category).
+  const Section = ({ title, sectionKey, subtotal, isDeposit }) => {
+    const rows = form[sectionKey] || [];
+    return (
+      <div>
+        <div className="flex items-center justify-between mb-1.5">
+          <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider`}>
+            {title}
+          </div>
+          {subtotal !== undefined && (
+            <div className={`text-[11px] font-semibold`}>{fmt(subtotal)}</div>
+          )}
+        </div>
+        <div className="space-y-1.5">
+          {rows.map((r, i) => (
+            <div key={i} className="grid grid-cols-[1fr_1fr_90px_28px] gap-1.5 items-center">
+              <input
+                value={r.name}
+                onChange={e => patchRow(sectionKey, i, { name: e.target.value })}
+                placeholder={isDeposit ? "Memo" : "Name (optional)"}
+                className={inputCls}
+              />
+              {isDeposit ? (
+                <select
+                  value={r.accountId || ""}
+                  onChange={e => patchRow(sectionKey, i, { accountId: e.target.value })}
+                  className={inputCls}>
+                  <option value="">— Account (optional) —</option>
+                  {accounts.map(a =>
+                    <option key={a.id} value={a.id}>{a.name}</option>
+                  )}
+                </select>
+              ) : (
+                <input
+                  value={r.category}
+                  onChange={e => patchRow(sectionKey, i, { category: e.target.value })}
+                  placeholder="Category (optional)"
+                  className={inputCls}
+                />
+              )}
+              <input
+                type="number" step="0.01" min="0"
+                value={r.amount}
+                onChange={e => patchRow(sectionKey, i, { amount: e.target.value })}
+                placeholder="0.00"
+                className={`${inputCls} text-right`}
+              />
+              <button type="button" onClick={() => removeRow(sectionKey, i)}
+                title="Remove row"
+                className={`p-1 rounded-md ${theme.textSubtle} hover:text-rose-500`}>
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+        <button type="button" onClick={() => addRow(sectionKey)}
+          className="mt-1.5 text-[11px] font-semibold text-emerald-500 flex items-center gap-1">
+          <Plus className="w-3 h-3" /> Add {isDeposit ? "deposit" : "line"}
+        </button>
+      </div>
+    );
+  };
+
+  return (
+    <>
+      <Sheet open={open} onClose={onClose} title="Paystub detail" theme={theme}>
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div>
+              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Company</label>
+              <input value={form.companyName}
+                onChange={e => setForm({ ...form, companyName: e.target.value })}
+                placeholder="e.g. Farm Mutual Auto Ins Co"
+                className={inputCls} />
+            </div>
+            <div>
+              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Memo</label>
+              <input value={form.memo}
+                onChange={e => setForm({ ...form, memo: e.target.value })}
+                placeholder="e.g. PPD ID: 1370533100"
+                className={inputCls} />
+            </div>
+          </div>
+
+          <Section title="Earnings"              sectionKey="earnings" subtotal={grossEarnings} />
+          <Section title="Pre-Tax Deductions"    sectionKey="preTax"   subtotal={preTaxTotal} />
+          <Section title="Taxes"                 sectionKey="taxes"    subtotal={taxesTotal} />
+          <Section title="After-Tax Deductions"  sectionKey="postTax"  subtotal={postTaxTotal} />
+          <Section title="Deposit Accounts"      sectionKey="deposits" subtotal={depositsTotal} isDeposit />
+
+          {/* Totals — matches Quicken's Net Pay / W2 Gross summary rows. */}
+          <div className={`rounded-xl border ${theme.border} ${theme.surface} p-3 space-y-1`}>
+            <div className="flex justify-between text-xs">
+              <span className={theme.textSubtle}>Gross earnings</span>
+              <span className="font-semibold">{fmt(grossEarnings)}</span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className={theme.textSubtle}>Total deductions</span>
+              <span className="font-semibold text-rose-500">
+                −{fmt(preTaxTotal + taxesTotal + postTaxTotal)}
+              </span>
+            </div>
+            <div className={`flex justify-between text-sm pt-1 border-t ${theme.border}`}>
+              <span className="font-semibold">Net pay (calculated)</span>
+              <span className="font-bold text-emerald-500">{fmt(computedNet)}</span>
+            </div>
+            {Math.abs(computedNet - Number(transaction?.amount || 0)) > 0.02 && (
+              <div className="text-[10px] text-amber-500 pt-1">
+                Doesn't match this transaction's amount ({fmt(Number(transaction?.amount || 0))}).
+                That's fine — some deposits go to other accounts, or an earning is missing.
+              </div>
+            )}
+          </div>
+
+          <div className="flex gap-2 pt-1">
+            {initial && (
+              <button type="button" onClick={() => setConfirmClear(true)}
+                disabled={saving}
+                className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.surface} border ${theme.border} text-rose-500 disabled:opacity-60`}>
+                Clear
+              </button>
+            )}
+            <motion.button whileTap={{ scale: 0.97 }} type="button"
+              disabled={saving} onClick={save}
+              className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
+              {saving ? "Saving…" : "Save"}
+            </motion.button>
+          </div>
+        </div>
+      </Sheet>
+      <ConfirmDialog
+        open={confirmClear}
+        onCancel={() => setConfirmClear(false)}
+        onConfirm={clearDetail}
+        theme={theme} darkMode={darkMode}
+        title="Clear paystub detail?"
+        message="The transaction row itself will stay — just the itemised breakdown is removed."
+        confirmLabel="Clear"
+      />
+    </>
   );
 }
 

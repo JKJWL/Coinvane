@@ -47,14 +47,28 @@ export default async function (app) {
     )`);
 
     params.push(Number(limit), Number(offset));
-    return query(
+    const rows = await query(
       `SELECT t.id, t.date, t.merchant, t.category, t.amount, t.pending, t.note,
               t.is_transfer AS isTransfer, t.transfer_group_id AS transferGroupId,
+              t.paystub_json AS paystubJson,
               a.name AS accountName, a.id AS accountId, a.plaid_item_id AS plaidItemId
        FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
        WHERE ${where.join(" AND ")} ORDER BY t.date DESC, t.id DESC LIMIT ? OFFSET ?`,
       params
     );
+    // Parse the paystub blob into structured JSON server-side so the client
+    // doesn't have to double-parse and doesn't crash if the blob is
+    // malformed. Bad blobs surface as `paystub: null`.
+    for (const r of rows) {
+      if (r.paystubJson) {
+        try { r.paystub = JSON.parse(r.paystubJson); }
+        catch { r.paystub = null; }
+      } else {
+        r.paystub = null;
+      }
+      delete r.paystubJson;
+    }
+    return rows;
   });
 
   app.post("/", async (req, reply) => {
@@ -71,6 +85,30 @@ export default async function (app) {
     // (income +, expense −). Plaid accounts are skipped.
     await adjustManualAccountBalance(req.user.id, accountId, Number(amount));
     return queryOne("SELECT * FROM transactions WHERE id = ?", [r.insertId]);
+  });
+
+  // Dedicated paystub-detail endpoint. Body: { paystub: <object> | null }.
+  // Null clears the attached detail. The client-owned schema is opaque here
+  // — we just JSON-stringify and store. Guarded by user ownership.
+  app.put("/:id/paystub", async (req, reply) => {
+    const owned = await queryOne(
+      "SELECT id FROM transactions WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    if (!owned) return reply.code(404).send({ error: "not found" });
+    const { paystub } = req.body || {};
+    const json = paystub == null ? null : JSON.stringify(paystub);
+    // Cap the payload so a malicious client can't stuff a multi-MB blob
+    // into every row. 32 KB is far more than the deepest real-world
+    // paystub (~1–2 KB per statement).
+    if (json && json.length > 32 * 1024) {
+      return reply.code(413).send({ error: "paystub payload too large" });
+    }
+    await query(
+      "UPDATE transactions SET paystub_json = ? WHERE id = ? AND user_id = ?",
+      [json, req.params.id, req.user.id]
+    );
+    return { ok: true };
   });
 
   app.patch("/:id", async (req) => {
