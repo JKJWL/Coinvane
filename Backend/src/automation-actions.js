@@ -200,12 +200,195 @@ registerAction("split_txn", async (action, context, userId) => {
   };
 });
 
+// ═══ Stage 3: alert rules ════════════════════════════════════════════
+//
+// Every alert action dedups via a `dedupKey`-shaped notification body
+// prefix. Cron re-runs of the same condition (low balance still low,
+// utilization still high) don't spam — a matching unread notification
+// created within DEDUP_HOURS suppresses the re-fire.
+const DEDUP_HOURS = 24;
+
+async function alreadyNotified(userId, dedupKey) {
+  const row = await queryOne(
+    `SELECT id FROM notifications
+     WHERE user_id = ? AND body LIKE ?
+       AND created_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+     LIMIT 1`,
+    [userId, `%[dedup:${dedupKey}]%`, DEDUP_HOURS]
+  );
+  return !!row;
+}
+async function insertAlert(userId, { title, body, dedupKey, color = "amber", icon = "AlertCircle" }) {
+  // Body embeds the dedup marker at the end so alreadyNotified() can
+  // grep for it. Not shown to the user (marker is a plain suffix; the
+  // frontend's notification renderer just prints body verbatim, so we
+  // hide it in an HTML-comment-ish sequence users won't notice).
+  const stamped = `${body}\n​[dedup:${dedupKey}]`;
+  await query(
+    `INSERT INTO notifications (user_id, type, icon, color, title, body)
+     VALUES (?, 'automation_alert', ?, ?, ?, ?)`,
+    [userId, icon, color, title, stamped]
+  );
+}
+
+// ─── notify_low_balance ─────────────────────────────────────────────
+// params: { accountId?, threshold }
+// Scans cash / depository / other non-credit accounts. When accountId
+// is set, only that one is watched.
+registerAction("notify_low_balance", async (action, _context, userId) => {
+  const threshold = Number(action?.params?.threshold);
+  if (!Number.isFinite(threshold) || threshold <= 0) {
+    return { status: "skipped", summary: "No threshold set" };
+  }
+  const accountId = action?.params?.accountId
+    ? Number(action.params.accountId) : null;
+  const rows = await query(
+    `SELECT id, name, balance FROM accounts
+     WHERE user_id = ? AND type <> 'credit'
+       ${accountId ? "AND id = ?" : ""}`,
+    accountId ? [userId, accountId] : [userId]
+  );
+  let notified = 0;
+  for (const a of rows) {
+    if (Number(a.balance) >= threshold) continue;
+    const dedupKey = `low_balance:${a.id}`;
+    if (await alreadyNotified(userId, dedupKey)) continue;
+    await insertAlert(userId, {
+      title: `Low balance: ${a.name}`,
+      body: `${a.name} is at $${Number(a.balance).toFixed(2)} — below your threshold of $${threshold.toFixed(2)}.`,
+      dedupKey,
+      color: "rose",
+    });
+    notified++;
+  }
+  if (notified === 0) return { status: "skipped", summary: "No accounts below threshold (or all deduped)" };
+  return { status: "success", summary: `Alerted on ${notified} account${notified !== 1 ? "s" : ""}` };
+});
+
+// ─── notify_cc_utilization ──────────────────────────────────────────
+// params: { accountId?, thresholdPct }
+// Watches credit accounts. Skips accounts with NULL limit (can't
+// compute a ratio). If accountId is set, only that card is checked.
+registerAction("notify_cc_utilization", async (action, _context, userId) => {
+  const thresholdPct = Math.max(1, Math.min(100, Number(action?.params?.thresholdPct) || 30));
+  const accountId = action?.params?.accountId
+    ? Number(action.params.accountId) : null;
+  const rows = await query(
+    `SELECT id, name, balance, limit_amount FROM accounts
+     WHERE user_id = ? AND type = 'credit' AND limit_amount IS NOT NULL AND limit_amount > 0
+       ${accountId ? "AND id = ?" : ""}`,
+    accountId ? [userId, accountId] : [userId]
+  );
+  let notified = 0;
+  for (const a of rows) {
+    // Credit balances are stored as NEGATIVE amounts (see syncAccounts)
+    // so utilization is |balance| / limit.
+    const utilPct = (Math.abs(Number(a.balance)) / Number(a.limit_amount)) * 100;
+    if (utilPct < thresholdPct) continue;
+    const dedupKey = `cc_util:${a.id}`;
+    if (await alreadyNotified(userId, dedupKey)) continue;
+    await insertAlert(userId, {
+      title: `Credit utilization: ${a.name}`,
+      body: `${a.name} is at ${utilPct.toFixed(0)}% of its $${Number(a.limit_amount).toFixed(0)} limit (threshold: ${thresholdPct}%).`,
+      dedupKey,
+      color: "amber",
+      icon: "CreditCard",
+    });
+    notified++;
+  }
+  if (notified === 0) return { status: "skipped", summary: "No cards above threshold (or all deduped)" };
+  return { status: "success", summary: `Alerted on ${notified} card${notified !== 1 ? "s" : ""}` };
+});
+
+// ─── notify_scheduled_miss ──────────────────────────────────────────
+// params: { graceDays (default 2) }
+// Runs on daily_check. Finds is_scheduled=1 rows whose expected date
+// was more than `graceDays` ago and haven't been adopted or marked
+// arrived yet. Notifies once per row (dedup key = scheduled txn id +
+// 7-day window so we don't nag daily).
+registerAction("notify_scheduled_miss", async (action, _context, userId) => {
+  const graceDays = Math.max(0, Math.min(30, Number(action?.params?.graceDays) || 2));
+  const rows = await query(
+    `SELECT id, merchant, date, amount, account_id
+     FROM transactions
+     WHERE user_id = ? AND is_scheduled = 1
+       AND date < DATE_SUB(CURDATE(), INTERVAL ? DAY)`,
+    [userId, graceDays]
+  );
+  let notified = 0;
+  for (const t of rows) {
+    const dedupKey = `sched_miss:${t.id}`;
+    // Longer dedup for scheduled-miss (7 days) so we don't nag daily
+    // about a paycheck that's a week late.
+    const already = await queryOne(
+      `SELECT id FROM notifications
+       WHERE user_id = ? AND body LIKE ?
+         AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+       LIMIT 1`,
+      [userId, `%[dedup:${dedupKey}]%`]
+    );
+    if (already) continue;
+    await insertAlert(userId, {
+      title: `Scheduled item hasn't arrived: ${t.merchant}`,
+      body: `Expected $${Math.abs(Number(t.amount)).toFixed(2)} on ${String(t.date).slice(0, 10)} but nothing matching has been reported yet.`,
+      dedupKey,
+    });
+    notified++;
+  }
+  if (notified === 0) return { status: "skipped", summary: "No overdue scheduled items" };
+  return { status: "success", summary: `Flagged ${notified} overdue scheduled item${notified !== 1 ? "s" : ""}` };
+});
+
+// ─── notify_unusually_large_txn ─────────────────────────────────────
+// params: { multiplier (default 3), lookbackDays (default 90) }
+// Fires on transaction_arrived. Compares |amount| to the median of
+// this merchant's past |amount|s over lookbackDays. Uses median for
+// robustness against a single previous outlier. If we have fewer than
+// 3 prior samples, skip — the ratio is too noisy to trust.
+registerAction("notify_unusually_large_txn", async (action, context, userId) => {
+  const txn = context?.transaction;
+  if (!txn?.id) return { status: "skipped", summary: "No transaction in context" };
+  const multiplier = Math.max(1.5, Math.min(20, Number(action?.params?.multiplier) || 3));
+  const lookbackDays = Math.max(7, Math.min(365, Number(action?.params?.lookbackDays) || 90));
+  const past = await query(
+    `SELECT ABS(amount) AS abs_amount FROM transactions
+     WHERE user_id = ? AND merchant = ? AND id <> ?
+       AND date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+       AND (is_scheduled = 0 OR is_scheduled IS NULL)
+     ORDER BY ABS(amount) ASC`,
+    [userId, txn.merchant, txn.id, lookbackDays]
+  );
+  if (past.length < 3) return { status: "skipped", summary: "Not enough merchant history yet" };
+  const mid = Math.floor(past.length / 2);
+  const median = past.length % 2 === 0
+    ? (Number(past[mid - 1].abs_amount) + Number(past[mid].abs_amount)) / 2
+    : Number(past[mid].abs_amount);
+  const current = Math.abs(Number(txn.amount));
+  if (current < median * multiplier) {
+    return { status: "skipped", summary: `Below ${multiplier}× median (${median.toFixed(2)})` };
+  }
+  const dedupKey = `unusual_txn:${txn.id}`;
+  if (await alreadyNotified(userId, dedupKey)) {
+    return { status: "skipped", summary: "Already flagged" };
+  }
+  await insertAlert(userId, {
+    title: `Unusually large: ${txn.merchant}`,
+    body: `$${current.toFixed(2)} — ${(current / median).toFixed(1)}× the median $${median.toFixed(2)} you usually spend at ${txn.merchant}.`,
+    dedupKey,
+  });
+  return { status: "success", summary: `Flagged: ${(current / median).toFixed(1)}× median` };
+});
+
 // Available action kinds (used by /vocab endpoint). Keep alphabetized
 // so the picker shows a stable order.
 export const ACTION_KINDS = [
   "add_note",
   "flag_duplicate",
   "mark_as_transfer",
+  "notify_cc_utilization",
+  "notify_low_balance",
+  "notify_scheduled_miss",
+  "notify_unusually_large_txn",
   "set_category",
   "split_txn",
 ];

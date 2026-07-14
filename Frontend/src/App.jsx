@@ -236,6 +236,15 @@ function ConfirmDialog({
 // reported it as `pending: true`. The sync stores pending status in
 // transactions.pending; this is just the visual indicator. Renders nothing
 // for posted transactions so the markup stays clean.
+// Notification bodies from automation alert actions carry a hidden
+// `[dedup:key]` marker so the engine can suppress repeat notifications
+// for the same condition. Strip it before rendering — the marker is
+// engine machinery, not user-facing text.
+function stripDedupMarker(body) {
+  if (!body) return "";
+  return String(body).replace(/\s*​?\[dedup:[^\]]+\]\s*$/, "").trim();
+}
+
 function PendingPill({ pending, darkMode, size = "sm" }) {
   if (!pending) return null;
   const cls = size === "xs"
@@ -692,7 +701,7 @@ function NotificationsBell({ theme, darkMode }) {
                   {notifications.map(n => (
                     <div key={n.id} className={`px-4 py-3 ${!n.readAt ? (darkMode ? "bg-emerald-500/10" : "bg-emerald-50/50") : ""}`}>
                       <div className="text-sm font-medium">{n.title}</div>
-                      {n.body && <div className={`text-xs ${theme.textMuted} mt-0.5`}>{n.body}</div>}
+                      {n.body && <div className={`text-xs ${theme.textMuted} mt-0.5`}>{stripDedupMarker(n.body)}</div>}
                       <div className={`text-xs ${theme.textSubtle} mt-1`}>{new Date(n.createdAt).toLocaleString()}</div>
                     </div>
                   ))}
@@ -2805,8 +2814,24 @@ function ActionAddMenu({ available, onPick, theme, darkMode }) {
 // Per-action UI. Each case renders whatever inputs that action's params
 // need. Unknown kinds render a raw JSON textarea as a safety net so a
 // future stage's action still works if the deploy is ahead of the client.
-function ActionParamsEditor({ kind, params, onPatch, catList = [], theme, darkMode }) {
+function ActionParamsEditor({ kind, params, onPatch, catList = [], accounts = [], currentTrigger, theme, darkMode }) {
   const inputCls = `w-full px-2.5 py-1.5 ${theme.inputBg} border ${theme.border} rounded-lg text-xs focus:outline-none focus:border-emerald-500`;
+
+  // Trigger-mismatch hint — nudge the user if their rule's trigger
+  // doesn't match this action's preferredTrigger. Doesn't block the
+  // save; some setups are legitimate (e.g. running low-balance check on
+  // balance_changed instead of daily_check).
+  const preferred = ACTION_META[kind]?.preferredTrigger;
+  const mismatch = preferred && currentTrigger && preferred !== currentTrigger;
+  const MismatchHint = mismatch ? (
+    <div className={`text-[10px] mt-1.5 flex items-start gap-1 ${darkMode ? "text-amber-400" : "text-amber-600"}`}>
+      <AlertCircle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+      <span>
+        This action is designed for <b>{preferred.replace(/_/g, " ")}</b> triggers.
+        It may not fire meaningfully on the current one.
+      </span>
+    </div>
+  ) : null;
 
   if (kind === "mark_as_transfer") {
     return <p className={`text-[11px] ${theme.textSubtle}`}>No settings needed.</p>;
@@ -2902,6 +2927,108 @@ function ActionParamsEditor({ kind, params, onPatch, catList = [], theme, darkMo
           Sum of splits must be ≤ the transaction's amount. Rules are idempotent —
           re-firing on a re-synced row won't double-split.
         </p>
+      </div>
+    );
+  }
+
+  if (kind === "notify_low_balance") {
+    const cashAccounts = accounts.filter(a => a.type !== "credit");
+    return (
+      <div className="space-y-1.5">
+        <div className="grid grid-cols-2 gap-1.5">
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Account</label>
+            <select value={params.accountId || ""}
+              onChange={e => onPatch({ accountId: e.target.value })}
+              className={inputCls}>
+              <option value="">All non-credit accounts</option>
+              {cashAccounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Threshold ($)</label>
+            <input type="number" step="0.01" min="0"
+              value={params.threshold ?? ""}
+              onChange={e => onPatch({ threshold: e.target.value })}
+              placeholder="100.00" className={`${inputCls} text-right`} />
+          </div>
+        </div>
+        {MismatchHint}
+      </div>
+    );
+  }
+
+  if (kind === "notify_cc_utilization") {
+    const cards = accounts.filter(a => a.type === "credit");
+    return (
+      <div className="space-y-1.5">
+        <div className="grid grid-cols-2 gap-1.5">
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Card</label>
+            <select value={params.accountId || ""}
+              onChange={e => onPatch({ accountId: e.target.value })}
+              className={inputCls}>
+              <option value="">All credit cards</option>
+              {cards.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Threshold (%)</label>
+            <input type="number" step="1" min="1" max="100"
+              value={params.thresholdPct ?? 30}
+              onChange={e => onPatch({ thresholdPct: Math.max(1, Math.min(100, Number(e.target.value) || 30)) })}
+              className={`${inputCls} text-right`} />
+          </div>
+        </div>
+        {cards.length === 0 && (
+          <p className={`text-[10px] ${theme.textSubtle}`}>
+            No credit accounts connected yet — this rule will do nothing.
+          </p>
+        )}
+        {MismatchHint}
+      </div>
+    );
+  }
+
+  if (kind === "notify_scheduled_miss") {
+    return (
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-2">
+          <span className={`text-[11px] ${theme.textSubtle}`}>Grace period</span>
+          <input type="number" min="0" max="30"
+            value={params.graceDays ?? 2}
+            onChange={e => onPatch({ graceDays: Math.max(0, Math.min(30, Number(e.target.value) || 0)) })}
+            className={`w-14 ${inputCls}`} />
+          <span className={`text-[11px] ${theme.textSubtle}`}>days after expected date</span>
+        </div>
+        {MismatchHint}
+      </div>
+    );
+  }
+
+  if (kind === "notify_unusually_large_txn") {
+    return (
+      <div className="space-y-1.5">
+        <div className="grid grid-cols-2 gap-1.5">
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Multiplier vs median</label>
+            <input type="number" step="0.1" min="1.5" max="20"
+              value={params.multiplier ?? 3}
+              onChange={e => onPatch({ multiplier: Math.max(1.5, Math.min(20, Number(e.target.value) || 3)) })}
+              className={`${inputCls} text-right`} />
+          </div>
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Lookback (days)</label>
+            <input type="number" step="1" min="7" max="365"
+              value={params.lookbackDays ?? 90}
+              onChange={e => onPatch({ lookbackDays: Math.max(7, Math.min(365, Number(e.target.value) || 90)) })}
+              className={`${inputCls} text-right`} />
+          </div>
+        </div>
+        <p className={`text-[10px] ${theme.textSubtle}`}>
+          Needs at least 3 prior transactions at the same merchant to run — the median is meaningless below that.
+        </p>
+        {MismatchHint}
       </div>
     );
   }
@@ -4385,7 +4512,7 @@ const FIELD_LABELS = {
 };
 
 function AutomationsPanel({ theme, darkMode, toast }) {
-  const { budgets, categories } = useData();
+  const { budgets, categories, accounts } = useData();
   const [subpage, setSubpage] = useState("rules");
   const [rules, setRules] = useState([]);
   const [history, setHistory] = useState([]);
@@ -4629,6 +4756,7 @@ function AutomationsPanel({ theme, darkMode, toast }) {
         rule={editing === "new" ? null : editing}
         vocab={vocab}
         catList={catList}
+        accounts={accounts}
         theme={theme} darkMode={darkMode}
         onSave={saveRule}
       />
@@ -4648,36 +4776,69 @@ function AutomationsPanel({ theme, darkMode, toast }) {
 // server /vocab just publishes the list of KINDS. New stages add entries
 // here alongside the backend action handler. Keep alphabetized by kind
 // so the picker order stays stable.
+// Per-action metadata. `preferredTrigger` is a hint for the UI — when a
+// user picks an action, we nudge them if their current trigger doesn't
+// match what the action is designed for (e.g. daily-only actions on a
+// transaction_arrived trigger will never fire meaningfully).
 const ACTION_META = {
   add_note: {
     label: "Add note",
     description: "Attach a note to matching transactions.",
     defaults: () => ({ note: "", mode: "overwrite" }),
+    preferredTrigger: "transaction_arrived",
   },
   flag_duplicate: {
     label: "Flag possible duplicate",
     description: "Drop an in-app notification if another same-amount txn is nearby in time.",
     defaults: () => ({ withinDays: 0 }),
+    preferredTrigger: "transaction_arrived",
   },
   mark_as_transfer: {
     label: "Mark as transfer",
     description: "Flag the row so it's excluded from income + budget totals.",
     defaults: () => ({}),
+    preferredTrigger: "transaction_arrived",
+  },
+  notify_cc_utilization: {
+    label: "Alert on credit-card utilization",
+    description: "Notify when a card's balance is above a % of its limit.",
+    defaults: () => ({ accountId: "", thresholdPct: 30 }),
+    preferredTrigger: "daily_check",
+  },
+  notify_low_balance: {
+    label: "Alert on low account balance",
+    description: "Notify when an account drops below a dollar threshold.",
+    defaults: () => ({ accountId: "", threshold: 100 }),
+    preferredTrigger: "daily_check",
+  },
+  notify_scheduled_miss: {
+    label: "Alert on missed scheduled item",
+    description: "Notify when a scheduled paycheck / bill hasn't arrived by its expected date.",
+    defaults: () => ({ graceDays: 2 }),
+    preferredTrigger: "daily_check",
+  },
+  notify_unusually_large_txn: {
+    label: "Alert on unusually large transaction",
+    description: "Notify when a txn is N× your median for that merchant.",
+    defaults: () => ({ multiplier: 3, lookbackDays: 90 }),
+    preferredTrigger: "transaction_arrived",
   },
   set_category: {
     label: "Set category",
     description: "Override the category on matching rows. Fires AFTER merchant rules.",
     defaults: () => ({ category: "" }),
+    preferredTrigger: "transaction_arrived",
   },
   split_txn: {
     label: "Split into pieces",
     description: "Reduce the original amount and create child rows for each split.",
     defaults: () => ({ splits: [{ category: "", amount: "", note: "" }] }),
+    preferredTrigger: "transaction_arrived",
   },
 };
 
 // Rule builder — trigger picker + conditions + actions.
-function RuleBuilderSheet({ open, onClose, rule, vocab, catList = [], theme, darkMode, onSave }) {
+function RuleBuilderSheet({ open, onClose, rule, vocab, catList = [], accounts = [], theme, darkMode, onSave }) {
   const emptyRule = () => ({
     name: "",
     triggerType: "transaction_arrived",
@@ -4835,6 +4996,8 @@ function RuleBuilderSheet({ open, onClose, rule, vocab, catList = [], theme, dar
                       params={a.params || {}}
                       onPatch={patch => patchActionParams(i, patch)}
                       catList={catList}
+                      accounts={accounts}
+                      currentTrigger={form.triggerType}
                       theme={theme} darkMode={darkMode}
                     />
                   </div>

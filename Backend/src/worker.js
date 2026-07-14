@@ -8,6 +8,7 @@ import { sendMail } from "./mailer.js";
 import { generateNotifications } from "./notification-engine.js";
 import { syncQueue } from "./queue.js";
 import { getSyncIntervalMinutes } from "./app-settings.js";
+import { runRulesForTrigger } from "./automation-engine.js";
 // Register every automation action with the engine so sync-time
 // runRulesForTrigger() calls in sync.js can dispatch.
 import "./automation-actions.js";
@@ -101,6 +102,12 @@ new Worker("sync", async (job) => {
     for (const u of users) {
       try { await generateNotifications(u.id); }
       catch (e) { console.error(`notifications failed for user ${u.id}:`, e.message); }
+      // Same 8 AM cron drives per-user daily automation checks so
+      // low-balance / scheduled-miss / CC-utilization rules run once
+      // a day regardless of sync cadence. Empty context; the alert
+      // actions scan the DB themselves.
+      try { await runRulesForTrigger(u.id, "daily_check", {}); }
+      catch (e) { console.error(`daily automations failed for user ${u.id}:`, e.message); }
     }
     return { ok: true };
   }

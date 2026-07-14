@@ -430,5 +430,12 @@ export async function fullSyncItem(userId, itemId) {
   let inv = null;
   try { inv = await syncHoldings(userId, item.id, token); }
   catch (e) { /* item may not have investment products */ }
+  // Fire the balance_changed automation trigger for this user. Empty
+  // context — alert-type actions (notify_low_balance, notify_cc_utilization)
+  // scan the accounts table themselves. Idempotent per-account dedup in
+  // the actions prevents spam from repeated syncs that don't change the
+  // situation.
+  try { await runRulesForTrigger(userId, "balance_changed", {}); }
+  catch { /* engine is silent-fail; belt-and-suspenders */ }
   return { transactions: txn, investments: inv };
 }
