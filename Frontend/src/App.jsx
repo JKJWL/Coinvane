@@ -3416,6 +3416,60 @@ function ActionParamsEditor({ kind, params, onPatch, catList = [], accounts = []
     );
   }
 
+  if (kind === "archive_completed_goals" || kind === "cleanup_old_notifications") {
+    return (
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-2">
+          <span className={`text-[11px] ${theme.textSubtle}`}>Older than</span>
+          <input type="number" min="1" max="365"
+            value={params.afterDays ?? 30}
+            onChange={e => onPatch({ afterDays: Math.max(1, Math.min(365, Number(e.target.value) || 30)) })}
+            className={`w-16 ${inputCls} text-right`} />
+          <span className={`text-[11px] ${theme.textSubtle}`}>days</span>
+        </div>
+        {MismatchHint}
+      </div>
+    );
+  }
+
+  if (kind === "monthly_summary_notification" || kind === "apply_paystub_template") {
+    return (
+      <div className="space-y-1.5">
+        <p className={`text-[11px] ${theme.textSubtle}`}>No settings needed.</p>
+        {MismatchHint}
+      </div>
+    );
+  }
+
+  if (kind === "propose_recurring_schedule") {
+    return (
+      <div className="space-y-1.5">
+        <div className="grid grid-cols-2 gap-1.5">
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Occurrences to see first</label>
+            <input type="number" min="2" max="10"
+              value={params.N ?? 3}
+              onChange={e => onPatch({ N: Math.max(2, Math.min(10, Number(e.target.value) || 3)) })}
+              className={`${inputCls} text-right`} />
+          </div>
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Amount tolerance $</label>
+            <input type="number" min="0" max="100" step="0.01"
+              value={params.tolerance ?? 5}
+              onChange={e => onPatch({ tolerance: Math.max(0, Math.min(100, Number(e.target.value) || 5)) })}
+              className={`${inputCls} text-right`} />
+          </div>
+        </div>
+        <p className={`text-[10px] ${theme.textSubtle}`}>
+          Only proposes once per (merchant, account) pair. If you already have
+          a scheduled row for that pair, or you dismissed a previous
+          suggestion, this rule stays silent.
+        </p>
+        {MismatchHint}
+      </div>
+    );
+  }
+
   // Unknown kind — raw JSON escape hatch.
   return (
     <textarea
@@ -5193,10 +5247,28 @@ const ACTION_META = {
     defaults: () => ({ note: "", mode: "overwrite" }),
     preferredTrigger: "transaction_arrived",
   },
+  apply_paystub_template: {
+    label: "Apply paystub template",
+    description: "Copy the most recent paystub blob from this merchant, scaling amounts to the new net.",
+    defaults: () => ({}),
+    preferredTrigger: "income_landed",
+  },
+  archive_completed_goals: {
+    label: "Archive completed goals",
+    description: "Hide goals from the main list once they've been at 100% for a while.",
+    defaults: () => ({ afterDays: 30 }),
+    preferredTrigger: "daily_check",
+  },
   burn_rate_alarm: {
     label: "Alert on budget burn rate",
     description: "Notify when a budget is being spent faster than the period is elapsing.",
     defaults: () => ({ budgetId: "", warnPct: 80, timeElapsedThresholdPct: 50 }),
+    preferredTrigger: "daily_check",
+  },
+  cleanup_old_notifications: {
+    label: "Clean up old notifications",
+    description: "Delete READ notifications older than N days (never touches unread ones).",
+    defaults: () => ({ afterDays: 30 }),
     preferredTrigger: "daily_check",
   },
   contribute_to_goal_pct: {
@@ -5216,6 +5288,12 @@ const ACTION_META = {
     description: "Flag the row so it's excluded from income + budget totals.",
     defaults: () => ({}),
     preferredTrigger: "transaction_arrived",
+  },
+  monthly_summary_notification: {
+    label: "Monthly summary notification",
+    description: "At period boundaries that cross a calendar month, drop a summary of income / spent / delta.",
+    defaults: () => ({}),
+    preferredTrigger: "period_rolled_over",
   },
   move_budget_slack: {
     label: "Move budget slack",
@@ -5248,6 +5326,12 @@ const ACTION_META = {
     label: "Alert on unusually large transaction",
     description: "Notify when a txn is N× your median for that merchant.",
     defaults: () => ({ multiplier: 3, lookbackDays: 90 }),
+    preferredTrigger: "transaction_arrived",
+  },
+  propose_recurring_schedule: {
+    label: "Propose a scheduled row for recurring transactions",
+    description: "After N consecutive similar amounts from the same merchant, suggest setting up a scheduled row.",
+    defaults: () => ({ N: 3, tolerance: 5 }),
     preferredTrigger: "transaction_arrived",
   },
   rollover_unused_budget: {

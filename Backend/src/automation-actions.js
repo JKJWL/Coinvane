@@ -787,19 +787,290 @@ registerAction("sweep_excess_income", async (action, context, userId) => {
   };
 });
 
+// ═══ Stage 6: housekeeping + paystub ═════════════════════════════════
+//
+// These actions are the "quality of life" tier — they don't move money
+// and they don't add real notifications you'd act on urgently. Retention
+// cleanup, template application, gentle nudges.
+
+// ─── archive_completed_goals ────────────────────────────────────────
+// Trigger: daily_check. Any goal where saved >= target and hasn't been
+// touched (updated_at) in `afterDays` days gets archived_at stamped.
+// GET /goals hides archived rows by default.
+registerAction("archive_completed_goals", async (action, _context, userId) => {
+  const afterDays = Math.max(1, Math.min(365, Number(action?.params?.afterDays) || 30));
+  const rows = await query(
+    `SELECT id, name FROM goals
+     WHERE user_id = ?
+       AND archived_at IS NULL
+       AND account_id IS NULL
+       AND saved >= target
+       AND updated_at < DATE_SUB(NOW(), INTERVAL ? DAY)`,
+    [userId, afterDays]
+  );
+  if (rows.length === 0) {
+    return { status: "skipped", summary: "No completed goals ready to archive" };
+  }
+  const ids = rows.map(r => r.id);
+  const placeholders = ids.map(() => "?").join(",");
+  await query(
+    `UPDATE goals SET archived_at = NOW()
+     WHERE user_id = ? AND id IN (${placeholders})`,
+    [userId, ...ids]
+  );
+  return {
+    status: "success",
+    summary: `Archived ${rows.length} goal${rows.length !== 1 ? "s" : ""}: ` +
+             rows.slice(0, 3).map(r => `"${r.name}"`).join(", ") +
+             (rows.length > 3 ? ` +${rows.length - 3} more` : ""),
+  };
+});
+
+// ─── cleanup_old_notifications ──────────────────────────────────────
+// Trigger: daily_check. Deletes READ notifications older than
+// `afterDays`. Unread ones are preserved regardless of age — they
+// represent something the user hasn't seen yet.
+registerAction("cleanup_old_notifications", async (action, _context, userId) => {
+  const afterDays = Math.max(1, Math.min(365, Number(action?.params?.afterDays) || 30));
+  const r = await query(
+    `DELETE FROM notifications
+     WHERE user_id = ?
+       AND read_at IS NOT NULL
+       AND read_at < DATE_SUB(NOW(), INTERVAL ? DAY)`,
+    [userId, afterDays]
+  );
+  const n = r.affectedRows || 0;
+  if (n === 0) return { status: "skipped", summary: `No read notifications older than ${afterDays}d` };
+  return { status: "success", summary: `Cleaned up ${n} old notification${n !== 1 ? "s" : ""}` };
+});
+
+// ─── monthly_summary_notification ───────────────────────────────────
+// Trigger: period_rolled_over. When the new period starts in a
+// different CALENDAR MONTH from the previous one, drop a summary
+// notification of last period's income / spending / delta. That way
+// weekly-cadence users get one summary a month, monthly users get one
+// per period, and the summary lands in the notification rail without
+// touching the hardened mailer.
+//
+// (Original brainstorm said "monthly PDF auto-emailed" — that would
+// need attachment support in mailer.js which we deliberately locked
+// down. Keeping the intent, changing the delivery.)
+registerAction("monthly_summary_notification", async (_action, context, userId) => {
+  const prevStart = context?.previousPeriodStart;
+  const prevEnd   = context?.previousPeriodEnd;
+  const currStart = context?.currentPeriodStart;
+  if (!prevStart || !prevEnd || !currStart) {
+    return { status: "skipped", summary: "No period bounds in context" };
+  }
+  const prevMonth = Number(String(prevStart).slice(5, 7));
+  const currMonth = Number(String(currStart).slice(5, 7));
+  if (prevMonth === currMonth) {
+    return { status: "skipped", summary: "Same calendar month — nothing to summarize" };
+  }
+  const incomeRow = await queryOne(
+    `SELECT COALESCE(SUM(t.amount), 0) AS total
+     FROM transactions t
+     LEFT JOIN accounts a ON a.id = t.account_id
+     WHERE t.user_id = ? AND t.amount > 0
+       AND t.date >= ? AND t.date < ?
+       AND (a.type IS NULL OR a.type <> 'credit')
+       AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+       AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)`,
+    [userId, prevStart, prevEnd]
+  );
+  const spentRow = await queryOne(
+    `SELECT COALESCE(SUM(ABS(t.amount)), 0) AS total
+     FROM transactions t
+     LEFT JOIN accounts a ON a.id = t.account_id
+     WHERE t.user_id = ? AND t.amount < 0
+       AND t.date >= ? AND t.date < ?
+       AND (a.type IS NULL OR a.type <> 'credit')
+       AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+       AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)`,
+    [userId, prevStart, prevEnd]
+  );
+  const income = Number(incomeRow.total) || 0;
+  const spent  = Number(spentRow.total)  || 0;
+  const delta  = income - spent;
+  const monthName = new Date(prevStart + "T00:00:00").toLocaleString(undefined, { month: "long" });
+  const dedupKey = `monthly_summary:${String(prevStart).slice(0, 7)}`;
+  if (await alreadyNotified(userId, dedupKey)) {
+    return { status: "skipped", summary: "Already summarized this month" };
+  }
+  await insertAlert(userId, {
+    title: `${monthName} summary`,
+    body:
+      `Income $${income.toFixed(2)} · Spent $${spent.toFixed(2)} · ` +
+      `${delta >= 0 ? "Saved" : "Deficit"} $${Math.abs(delta).toFixed(2)}.`,
+    dedupKey,
+    color: delta >= 0 ? "emerald" : "amber",
+    icon: "TrendingUp",
+  });
+  return { status: "success", summary: `${monthName} summary posted` };
+});
+
+// ─── apply_paystub_template ─────────────────────────────────────────
+// Trigger: income_landed. If the incoming income's merchant has any
+// prior transaction WITH a paystub blob attached, copy the most-recent
+// blob to this transaction — scaling every row proportionally to the
+// new net amount. Deposits keep their accountId as-is (the target
+// accounts haven't changed).
+//
+// Refuses to overwrite an existing paystub blob to avoid clobbering a
+// manual edit; user can clear it and re-fire manually if they want.
+registerAction("apply_paystub_template", async (_action, context, userId) => {
+  const txn = context?.transaction;
+  if (!txn?.id) return { status: "skipped", summary: "No transaction in context" };
+  if (Number(txn.amount) <= 0) return { status: "skipped", summary: "Not income" };
+  if (txn.is_transfer) return { status: "skipped", summary: "Skipping transfer" };
+  // Don't clobber an existing paystub blob on the row.
+  const own = await queryOne(
+    "SELECT paystub_json FROM transactions WHERE id = ? AND user_id = ?",
+    [txn.id, userId]
+  );
+  if (own?.paystub_json) return { status: "skipped", summary: "Row already has paystub detail" };
+  // Find the most recent prior income from the same merchant that has
+  // a paystub blob attached.
+  const template = await queryOne(
+    `SELECT id, amount, paystub_json FROM transactions
+     WHERE user_id = ? AND merchant = ? AND id <> ?
+       AND paystub_json IS NOT NULL
+     ORDER BY date DESC, id DESC
+     LIMIT 1`,
+    [userId, txn.merchant, txn.id]
+  );
+  if (!template) return { status: "skipped", summary: "No prior paystub template for this merchant" };
+  let blob;
+  try { blob = JSON.parse(template.paystub_json); }
+  catch { return { status: "skipped", summary: "Template blob unparseable" }; }
+  // Scale factor derived from ratio of new amount to template amount.
+  // Uses the transaction amounts (both are net-pay stand-ins) — falls
+  // back to 1.0 if template amount is zero to avoid NaN.
+  const oldAmt = Math.abs(Number(template.amount) || 0);
+  const newAmt = Math.abs(Number(txn.amount) || 0);
+  const scale = oldAmt > 0 ? (newAmt / oldAmt) : 1;
+  const scaleRows = (rows) => (rows || []).map(r => ({
+    ...r,
+    amount: Number((Number(r.amount || 0) * scale).toFixed(2)),
+  }));
+  const scaled = {
+    companyName: blob.companyName || "",
+    memo:        blob.memo        || "",
+    earnings:    scaleRows(blob.earnings),
+    preTax:      scaleRows(blob.preTax),
+    taxes:       scaleRows(blob.taxes),
+    postTax:     scaleRows(blob.postTax),
+    deposits:    scaleRows(blob.deposits),
+  };
+  const json = JSON.stringify(scaled);
+  if (json.length > 32 * 1024) {
+    // Same cap the /paystub PUT enforces.
+    return { status: "skipped", summary: "Scaled template exceeds size cap" };
+  }
+  await query(
+    "UPDATE transactions SET paystub_json = ? WHERE id = ? AND user_id = ?",
+    [json, txn.id, userId]
+  );
+  return {
+    status: "success",
+    summary: `Applied paystub template from #${template.id} (scaled ${(scale * 100).toFixed(0)}%)`,
+  };
+});
+
+// ─── propose_recurring_schedule ─────────────────────────────────────
+// Trigger: transaction_arrived. When we see the same (account,
+// merchant, sign) transaction land AND the last `N-1` transactions
+// matching that key were within $tolerance of each other, drop a
+// notification suggesting the user set up a scheduled row.
+//
+// Guarded so we only propose ONCE per (merchant, account) pair — a
+// dedup notification-body marker prevents repeat suggestions the
+// user has already ignored. Also skipped when a scheduled row for
+// that (merchant, account) already exists.
+registerAction("propose_recurring_schedule", async (action, context, userId) => {
+  const txn = context?.transaction;
+  if (!txn?.id || !txn.account_id) {
+    return { status: "skipped", summary: "No account-bound transaction" };
+  }
+  const N = Math.max(2, Math.min(10, Number(action?.params?.N) || 3));
+  const tolerance = Math.max(0, Math.min(100, Number(action?.params?.tolerance) || 5));
+  // Skip if the user already has a scheduled row for this pair.
+  const already = await queryOne(
+    `SELECT id FROM transactions
+     WHERE user_id = ? AND account_id = ? AND merchant = ?
+       AND is_scheduled = 1
+     LIMIT 1`,
+    [userId, txn.account_id, txn.merchant]
+  );
+  if (already) return { status: "skipped", summary: "Scheduled row already exists" };
+  // Dedup: don't propose twice for the same pair.
+  const dedupKey = `propose_sched:${txn.account_id}:${String(txn.merchant).toLowerCase()}`;
+  const alreadyProposed = await queryOne(
+    `SELECT id FROM notifications
+     WHERE user_id = ? AND body LIKE ?
+     LIMIT 1`,
+    [userId, `%[dedup:${dedupKey}]%`]
+  );
+  if (alreadyProposed) return { status: "skipped", summary: "Already proposed" };
+  // Fetch the most recent N-1 prior transactions on the same
+  // (account, merchant, sign) — need at least that many to propose.
+  const signClause = Number(txn.amount) >= 0 ? "amount > 0" : "amount < 0";
+  const prior = await query(
+    `SELECT id, amount, date FROM transactions
+     WHERE user_id = ? AND account_id = ? AND merchant = ?
+       AND ${signClause}
+       AND id <> ?
+       AND (is_scheduled = 0 OR is_scheduled IS NULL)
+     ORDER BY date DESC, id DESC
+     LIMIT ?`,
+    [userId, txn.account_id, txn.merchant, txn.id, N - 1]
+  );
+  if (prior.length < N - 1) {
+    return { status: "skipped", summary: `Only ${prior.length + 1}/${N} occurrences so far` };
+  }
+  // All prior + current must be within tolerance of each other.
+  const all = [Math.abs(Number(txn.amount)), ...prior.map(p => Math.abs(Number(p.amount)))];
+  const maxAmt = Math.max(...all);
+  const minAmt = Math.min(...all);
+  if (maxAmt - minAmt > tolerance) {
+    return {
+      status: "skipped",
+      summary: `Amounts range too wide ($${minAmt.toFixed(2)}–$${maxAmt.toFixed(2)}, tolerance $${tolerance})`,
+    };
+  }
+  await insertAlert(userId, {
+    title: `Recurring: ${txn.merchant}`,
+    body:
+      `Seen ${N}× on this account around $${Math.abs(Number(txn.amount)).toFixed(2)}. ` +
+      `Add a scheduled row so you can plan around it before it arrives?`,
+    dedupKey,
+    color: "sky",
+    icon: "Calendar",
+  });
+  return {
+    status: "success",
+    summary: `Proposed scheduled row for "${txn.merchant}"`,
+  };
+});
+
 // Available action kinds (used by /vocab endpoint). Keep alphabetized
 // so the picker shows a stable order.
 export const ACTION_KINDS = [
   "add_note",
+  "apply_paystub_template",
+  "archive_completed_goals",
   "burn_rate_alarm",
+  "cleanup_old_notifications",
   "contribute_to_goal_pct",
   "flag_duplicate",
   "mark_as_transfer",
+  "monthly_summary_notification",
   "move_budget_slack",
   "notify_cc_utilization",
   "notify_low_balance",
   "notify_scheduled_miss",
   "notify_unusually_large_txn",
+  "propose_recurring_schedule",
   "rollover_unused_budget",
   "round_up_to_goal",
   "seasonal_bump",

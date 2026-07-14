@@ -27,10 +27,19 @@ export default async function (app) {
   app.addHook("preHandler", app.authenticate);
 
   app.get("/", async (req) => {
+    // Archived goals (from Stage 6 archive_completed_goals) hide by
+    // default. Pass ?includeArchived=1 to see them (used by a future
+    // "archive" viewer — not exposed in UI yet).
+    const includeArchived = req.query?.includeArchived === "1"
+      || req.query?.includeArchived === "true";
     const rows = await query(
       `SELECT id, name, target, saved, deadline, icon, color,
-              account_id AS accountId, created_at AS createdAt
-       FROM goals WHERE user_id = ? ORDER BY created_at DESC`,
+              account_id AS accountId, archived_at AS archivedAt,
+              created_at AS createdAt
+       FROM goals
+       WHERE user_id = ?
+         ${includeArchived ? "" : "AND archived_at IS NULL"}
+       ORDER BY created_at DESC`,
       [req.user.id]
     );
     return withLiveSaved(req.user.id, rows);

@@ -405,6 +405,12 @@ const SCHEMA = [
   // (rather than once per cron tick). Nullable so brand-new users
   // don't trigger a bogus rollover on their first cron run.
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS last_budget_period_processed DATE NULL`,
+
+  // Goals archived-at timestamp (Stage 6: archive_completed_goals).
+  // GET /goals excludes rows with archived_at set by default, so
+  // completed goals disappear from the main list without losing
+  // history / audit context.
+  `ALTER TABLE goals ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP NULL`,
 ];
 
 const DEFAULT_CATEGORIES = [
