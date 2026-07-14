@@ -291,6 +291,28 @@ function ScheduledPill({ isScheduled, darkMode, size = "sm" }) {
   );
 }
 
+// ─── AutomationErrorPill ─────────────────────────────────────────────────────
+// Red sticky pill on transactions where an automation errored. Per user spec
+// the ONLY way to clear this is to acknowledge the error in the Automations
+// tab — tapping the pill here does not clear it. Tooltip on hover tells the
+// user where to go.
+function AutomationErrorPill({ hasError, darkMode, size = "sm" }) {
+  if (!hasError) return null;
+  const cls = size === "xs"
+    ? "text-[9px] px-1.5 py-px"
+    : "text-[10px] px-1.5 py-0.5";
+  return (
+    <span
+      title="Rule error — see Automation history"
+      className={`inline-flex items-center gap-1 ${cls} rounded-full font-semibold uppercase tracking-wide cursor-help ${
+        darkMode ? "bg-rose-500/15 text-rose-400" : "bg-rose-50 text-rose-700"
+      }`}>
+      <span className="w-1 h-1 rounded-full bg-rose-500" />
+      Error
+    </span>
+  );
+}
+
 // ─── IconButton ───────────────────────────────────────────────────────────────
 function IconButton({ children, onClick, theme }) {
   return (
@@ -1198,6 +1220,7 @@ function OverviewTab({ theme, darkMode, onNavigate }) {
                     <div className="font-medium text-sm truncate">{t.merchant}</div>
                     <PendingPill pending={t.pending} darkMode={darkMode} />
                     <TransferPill isTransfer={t.isTransfer} darkMode={darkMode} />
+                    <AutomationErrorPill hasError={t.hasAutomationError} darkMode={darkMode} />
                   </div>
                   <div className={`text-xs ${theme.textSubtle}`}>{t.date} · {t.category}</div>
                 </div>
@@ -1895,6 +1918,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
                             <div className="font-medium text-sm truncate">{t.merchant}</div>
                             <PendingPill pending={t.pending} darkMode={darkMode} />
                             <TransferPill isTransfer={t.isTransfer} darkMode={darkMode} />
+                            <AutomationErrorPill hasError={t.hasAutomationError} darkMode={darkMode} />
                           </div>
                           <div className={`text-xs ${theme.textSubtle} truncate`}>
                             {isFlat ? `${t.date} · ` : ""}{t.category} · <span className="private-name" tabIndex={0}>{t.accountName || "—"}</span>
@@ -2075,6 +2099,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
                   <PendingPill pending={detail.pending} darkMode={darkMode} />
                   <TransferPill isTransfer={detail.isTransfer} darkMode={darkMode} />
                   <ScheduledPill isScheduled={detail.isScheduled} darkMode={darkMode} />
+                  <AutomationErrorPill hasError={detail.hasAutomationError} darkMode={darkMode} />
                 </div>
                 <div className={`text-3xl font-bold mt-2 ${
                   detail.isTransfer ? "text-sky-500" : isIncome ? "text-emerald-500" : ""
@@ -4162,6 +4187,414 @@ function NotesTab({ theme, darkMode, toast }) {
   );
 }
 
+// ─── Automations Panel ───────────────────────────────────────────────────────
+// Per-user rule engine. Two subpages:
+//   Rules  → list of automations (drag reorder, enable toggle, edit, delete)
+//   History → private log of what fired (30-day retention; errors sticky
+//             until acknowledged)
+// Editing (create / update / delete rules) is DESKTOP-ONLY per user spec —
+// mobile shows a hint but can still toggle rules on/off and view history.
+// Actions vocabulary is empty in the foundation stage; the rule builder's
+// Actions picker shows a helpful "will fill in over the next stages" note
+// instead of an empty dropdown so nothing looks broken.
+const TRIGGER_LABELS = {
+  transaction_arrived: "When a transaction lands",
+  income_landed:       "When income lands (positive amount)",
+  period_rolled_over:  "When a budget period rolls over",
+  daily_check:         "Once a day (8 AM)",
+  balance_changed:     "When an account balance changes",
+};
+const OP_LABELS = {
+  eq: "equals", neq: "does not equal",
+  contains: "contains",
+  gt: ">", gte: "≥", lt: "<", lte: "≤",
+  in: "is one of",
+};
+const FIELD_LABELS = {
+  merchant: "Merchant", category: "Category",
+  amount: "Amount (signed)", absAmount: "Amount (absolute)",
+  accountId: "Account", accountType: "Account type",
+  pending: "Pending", isTransfer: "Is transfer",
+  weekday: "Weekday (0=Sun)",
+};
+
+function AutomationsPanel({ theme, darkMode, toast }) {
+  const [subpage, setSubpage] = useState("rules");
+  const [rules, setRules] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [vocab, setVocab] = useState(null);
+  const [editing, setEditing] = useState(null);  // rule object or "new" sentinel
+  const [confirmDel, setConfirmDel] = useState(null);
+  const [desktop, setDesktop] = useState(true);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const set = () => setDesktop(mq.matches);
+    set(); mq.addEventListener?.("change", set);
+    return () => mq.removeEventListener?.("change", set);
+  }, []);
+
+  const load = useCallback(async () => {
+    try {
+      const [r, h, v] = await Promise.all([
+        api.listAutomations(),
+        api.getAutomationHistory(),
+        api.getAutomationVocab(),
+      ]);
+      setRules(r); setHistory(h); setVocab(v);
+    } catch { /* non-fatal */ }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const unresolvedErrors = history.filter(h => h.status === "error" && !h.acknowledged).length;
+
+  const saveRule = async (rule) => {
+    try {
+      if (rule.id) {
+        await api.updateAutomation(rule.id, rule);
+        toast?.("Rule updated", "success");
+      } else {
+        await api.createAutomation(rule);
+        toast?.("Rule created", "success");
+      }
+      setEditing(null);
+      load();
+    } catch (e) {
+      toast?.("Failed: " + (e.message || ""), "error");
+    }
+  };
+
+  const toggleEnabled = async (r) => {
+    try {
+      await api.updateAutomation(r.id, { enabled: !r.enabled });
+      setRules(rows => rows.map(x => x.id === r.id ? { ...x, enabled: !r.enabled } : x));
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+
+  const performDel = async () => {
+    if (!confirmDel) return;
+    try {
+      await api.deleteAutomation(confirmDel.id);
+      toast?.("Rule deleted", "success");
+      setConfirmDel(null);
+      load();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+
+  const ackAll = async () => {
+    try {
+      await api.acknowledgeAllAutomationErrors();
+      toast?.("All errors acknowledged", "success");
+      load();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Subpage pill */}
+      <div className={`flex p-1 rounded-xl ${darkMode ? "bg-slate-800" : "bg-slate-100"} w-fit`}>
+        {[
+          { id: "rules",   label: "Rules" },
+          { id: "history", label: `History${unresolvedErrors ? ` · ${unresolvedErrors}!` : ""}` },
+        ].map(o => (
+          <button key={o.id}
+            onClick={() => setSubpage(o.id)}
+            className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition ${
+              subpage === o.id
+                ? (darkMode ? "bg-slate-900 shadow text-emerald-400" : "bg-white shadow text-emerald-600")
+                : theme.textMuted
+            }`}>
+            {o.label}
+          </button>
+        ))}
+      </div>
+
+      {subpage === "rules" ? (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <p className={`text-sm ${theme.textSubtle}`}>
+              {rules.length} rule{rules.length !== 1 ? "s" : ""}
+              {!desktop && rules.length === 0 && (
+                <span className="ml-1">· open Ledger on desktop to author rules</span>
+              )}
+            </p>
+            {desktop && (
+              <motion.button whileTap={{ scale: 0.95 }}
+                onClick={() => setEditing("new")}
+                className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-1.5 shadow-sm shadow-emerald-500/30">
+                <Plus className="w-4 h-4" /> New Rule
+              </motion.button>
+            )}
+          </div>
+          {rules.length === 0 ? (
+            <div className={`${theme.surface} border-2 border-dashed ${darkMode ? "border-slate-700" : "border-slate-300"} rounded-2xl p-10 text-center`}>
+              <Sparkles className={`w-10 h-10 ${theme.textSubtle} mx-auto mb-3`} />
+              <p className={`${theme.textMuted} mb-1 text-sm`}>No automations yet.</p>
+              <p className={`${theme.textSubtle} text-xs max-w-sm mx-auto`}>
+                Set rules to auto-tag transfers, sweep round-ups into goals,
+                roll over unused budget, alert on low balance, and more.
+              </p>
+            </div>
+          ) : (
+            <div className={`${theme.surface} rounded-2xl border ${theme.border} divide-y ${theme.divide}`}>
+              {rules.map(r => (
+                <div key={r.id} className="flex items-center gap-3 px-4 py-3">
+                  <button onClick={() => toggleEnabled(r)}
+                    title={r.enabled ? "Disable rule" : "Enable rule"}
+                    className={`w-9 h-5 rounded-full flex items-center transition-colors flex-shrink-0 ${
+                      r.enabled ? "bg-emerald-500 justify-end" : (darkMode ? "bg-slate-700 justify-start" : "bg-slate-300 justify-start")
+                    }`}>
+                    <span className="w-4 h-4 rounded-full bg-white mx-0.5" />
+                  </button>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-sm truncate">{r.name}</div>
+                    <div className={`text-xs ${theme.textSubtle} truncate`}>
+                      {TRIGGER_LABELS[r.triggerType] || r.triggerType}
+                      {r.conditions?.length > 0 && ` · ${r.conditions.length} condition${r.conditions.length !== 1 ? "s" : ""}`}
+                      {r.actions?.length > 0 && ` · ${r.actions.length} action${r.actions.length !== 1 ? "s" : ""}`}
+                    </div>
+                  </div>
+                  {desktop && (
+                    <>
+                      <button onClick={() => setEditing(r)}
+                        title="Edit rule"
+                        className={`p-1.5 rounded-lg ${theme.hover} ${theme.textSubtle}`}>
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => setConfirmDel(r)}
+                        title="Delete rule"
+                        className={`p-1.5 rounded-lg ${theme.hover} text-rose-500`}>
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <p className={`text-sm ${theme.textSubtle}`}>
+              Last {history.length} {history.length === 1 ? "fire" : "fires"} · 30-day retention
+            </p>
+            {unresolvedErrors > 0 && (
+              <button onClick={ackAll}
+                className={`text-xs font-semibold px-3 py-1.5 rounded-lg border ${theme.border} ${theme.surface} text-rose-500 hover:bg-rose-500/10`}>
+                Acknowledge {unresolvedErrors} error{unresolvedErrors !== 1 ? "s" : ""}
+              </button>
+            )}
+          </div>
+          {history.length === 0 ? (
+            <div className={`${theme.surface} rounded-2xl border ${theme.border} px-5 py-12 text-center text-sm ${theme.textSubtle}`}>
+              No automations have fired yet.
+            </div>
+          ) : (
+            <div className={`${theme.surface} rounded-2xl border ${theme.border} divide-y ${theme.divide}`}>
+              {history.map(h => {
+                const isErr = h.status === "error";
+                const statusColor = h.status === "success"
+                  ? "text-emerald-500"
+                  : isErr ? "text-rose-500" : theme.textSubtle;
+                const isUnack = isErr && !h.acknowledged;
+                return (
+                  <div key={h.id} className={`flex items-start gap-3 px-4 py-2.5 ${isUnack ? (darkMode ? "bg-rose-500/5" : "bg-rose-50/40") : ""}`}>
+                    <div className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${
+                      h.status === "success" ? "bg-emerald-500" : isErr ? "bg-rose-500" : "bg-slate-400"
+                    }`} />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-medium text-sm">{h.ruleName || "(deleted rule)"}</span>
+                        <span className={`text-[10px] font-semibold uppercase tracking-wider ${statusColor}`}>
+                          {h.status}
+                        </span>
+                      </div>
+                      <div className={`text-xs ${theme.textSubtle}`}>{h.summary || "—"}</div>
+                      {h.errorMessage && (
+                        <div className="text-xs text-rose-500 mt-0.5 break-words">{h.errorMessage}</div>
+                      )}
+                      <div className={`text-[10px] ${theme.textSubtle} mt-0.5`}>
+                        {new Date(h.firedAt).toLocaleString()}
+                      </div>
+                    </div>
+                    {isUnack && (
+                      <button
+                        onClick={async () => {
+                          try {
+                            await api.acknowledgeAutomationHistory(h.id);
+                            load();
+                          } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+                        }}
+                        className={`text-[11px] font-semibold px-2.5 py-1 rounded-md border ${theme.border} ${theme.hover} flex-shrink-0`}>
+                        Acknowledge
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      <RuleBuilderSheet
+        open={!!editing}
+        onClose={() => setEditing(null)}
+        rule={editing === "new" ? null : editing}
+        vocab={vocab}
+        theme={theme} darkMode={darkMode}
+        onSave={saveRule}
+      />
+      <ConfirmDialog
+        open={!!confirmDel}
+        onCancel={() => setConfirmDel(null)}
+        onConfirm={performDel}
+        theme={theme} darkMode={darkMode}
+        title="Delete this rule?"
+        message={confirmDel ? `"${confirmDel.name}" will stop firing immediately. History entries stay.` : ""}
+      />
+    </div>
+  );
+}
+
+// Rule builder — trigger picker + conditions + actions. Actions vocabulary
+// is empty in the foundation stage so the picker shows a note explaining
+// which future stage will fill each category. Conditions are usable today.
+function RuleBuilderSheet({ open, onClose, rule, vocab, theme, darkMode, onSave }) {
+  const emptyRule = () => ({
+    name: "",
+    triggerType: "transaction_arrived",
+    conditions: [],
+    actions: [],
+    enabled: true,
+  });
+  const [form, setForm] = useState(emptyRule);
+  useEffect(() => { if (open) setForm(rule ? { ...rule } : emptyRule()); }, [open, rule?.id]);
+
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+  const smallCls = `px-2 py-1.5 ${theme.inputBg} border ${theme.border} rounded-lg text-xs focus:outline-none focus:border-emerald-500`;
+
+  const addCondition = () => setForm(f => ({
+    ...f, conditions: [...(f.conditions || []), { field: "merchant", op: "contains", value: "" }],
+  }));
+  const patchCondition = (i, patch) => setForm(f => ({
+    ...f, conditions: f.conditions.map((c, idx) => idx === i ? { ...c, ...patch } : c),
+  }));
+  const removeCondition = (i) => setForm(f => ({
+    ...f, conditions: f.conditions.filter((_, idx) => idx !== i),
+  }));
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (!form.name.trim()) return;
+    onSave({ ...form, name: form.name.trim() });
+  };
+
+  return (
+    <Sheet open={open} onClose={onClose}
+      title={rule?.id ? "Edit rule" : "New rule"} theme={theme}>
+      <form onSubmit={submit} className="space-y-4">
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Name</label>
+          <input required value={form.name}
+            onChange={e => setForm({ ...form, name: e.target.value })}
+            placeholder="e.g. Mark AMEX payments as transfers"
+            className={inputCls} />
+        </div>
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Trigger</label>
+          <select value={form.triggerType}
+            onChange={e => setForm({ ...form, triggerType: e.target.value })}
+            className={inputCls}>
+            {(vocab?.triggers || []).map(t =>
+              <option key={t} value={t}>{TRIGGER_LABELS[t] || t}</option>
+            )}
+          </select>
+        </div>
+
+        {/* Conditions */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider`}>Conditions</label>
+            <button type="button" onClick={addCondition}
+              className="text-[11px] font-semibold text-emerald-500 flex items-center gap-1">
+              <Plus className="w-3 h-3" /> Add condition
+            </button>
+          </div>
+          {form.conditions?.length === 0 ? (
+            <p className={`text-xs ${theme.textSubtle}`}>
+              No conditions — rule fires on every event of this trigger.
+            </p>
+          ) : (
+            <div className="space-y-1.5">
+              {form.conditions.map((c, i) => (
+                <div key={i} className="grid grid-cols-[1fr_100px_1fr_28px] gap-1.5 items-center">
+                  <select value={c.field}
+                    onChange={e => patchCondition(i, { field: e.target.value })}
+                    className={smallCls}>
+                    {(vocab?.fields || []).map(f =>
+                      <option key={f} value={f}>{FIELD_LABELS[f] || f}</option>
+                    )}
+                  </select>
+                  <select value={c.op}
+                    onChange={e => patchCondition(i, { op: e.target.value })}
+                    className={smallCls}>
+                    {(vocab?.ops || []).map(o =>
+                      <option key={o} value={o}>{OP_LABELS[o] || o}</option>
+                    )}
+                  </select>
+                  <input value={c.value}
+                    onChange={e => patchCondition(i, { value: e.target.value })}
+                    placeholder="value"
+                    className={smallCls} />
+                  <button type="button" onClick={() => removeCondition(i)}
+                    className={`p-1 rounded-md ${theme.textSubtle} hover:text-rose-500`}>
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Actions — empty vocab in foundation stage */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider`}>Actions</label>
+          </div>
+          {(vocab?.actions?.length || 0) === 0 ? (
+            <div className={`rounded-xl border ${theme.border} ${darkMode ? "bg-amber-500/5" : "bg-amber-50/40"} p-3 text-xs`}>
+              <div className={`font-semibold ${darkMode ? "text-amber-400" : "text-amber-700"} mb-1`}>
+                Actions coming in the next release
+              </div>
+              <p className={theme.textSubtle}>
+                The action library (mark as transfer, sweep round-ups to a goal, roll
+                over unused budget, low-balance alert, etc.) lands in the next stages.
+                For now you can save a rule with just conditions — actions will show up
+                as pickable options here once they ship.
+              </p>
+            </div>
+          ) : (
+            <p className={`text-xs ${theme.textSubtle}`}>Action builder coming in Stage 2+.</p>
+          )}
+        </div>
+
+        <div className="flex gap-2 pt-1">
+          <button type="button" onClick={onClose}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.surface} border ${theme.border}`}>
+            Cancel
+          </button>
+          <motion.button whileTap={{ scale: 0.97 }} type="submit"
+            className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-semibold">
+            {rule?.id ? "Save" : "Create"}
+          </motion.button>
+        </div>
+      </form>
+    </Sheet>
+  );
+}
+
 // ─── Users Panel ──────────────────────────────────────────────────────────────
 function UsersPanel({ currentUser, theme, darkMode, toast }) {
   const [users, setUsers] = useState([]);
@@ -5296,12 +5729,17 @@ function Shell({ user, onLogout, refreshUser }) {
     { id: "goals",        label: "Goals",        icon: Target      },
     { id: "notes",        label: "Notes",        icon: FileText    },
     { id: "settings",     label: "Settings",     icon: Settings    },
-    // Admin sits AFTER Settings so the dropdown reads Settings → Admin.
-    // Both 'owner' and 'admin' get the Admin tab. The owner has elevated
-    // controls inside the panel but the tab itself is visible to either.
+    // Automations sits below Settings per user spec. Available to every
+    // user (per-user rules); mobile shows a "set up on desktop" notice
+    // instead of the editor, but rules still fire for mobile users once
+    // authored on desktop.
+    { id: "automations",  label: "Automations",  icon: Sparkles    },
+    // Admin sits AFTER Automations so the dropdown reads
+    // Settings → Automations → Admin. Both 'owner' and 'admin' get the
+    // Admin tab; the owner has elevated controls inside the panel.
     ...((user.role === "admin" || user.role === "owner") ? [{ id: "admin", label: "Admin", icon: Users }] : []),
   ];
-  const TITLES = { dashboard:"Overview", accounts:"Accounts", transactions:"Transactions", investments:"Investments", budgets:"Budgets", goals:"Goals", notes:"Notes", admin:"Admin", settings:"Settings" };
+  const TITLES = { dashboard:"Overview", accounts:"Accounts", transactions:"Transactions", investments:"Investments", budgets:"Budgets", goals:"Goals", notes:"Notes", automations:"Automations", admin:"Admin", settings:"Settings" };
   const mainTabs = ALL_TABS.slice(0, 7);
   const moreTabs = ALL_TABS.slice(7);
   const net = Number(summary?.netWorth || 0);
@@ -5425,6 +5863,7 @@ function Shell({ user, onLogout, refreshUser }) {
                 {tab === "notes"        && <NotesTab         theme={theme} darkMode={darkMode} toast={toast} />}
                 {tab === "admin"        && <UsersPanel       currentUser={user} theme={theme} darkMode={darkMode} toast={toast} />}
                 {tab === "settings"     && <SettingsPanel    user={user} onUpdate={refreshUser} theme={theme} darkMode={darkMode} onToggleDark={setDarkMode} />}
+                {tab === "automations"  && <AutomationsPanel theme={theme} darkMode={darkMode} toast={toast} />}
               </motion.div>
             </AnimatePresence>
           </div>

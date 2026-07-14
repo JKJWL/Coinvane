@@ -334,6 +334,58 @@ const SCHEMA = [
   //     the matcher guesses wrong
   `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_scheduled BOOLEAN DEFAULT FALSE`,
   `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMP NULL`,
+
+  // ── Automations (Feature: Automations tab) ──────────────────────
+  // Per-user rule engine. Each rule is:
+  //   trigger:    one of transaction_arrived | income_landed |
+  //               period_rolled_over | daily_check | balance_changed
+  //   conditions: JSON array of { field, op, value } — ALL must pass
+  //   actions:    JSON array of { kind, params } — run in order
+  //   enabled:    on/off without deleting the rule
+  //   sort_order: user-defined execution order within a trigger
+  // Author + edit is DESKTOP-ONLY per user spec; mobile just executes.
+  `CREATE TABLE IF NOT EXISTS automation_rules (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    trigger_type VARCHAR(32) NOT NULL,
+    conditions LONGTEXT,
+    actions LONGTEXT,
+    enabled BOOLEAN DEFAULT TRUE,
+    sort_order INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user_trigger (user_id, trigger_type, enabled)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Per-user PRIVATE history of rule fires. Kept separate from
+  // audit_log (which is admin/security-scoped) per user requirement:
+  // "Nothing in audit log should fire for peoples personal automations".
+  // Worker prunes rows older than 30 days daily (idx_user_fired covers
+  // the retention scan).
+  `CREATE TABLE IF NOT EXISTS automation_history (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    rule_id INT NULL,
+    rule_name VARCHAR(128),
+    status ENUM('success','error','skipped') NOT NULL,
+    summary VARCHAR(255),
+    error_message TEXT,
+    transaction_id INT NULL,
+    budget_id INT NULL,
+    goal_id INT NULL,
+    acknowledged BOOLEAN DEFAULT FALSE,
+    fired_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user_fired (user_id, fired_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Sticky error flag: set when an automation errors on this row. Only
+  // clears when the user acknowledges the error in the Automations tab.
+  // Surfaced as a red "Error" pill on the txn with a tooltip pointing
+  // the user at Automation history.
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS has_automation_error BOOLEAN DEFAULT FALSE`,
 ];
 
 const DEFAULT_CATEGORIES = [

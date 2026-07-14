@@ -70,6 +70,19 @@ export const api = {
   createScheduledTransaction: (data) => request("POST", "/transactions/scheduled", data),
   setTransactionScheduled: (id, is_scheduled) =>
     request("PATCH", `/transactions/${id}/scheduled`, { is_scheduled }),
+
+  // ── Automations (per-user rule engine) ─────────────────────────
+  getAutomationVocab:   () => request("GET",    "/automations/vocab"),
+  listAutomations:      () => request("GET",    "/automations"),
+  createAutomation:  (d) => request("POST",   "/automations", d),
+  updateAutomation:  (id, d) => request("PATCH",  `/automations/${id}`, d),
+  deleteAutomation:  (id) => request("DELETE", `/automations/${id}`),
+  reorderAutomations:(ids) => request("POST",   "/automations/reorder", { ids }),
+  getAutomationHistory: () => request("GET",    "/automations/history"),
+  acknowledgeAutomationHistory: (id) =>
+    request("POST", `/automations/history/${id}/acknowledge`),
+  acknowledgeAllAutomationErrors: () =>
+    request("POST", "/automations/history/acknowledge-all"),
   getByCategory: (params = {}) => {
     const q = new URLSearchParams(params).toString();
     return request("GET", `/transactions/by-category${q ? "?" + q : ""}`);

@@ -30,7 +30,8 @@ async function schedulePeriodic() {
   for (const r of existing) {
     if (r.name === "periodic-full-sync"
         || r.name === "daily-notifications"
-        || r.name === "audit-log-cleanup") {
+        || r.name === "audit-log-cleanup"
+        || r.name === "automation-history-cleanup") {
       await syncQueue.removeRepeatableByKey(r.key);
     }
   }
@@ -53,6 +54,17 @@ async function schedulePeriodic() {
     "audit-log-cleanup",
     { kind: "audit-cleanup" },
     { repeat: { pattern: "0 * * * *" }, jobId: "audit-log-cleanup" }
+  );
+  // Automation history retention. User-facing personal log so we're more
+  // generous than the admin audit log: 30 days for non-error rows, and
+  // 90 days for errors that the user has ACKNOWLEDGED (unacknowledged
+  // errors stay indefinitely — they represent an unresolved sticky
+  // pill on a transaction, and vanishing that from under the user
+  // silently would be worse than the retention cost).
+  await syncQueue.add(
+    "automation-history-cleanup",
+    { kind: "automation-cleanup" },
+    { repeat: { pattern: "0 3 * * *" }, jobId: "automation-history-cleanup" }
   );
 }
 
@@ -88,6 +100,27 @@ new Worker("sync", async (job) => {
       catch (e) { console.error(`notifications failed for user ${u.id}:`, e.message); }
     }
     return { ok: true };
+  }
+
+  if (kind === "automation-cleanup") {
+    // Non-error + acknowledged-error retention. Unacknowledged errors are
+    // KEPT so the user can still find the row that surfaced their sticky
+    // transaction pill.
+    const routine = await query(
+      `DELETE FROM automation_history
+       WHERE status <> 'error'
+         AND fired_at < DATE_SUB(NOW(), INTERVAL 30 DAY)`
+    );
+    const acked = await query(
+      `DELETE FROM automation_history
+       WHERE status = 'error' AND acknowledged = 1
+         AND fired_at < DATE_SUB(NOW(), INTERVAL 90 DAY)`
+    );
+    const total = (routine.affectedRows || 0) + (acked.affectedRows || 0);
+    if (total > 0) {
+      console.log(`[automations] pruned ${routine.affectedRows} routine + ${acked.affectedRows} old-acked`);
+    }
+    return { ok: true, pruned: total };
   }
 
   if (kind === "audit-cleanup") {

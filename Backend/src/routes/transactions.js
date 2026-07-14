@@ -55,6 +55,7 @@ export default async function (app) {
       `SELECT t.id, t.date, t.merchant, t.category, t.amount, t.pending, t.note,
               t.is_transfer AS isTransfer, t.transfer_group_id AS transferGroupId,
               t.is_scheduled AS isScheduled,
+              t.has_automation_error AS hasAutomationError,
               t.paystub_json AS paystubJson,
               a.name AS accountName, a.id AS accountId, a.plaid_item_id AS plaidItemId
        FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
