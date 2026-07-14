@@ -2214,18 +2214,28 @@ function TransactionsTab({ theme, darkMode, toast }) {
                 </p>
               )}
 
-              {/* Schedule actions — split so the primary CTA reflects the
-                  row's current mode. Non-scheduled rows get "Copy &
-                  schedule" (make a future placeholder from this one).
-                  Scheduled rows get "Mark as arrived" for the manual
-                  fallback when the auto-matcher misses. */}
+              {/* Schedule actions.
+                  Non-scheduled rows: single (Copy & schedule) button —
+                    make a future placeholder from this transaction.
+                  Scheduled rows: BOTH buttons side-by-side —
+                    (Copy & schedule)   (Mark Present)
+                  followed by the delete row below (spans full width). */}
               <div className="flex gap-2">
-                {detail.isScheduled ? (
+                <button type="button"
+                  onClick={() => {
+                    setCopyFrom(detail);
+                    setShowScheduleForm(true);
+                    setDetail(null);
+                  }}
+                  className={`flex-1 py-2.5 rounded-xl text-sm font-medium border ${theme.border} ${theme.surface} text-indigo-500 hover:bg-indigo-500/10 flex items-center justify-center gap-2`}>
+                  <Calendar className="w-4 h-4" /> Copy &amp; schedule
+                </button>
+                {detail.isScheduled && (
                   <button type="button"
                     onClick={async () => {
                       try {
                         await api.setTransactionScheduled(detail.id, false);
-                        toast?.("Marked as arrived", "success");
+                        toast?.("Marked present", "success");
                         setDetail(null);
                         refreshAll();
                       } catch (e) {
@@ -2233,17 +2243,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
                       }
                     }}
                     className={`flex-1 py-2.5 rounded-xl text-sm font-medium border ${theme.border} ${theme.surface} text-emerald-500 hover:bg-emerald-500/10 flex items-center justify-center gap-2`}>
-                    <Check className="w-4 h-4" /> Mark as arrived
-                  </button>
-                ) : (
-                  <button type="button"
-                    onClick={() => {
-                      setCopyFrom(detail);
-                      setShowScheduleForm(true);
-                      setDetail(null);
-                    }}
-                    className={`flex-1 py-2.5 rounded-xl text-sm font-medium border ${theme.border} ${theme.surface} text-indigo-500 hover:bg-indigo-500/10 flex items-center justify-center gap-2`}>
-                    <Calendar className="w-4 h-4" /> Copy &amp; schedule
+                    <Check className="w-4 h-4" /> Mark Present
                   </button>
                 )}
               </div>
@@ -2446,89 +2446,9 @@ function PaystubSheet({ open, onClose, transaction, initial, accounts, theme, da
     } finally { setSaving(false); }
   };
 
-  // Renders a section header + rows + Add button.
-  //   isDeposit    → account is the primary field (no category)
-  //   isDeduction  → account is OPTIONAL alongside category (splits paycheck
-  //                  into a specific account, e.g. 401k, HSA, savings sweep)
-  //   otherwise    → free-text category only
-  const Section = ({ title, sectionKey, subtotal, isDeposit, isDeduction }) => {
-    const rows = form[sectionKey] || [];
-    // Deduction rows get a third middle column for the optional account.
-    // Deposits and normal earnings/taxes rows keep the two-column middle.
-    const gridCls = isDeduction
-      ? "grid grid-cols-[1fr_1fr_1fr_90px_28px] gap-1.5 items-center"
-      : "grid grid-cols-[1fr_1fr_90px_28px] gap-1.5 items-center";
-    return (
-      <div>
-        <div className="flex items-center justify-between mb-1.5">
-          <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider`}>
-            {title}
-          </div>
-          {subtotal !== undefined && (
-            <div className={`text-[11px] font-semibold`}>{fmt(subtotal)}</div>
-          )}
-        </div>
-        <div className="space-y-1.5">
-          {rows.map((r, i) => (
-            <div key={i} className={gridCls}>
-              <input
-                value={r.name}
-                onChange={e => patchRow(sectionKey, i, { name: e.target.value })}
-                placeholder={isDeposit ? "Memo" : "Name (optional)"}
-                className={inputCls}
-              />
-              {isDeposit ? (
-                <select
-                  value={r.accountId || ""}
-                  onChange={e => patchRow(sectionKey, i, { accountId: e.target.value })}
-                  className={inputCls}>
-                  <option value="">— Account (optional) —</option>
-                  {accounts.map(a =>
-                    <option key={a.id} value={a.id}>{a.name}</option>
-                  )}
-                </select>
-              ) : (
-                <input
-                  value={r.category}
-                  onChange={e => patchRow(sectionKey, i, { category: e.target.value })}
-                  placeholder="Category (optional)"
-                  className={inputCls}
-                />
-              )}
-              {isDeduction && (
-                <select
-                  value={r.accountId || ""}
-                  onChange={e => patchRow(sectionKey, i, { accountId: e.target.value })}
-                  title="Optionally route this deduction into a specific account"
-                  className={inputCls}>
-                  <option value="">→ Account (optional)</option>
-                  {accounts.map(a =>
-                    <option key={a.id} value={a.id}>{a.name}</option>
-                  )}
-                </select>
-              )}
-              <input
-                type="number" step="0.01" min="0"
-                value={r.amount}
-                onChange={e => patchRow(sectionKey, i, { amount: e.target.value })}
-                placeholder="0.00"
-                className={`${inputCls} text-right`}
-              />
-              <button type="button" onClick={() => removeRow(sectionKey, i)}
-                title="Remove row"
-                className={`p-1 rounded-md ${theme.textSubtle} hover:text-rose-500`}>
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          ))}
-        </div>
-        <button type="button" onClick={() => addRow(sectionKey)}
-          className="mt-1.5 text-[11px] font-semibold text-emerald-500 flex items-center gap-1">
-          <Plus className="w-3 h-3" /> Add {isDeposit ? "deposit" : "line"}
-        </button>
-      </div>
-    );
-  };
+  // Section is defined at MODULE scope below (PaystubSection) — inlining it
+  // here would create a new component identity on every render, which
+  // unmounts + remounts every input on every keystroke and destroys focus.
 
   return (
     <>
@@ -2551,11 +2471,21 @@ function PaystubSheet({ open, onClose, transaction, initial, accounts, theme, da
             </div>
           </div>
 
-          <Section title="Earnings"              sectionKey="earnings" subtotal={grossEarnings} />
-          <Section title="Pre-Tax Deductions"    sectionKey="preTax"   subtotal={preTaxTotal}   isDeduction />
-          <Section title="Taxes"                 sectionKey="taxes"    subtotal={taxesTotal} />
-          <Section title="After-Tax Deductions"  sectionKey="postTax"  subtotal={postTaxTotal}  isDeduction />
-          <Section title="Deposit Accounts"      sectionKey="deposits" subtotal={depositsTotal} isDeposit />
+          <PaystubSection title="Earnings"             sectionKey="earnings" subtotal={grossEarnings}
+            rows={form.earnings} accounts={accounts} theme={theme} inputCls={inputCls}
+            onPatchRow={patchRow} onRemoveRow={removeRow} onAddRow={addRow} />
+          <PaystubSection title="Pre-Tax Deductions"   sectionKey="preTax"   subtotal={preTaxTotal}   isDeduction
+            rows={form.preTax} accounts={accounts} theme={theme} inputCls={inputCls}
+            onPatchRow={patchRow} onRemoveRow={removeRow} onAddRow={addRow} />
+          <PaystubSection title="Taxes"                sectionKey="taxes"    subtotal={taxesTotal}
+            rows={form.taxes} accounts={accounts} theme={theme} inputCls={inputCls}
+            onPatchRow={patchRow} onRemoveRow={removeRow} onAddRow={addRow} />
+          <PaystubSection title="After-Tax Deductions" sectionKey="postTax"  subtotal={postTaxTotal}  isDeduction
+            rows={form.postTax} accounts={accounts} theme={theme} inputCls={inputCls}
+            onPatchRow={patchRow} onRemoveRow={removeRow} onAddRow={addRow} />
+          <PaystubSection title="Deposit Accounts"     sectionKey="deposits" subtotal={depositsTotal} isDeposit
+            rows={form.deposits} accounts={accounts} theme={theme} inputCls={inputCls}
+            onPatchRow={patchRow} onRemoveRow={removeRow} onAddRow={addRow} />
 
           {/* Totals — matches Quicken's Net Pay / W2 Gross summary rows. */}
           <div className={`rounded-xl border ${theme.border} ${theme.surface} p-3 space-y-1`}>
@@ -2607,6 +2537,116 @@ function PaystubSheet({ open, onClose, transaction, initial, accounts, theme, da
         confirmLabel="Clear"
       />
     </>
+  );
+}
+
+// Renders one section of the paystub editor. Defined at MODULE scope
+// (not inline inside PaystubSheet) because inline component definitions
+// get a NEW function identity on every parent render — React's
+// reconciler sees "different component type" and unmounts + remounts
+// the entire subtree on every keystroke, destroying input focus. This
+// was the "can only type one character" bug users reported.
+//
+// Modes:
+//   isDeposit    → account is the primary field (no category)
+//   isDeduction  → account is OPTIONAL alongside category (splits paycheck
+//                  into a specific account, e.g. 401k, HSA, savings sweep)
+//   otherwise    → free-text category only
+// Notification-preference row in SettingsPanel. Same rationale as
+// PaystubSection — extracted from inline to prevent focus-loss on
+// keystroke in the threshold inputs some rows expose via children.
+function NotifRow({ theme, emailOn, label, hint, checked, onToggle, children }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-medium">{label}</div>
+          {hint && <div className={`text-xs ${theme.textSubtle} mt-0.5`}>{hint}</div>}
+        </div>
+        <Toggle checked={checked} onChange={onToggle} disabled={!emailOn} />
+      </div>
+      {checked && emailOn && children && <div className="pl-1">{children}</div>}
+    </div>
+  );
+}
+
+function PaystubSection({
+  title, sectionKey, subtotal, rows = [], accounts = [],
+  theme, inputCls, isDeposit, isDeduction,
+  onPatchRow, onRemoveRow, onAddRow,
+}) {
+  const gridCls = isDeduction
+    ? "grid grid-cols-[1fr_1fr_1fr_90px_28px] gap-1.5 items-center"
+    : "grid grid-cols-[1fr_1fr_90px_28px] gap-1.5 items-center";
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider`}>
+          {title}
+        </div>
+        {subtotal !== undefined && (
+          <div className={`text-[11px] font-semibold`}>{fmt(subtotal)}</div>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        {rows.map((r, i) => (
+          <div key={i} className={gridCls}>
+            <input
+              value={r.name}
+              onChange={e => onPatchRow(sectionKey, i, { name: e.target.value })}
+              placeholder={isDeposit ? "Memo" : "Name (optional)"}
+              className={inputCls}
+            />
+            {isDeposit ? (
+              <select
+                value={r.accountId || ""}
+                onChange={e => onPatchRow(sectionKey, i, { accountId: e.target.value })}
+                className={inputCls}>
+                <option value="">— Account (optional) —</option>
+                {accounts.map(a =>
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                )}
+              </select>
+            ) : (
+              <input
+                value={r.category}
+                onChange={e => onPatchRow(sectionKey, i, { category: e.target.value })}
+                placeholder="Category (optional)"
+                className={inputCls}
+              />
+            )}
+            {isDeduction && (
+              <select
+                value={r.accountId || ""}
+                onChange={e => onPatchRow(sectionKey, i, { accountId: e.target.value })}
+                title="Optionally route this deduction into a specific account"
+                className={inputCls}>
+                <option value="">→ Account (optional)</option>
+                {accounts.map(a =>
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                )}
+              </select>
+            )}
+            <input
+              type="number" step="0.01" min="0"
+              value={r.amount}
+              onChange={e => onPatchRow(sectionKey, i, { amount: e.target.value })}
+              placeholder="0.00"
+              className={`${inputCls} text-right`}
+            />
+            <button type="button" onClick={() => onRemoveRow(sectionKey, i)}
+              title="Remove row"
+              className={`p-1 rounded-md ${theme.textSubtle} hover:text-rose-500`}>
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        ))}
+      </div>
+      <button type="button" onClick={() => onAddRow(sectionKey)}
+        className="mt-1.5 text-[11px] font-semibold text-emerald-500 flex items-center gap-1">
+        <Plus className="w-3 h-3" /> Add {isDeposit ? "deposit" : "line"}
+      </button>
+    </div>
   );
 }
 
@@ -6027,19 +6067,10 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
   // server-side EMAIL_CONFIG is disabled, everything below is greyed out.
   const emailOn = form.notification_email && user.email_enabled;
 
-  // Inline notification row helper (toggle on left, optional threshold input)
-  const NotifRow = ({ label, hint, checked, onToggle, children }) => (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-sm font-medium">{label}</div>
-          {hint && <div className={`text-xs ${theme.textSubtle} mt-0.5`}>{hint}</div>}
-        </div>
-        <Toggle checked={checked} onChange={onToggle} disabled={!emailOn} />
-      </div>
-      {checked && emailOn && children && <div className="pl-1">{children}</div>}
-    </div>
-  );
+  // NotifRow lives at module scope below — inlined here it would
+  // re-create the component on every render and lose focus on every
+  // keystroke in its children's threshold inputs (same bug pattern as
+  // the paystub Section).
 
   // CSV import: pick a file, read text, POST it.
   const handleCsvFile = async (file) => {
@@ -6153,6 +6184,7 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
         {/* Nested notification controls — greyed out when emailOn is false. */}
         <div className={`pl-4 border-l-2 ${darkMode ? "border-slate-700" : "border-slate-200"} space-y-3 ${!emailOn ? "opacity-50 pointer-events-none" : ""}`}>
           <NotifRow
+            theme={theme} emailOn={emailOn}
             label="Large transactions"
             hint="Alert when a single expense exceeds your threshold."
             checked={form.notify_large_txn}
@@ -6166,6 +6198,7 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
           </NotifRow>
 
           <NotifRow
+            theme={theme} emailOn={emailOn}
             label="Income received"
             hint='Alert when a deposit lands above the threshold ("Congrats You Got Paid!").'
             checked={form.notify_income}
@@ -6179,6 +6212,7 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
           </NotifRow>
 
           <NotifRow
+            theme={theme} emailOn={emailOn}
             label="Approaching budget limit"
             hint="Alert when a budget reaches a percentage of its cap."
             checked={form.notify_budget_warning}
@@ -6193,12 +6227,14 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
           </NotifRow>
 
           <NotifRow
+            theme={theme} emailOn={emailOn}
             label="Budget exceeded"
             hint="Alert when a budget goes over 100%."
             checked={form.notify_budget_exceeded}
             onToggle={v => setForm({ ...form, notify_budget_exceeded: v })} />
 
           <NotifRow
+            theme={theme} emailOn={emailOn}
             label="Goal milestones"
             hint="Alert at 75% progress and when a goal completes."
             checked={form.notify_goal_milestone}
