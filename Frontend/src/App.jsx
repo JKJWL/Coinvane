@@ -2539,14 +2539,14 @@ function PaystubSheet({ open, onClose, transaction, initial, accounts, theme, da
               <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Company</label>
               <input value={form.companyName}
                 onChange={e => setForm({ ...form, companyName: e.target.value })}
-                placeholder="e.g. Farm Mutual Auto Ins Co"
+                placeholder="Company name"
                 className={inputCls} />
             </div>
             <div>
               <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Memo</label>
               <input value={form.memo}
                 onChange={e => setForm({ ...form, memo: e.target.value })}
-                placeholder="e.g. PPD ID: 1370533100"
+                placeholder="Reference / memo"
                 className={inputCls} />
             </div>
           </div>
@@ -2710,7 +2710,7 @@ function ScheduleSheet({ open, onClose, copyFrom, accounts, catList, theme, dark
           <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Merchant / source</label>
           <input required value={form.merchant}
             onChange={e => setForm({ ...form, merchant: e.target.value })}
-            placeholder="e.g. Paycheck — Farm Mutual" className={inputCls} />
+            placeholder="Merchant or source name" className={inputCls} />
         </div>
         <div className="grid grid-cols-2 gap-2">
           <div>
@@ -2842,7 +2842,7 @@ function ActionParamsEditor({ kind, params, onPatch, catList = [], accounts = []
       <div className="space-y-1.5">
         <input value={params.note || ""}
           onChange={e => onPatch({ note: e.target.value })}
-          placeholder="Note text (e.g. 'Business meal — reimbursable')"
+          placeholder="Note text to attach to matching transactions"
           className={inputCls} />
         <div className={`flex items-center gap-2 text-[11px] ${theme.textSubtle}`}>
           <label className="flex items-center gap-1 cursor-pointer">
@@ -5133,7 +5133,7 @@ function RuleBuilderSheet({ open, onClose, rule, vocab, catList = [], accounts =
           <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Name</label>
           <input required value={form.name}
             onChange={e => setForm({ ...form, name: e.target.value })}
-            placeholder="e.g. Mark AMEX payments as transfers"
+            placeholder="Rule name"
             className={inputCls} />
         </div>
         <div>

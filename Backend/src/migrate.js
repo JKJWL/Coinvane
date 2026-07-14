@@ -304,7 +304,7 @@ const SCHEMA = [
   // JSON blob attached to any positive-amount transaction. Structure:
   //   {
   //     companyName: "Foo Inc",
-  //     memo: "PPD ID: …",
+  //     memo: "…",
   //     earnings: [{ name, category, amount }],
   //     preTax:   [{ name, category, amount }],
   //     taxes:    [{ name, category, amount }],
