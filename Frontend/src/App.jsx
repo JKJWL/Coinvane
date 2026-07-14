@@ -2243,7 +2243,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
                   className={`flex-1 py-2.5 rounded-xl text-sm font-medium border ${theme.border} ${theme.surface} text-indigo-500 hover:bg-indigo-500/10 flex items-center justify-center gap-2`}>
                   <Calendar className="w-4 h-4" /> Copy &amp; schedule
                 </button>
-                {detail.isScheduled && (
+                {!!detail.isScheduled && (
                   <button type="button"
                     onClick={async () => {
                       try {
