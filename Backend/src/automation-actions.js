@@ -617,11 +617,182 @@ registerAction("move_budget_slack", async (action, context, userId) => {
   };
 });
 
+// ═══ Stage 5: savings rules ══════════════════════════════════════════
+//
+// All four actions push money to a goal by incrementing goals.saved
+// directly. Account-linked goals (goal.account_id IS NOT NULL) are
+// SKIPPED — their "saved" is derived from the linked account's balance
+// so any direct write would just be overwritten on next refresh, which
+// silently swallows the automation. The user is told why via the
+// history summary so it's not a mystery.
+//
+// Contribution amounts round to cents. If a computed contribution
+// falls below $0.01 the action skips rather than writing a zero row.
+
+// Resolve a target goal by id + owner, returning null with a reason
+// string if it's missing, foreign-owned, or account-linked.
+async function fetchTargetGoal(userId, goalId) {
+  if (!goalId) return { goal: null, reason: "No goal selected" };
+  const g = await queryOne(
+    `SELECT id, name, saved, target, account_id
+     FROM goals WHERE id = ? AND user_id = ?`,
+    [Number(goalId), userId]
+  );
+  if (!g) return { goal: null, reason: "Goal not found" };
+  if (g.account_id) {
+    return {
+      goal: null,
+      reason: "Goal is account-linked — automation contributions unsupported (balance is authoritative)",
+    };
+  }
+  return { goal: g, reason: null };
+}
+
+// Add cents to a goal. Caller has already validated ownership + amount.
+async function creditGoal(userId, goalId, amount) {
+  await query(
+    "UPDATE goals SET saved = saved + ? WHERE id = ? AND user_id = ?",
+    [Number(Number(amount).toFixed(2)), goalId, userId]
+  );
+}
+
+// ─── contribute_to_goal_pct ─────────────────────────────────────────
+// Trigger: income_landed. Contributes pct% of the income transaction
+// amount to a goal. Skips transfers (income_landed already filters, but
+// defensive check).
+registerAction("contribute_to_goal_pct", async (action, context, userId) => {
+  const txn = context?.transaction;
+  if (!txn?.id) return { status: "skipped", summary: "No transaction in context" };
+  if (Number(txn.amount) <= 0) return { status: "skipped", summary: "Not income (amount ≤ 0)" };
+  if (txn.is_transfer) return { status: "skipped", summary: "Skipping transfer" };
+  const pct = Math.max(0.1, Math.min(100, Number(action?.params?.pct) || 10));
+  const { goal, reason } = await fetchTargetGoal(userId, action?.params?.goalId);
+  if (!goal) return { status: "skipped", summary: reason };
+  const contribution = Number(txn.amount) * (pct / 100);
+  if (contribution < 0.01) return { status: "skipped", summary: "Contribution below $0.01" };
+  await creditGoal(userId, goal.id, contribution);
+  return {
+    status: "success",
+    summary: `Contributed $${contribution.toFixed(2)} (${pct}%) to "${goal.name}"`,
+    goalId: goal.id,
+  };
+});
+
+// ─── round_up_to_goal ───────────────────────────────────────────────
+// Trigger: transaction_arrived. For each expense, computes
+// ceil(|amount| / roundTo) * roundTo - |amount| and adds that delta to
+// the goal. Skips transfers, scheduled (defense-in-depth), and any
+// row that's already exactly a multiple of roundTo. Non-credit accounts
+// only — the classic round-up feature matches physical debit-card usage
+// and treating card swipes as sources would double-count when the CC
+// payment lands.
+registerAction("round_up_to_goal", async (action, context, userId) => {
+  const txn = context?.transaction;
+  if (!txn?.id) return { status: "skipped", summary: "No transaction in context" };
+  if (Number(txn.amount) >= 0) return { status: "skipped", summary: "Not an expense" };
+  if (txn.is_transfer) return { status: "skipped", summary: "Skipping transfer" };
+  if (txn.account_type === "credit") return { status: "skipped", summary: "Skipping credit-card expense" };
+  const roundTo = Math.max(0.25, Math.min(100, Number(action?.params?.roundTo) || 1));
+  const abs = Math.abs(Number(txn.amount));
+  const roundedUp = Math.ceil(abs / roundTo) * roundTo;
+  const delta = roundedUp - abs;
+  if (delta < 0.01) return { status: "skipped", summary: "Already at round multiple" };
+  const { goal, reason } = await fetchTargetGoal(userId, action?.params?.goalId);
+  if (!goal) return { status: "skipped", summary: reason };
+  await creditGoal(userId, goal.id, delta);
+  return {
+    status: "success",
+    summary: `Round-up: $${delta.toFixed(2)} to "${goal.name}"`,
+    goalId: goal.id,
+  };
+});
+
+// ─── sweep_to_goal ──────────────────────────────────────────────────
+// Trigger: income_landed. Fixed-dollar version of contribute_to_goal_pct
+// — after every income transaction, move `amount` to a goal. Skipped
+// when the incoming income is smaller than the sweep amount so we don't
+// dip a paycheck negative from an over-eager sweep.
+registerAction("sweep_to_goal", async (action, context, userId) => {
+  const txn = context?.transaction;
+  if (!txn?.id) return { status: "skipped", summary: "No transaction in context" };
+  if (Number(txn.amount) <= 0) return { status: "skipped", summary: "Not income" };
+  if (txn.is_transfer) return { status: "skipped", summary: "Skipping transfer" };
+  const amount = Number(action?.params?.amount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { status: "skipped", summary: "Invalid sweep amount" };
+  }
+  if (Number(txn.amount) < amount) {
+    return { status: "skipped", summary: `Income $${Number(txn.amount).toFixed(2)} less than sweep $${amount.toFixed(2)}` };
+  }
+  const { goal, reason } = await fetchTargetGoal(userId, action?.params?.goalId);
+  if (!goal) return { status: "skipped", summary: reason };
+  await creditGoal(userId, goal.id, amount);
+  return {
+    status: "success",
+    summary: `Swept $${amount.toFixed(2)} from paycheck to "${goal.name}"`,
+    goalId: goal.id,
+  };
+});
+
+// ─── sweep_excess_income ────────────────────────────────────────────
+// Trigger: period_rolled_over. Computes (income received last period) -
+// (sum of category-budget caps including rollover_credit at time of
+// firing). Positive delta is swept to the goal, capped by maxSweep.
+// Non-credit accounts, non-transfer, non-scheduled — same filter every
+// budget/income rollup uses so the calculation lines up with what the
+// user sees on the Budgets tab.
+registerAction("sweep_excess_income", async (action, context, userId) => {
+  const prevStart = context?.previousPeriodStart;
+  const prevEnd   = context?.previousPeriodEnd;
+  if (!prevStart || !prevEnd) {
+    return { status: "skipped", summary: "No previous period bounds in context" };
+  }
+  const maxSweep = Number.isFinite(Number(action?.params?.maxSweep))
+    && Number(action.params.maxSweep) > 0
+      ? Number(action.params.maxSweep)
+      : Number.POSITIVE_INFINITY;
+  const { goal, reason } = await fetchTargetGoal(userId, action?.params?.goalId);
+  if (!goal) return { status: "skipped", summary: reason };
+  const incomeRow = await queryOne(
+    `SELECT COALESCE(SUM(t.amount), 0) AS total
+     FROM transactions t
+     LEFT JOIN accounts a ON a.id = t.account_id
+     WHERE t.user_id = ? AND t.amount > 0
+       AND t.date >= ? AND t.date < ?
+       AND (a.type IS NULL OR a.type <> 'credit')
+       AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+       AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)`,
+    [userId, prevStart, prevEnd]
+  );
+  const income = Number(incomeRow.total) || 0;
+  const allocRow = await queryOne(
+    `SELECT COALESCE(SUM(amount + COALESCE(rollover_credit, 0)), 0) AS total
+     FROM budgets WHERE user_id = ? AND account_id IS NULL`,
+    [userId]
+  );
+  const allocated = Number(allocRow.total) || 0;
+  const excess = income - allocated;
+  if (excess <= 0) {
+    return {
+      status: "skipped",
+      summary: `No excess (income $${income.toFixed(2)}, allocated $${allocated.toFixed(2)})`,
+    };
+  }
+  const sweep = Math.min(excess, maxSweep);
+  await creditGoal(userId, goal.id, sweep);
+  return {
+    status: "success",
+    summary: `Swept $${sweep.toFixed(2)} excess income to "${goal.name}"`,
+    goalId: goal.id,
+  };
+});
+
 // Available action kinds (used by /vocab endpoint). Keep alphabetized
 // so the picker shows a stable order.
 export const ACTION_KINDS = [
   "add_note",
   "burn_rate_alarm",
+  "contribute_to_goal_pct",
   "flag_duplicate",
   "mark_as_transfer",
   "move_budget_slack",
@@ -630,7 +801,10 @@ export const ACTION_KINDS = [
   "notify_scheduled_miss",
   "notify_unusually_large_txn",
   "rollover_unused_budget",
+  "round_up_to_goal",
   "seasonal_bump",
   "set_category",
   "split_txn",
+  "sweep_excess_income",
+  "sweep_to_goal",
 ];

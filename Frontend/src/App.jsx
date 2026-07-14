@@ -2854,7 +2854,7 @@ function ActionAddMenu({ available, onPick, theme, darkMode }) {
 // Per-action UI. Each case renders whatever inputs that action's params
 // need. Unknown kinds render a raw JSON textarea as a safety net so a
 // future stage's action still works if the deploy is ahead of the client.
-function ActionParamsEditor({ kind, params, onPatch, catList = [], accounts = [], budgets = [], currentTrigger, theme, darkMode }) {
+function ActionParamsEditor({ kind, params, onPatch, catList = [], accounts = [], budgets = [], goals = [], currentTrigger, theme, darkMode }) {
   const inputCls = `w-full px-2.5 py-1.5 ${theme.inputBg} border ${theme.border} rounded-lg text-xs focus:outline-none focus:border-emerald-500`;
 
   // Trigger-mismatch hint — nudge the user if their rule's trigger
@@ -3253,6 +3253,123 @@ function ActionParamsEditor({ kind, params, onPatch, catList = [], accounts = []
         <p className={`text-[10px] ${theme.textSubtle}`}>
           Runs at most once per period per rule. Clamps to whatever slack the
           source actually has — never puts source below zero.
+        </p>
+        {MismatchHint}
+      </div>
+    );
+  }
+
+  // Shared goal picker — filters out account-linked goals because the
+  // backend actions can't safely write to them (their `saved` is
+  // derived from account balance). The dropdown surfaces this so the
+  // user isn't puzzled by their linked goals being missing.
+  const manualGoals = goals.filter(g => !g.accountId);
+  const goalPicker = (
+    <>
+      <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Goal</label>
+      <select value={params.goalId || ""}
+        onChange={e => onPatch({ goalId: e.target.value })}
+        className={inputCls}>
+        <option value="">— Pick a goal —</option>
+        {manualGoals.map(g =>
+          <option key={g.id} value={g.id}>{g.name}</option>
+        )}
+      </select>
+      {manualGoals.length === 0 && (
+        <p className={`text-[10px] ${theme.textSubtle} mt-1`}>
+          No unlinked goals available. Create a goal without linking it to an
+          account (link-linked goals derive from balance and can't accept
+          automation contributions).
+        </p>
+      )}
+    </>
+  );
+
+  if (kind === "contribute_to_goal_pct") {
+    return (
+      <div className="space-y-1.5">
+        <div className="grid grid-cols-[1fr_100px] gap-1.5">
+          <div>{goalPicker}</div>
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>% of income</label>
+            <input type="number" step="0.1" min="0.1" max="100"
+              value={params.pct ?? 10}
+              onChange={e => onPatch({ pct: Math.max(0.1, Math.min(100, Number(e.target.value) || 10)) })}
+              className={`${inputCls} text-right`} />
+          </div>
+        </div>
+        <p className={`text-[10px] ${theme.textSubtle}`}>
+          Fires on every income transaction. Multiple % rules stack — order
+          them if you want a specific priority.
+        </p>
+        {MismatchHint}
+      </div>
+    );
+  }
+
+  if (kind === "sweep_to_goal") {
+    return (
+      <div className="space-y-1.5">
+        <div className="grid grid-cols-[1fr_100px] gap-1.5">
+          <div>{goalPicker}</div>
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Sweep $</label>
+            <input type="number" step="0.01" min="0.01"
+              value={params.amount ?? 100}
+              onChange={e => onPatch({ amount: e.target.value })}
+              className={`${inputCls} text-right`} />
+          </div>
+        </div>
+        <p className={`text-[10px] ${theme.textSubtle}`}>
+          Skipped if the incoming income is smaller than the sweep amount
+          (prevents dipping a small paycheck negative).
+        </p>
+        {MismatchHint}
+      </div>
+    );
+  }
+
+  if (kind === "round_up_to_goal") {
+    return (
+      <div className="space-y-1.5">
+        <div className="grid grid-cols-[1fr_100px] gap-1.5">
+          <div>{goalPicker}</div>
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Round to $</label>
+            <input type="number" step="0.25" min="0.25" max="100"
+              value={params.roundTo ?? 1}
+              onChange={e => onPatch({ roundTo: Math.max(0.25, Math.min(100, Number(e.target.value) || 1)) })}
+              className={`${inputCls} text-right`} />
+          </div>
+        </div>
+        <p className={`text-[10px] ${theme.textSubtle}`}>
+          Every expense on a non-credit account rounds up to the nearest ${" "}
+          {params.roundTo || 1}; the change goes to the goal. Transfers and
+          credit-card swipes are skipped.
+        </p>
+        {MismatchHint}
+      </div>
+    );
+  }
+
+  if (kind === "sweep_excess_income") {
+    return (
+      <div className="space-y-1.5">
+        <div className="grid grid-cols-[1fr_120px] gap-1.5">
+          <div>{goalPicker}</div>
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Cap $ (optional)</label>
+            <input type="number" step="0.01" min="0"
+              value={params.maxSweep ?? ""}
+              onChange={e => onPatch({ maxSweep: e.target.value })}
+              placeholder="No cap"
+              className={`${inputCls} text-right`} />
+          </div>
+        </div>
+        <p className={`text-[10px] ${theme.textSubtle}`}>
+          Fires at each period boundary. Excess = income received last period
+          − sum of category budget caps (including any rollover credit).
+          Only positive excess is swept.
         </p>
         {MismatchHint}
       </div>
@@ -4759,7 +4876,7 @@ const FIELD_LABELS = {
 };
 
 function AutomationsPanel({ theme, darkMode, toast }) {
-  const { budgets, categories, accounts } = useData();
+  const { budgets, categories, accounts, goals } = useData();
   const [subpage, setSubpage] = useState("rules");
   const [rules, setRules] = useState([]);
   const [history, setHistory] = useState([]);
@@ -5005,6 +5122,7 @@ function AutomationsPanel({ theme, darkMode, toast }) {
         catList={catList}
         accounts={accounts}
         budgets={budgets}
+        goals={goals}
         theme={theme} darkMode={darkMode}
         onSave={saveRule}
       />
@@ -5040,6 +5158,12 @@ const ACTION_META = {
     description: "Notify when a budget is being spent faster than the period is elapsing.",
     defaults: () => ({ budgetId: "", warnPct: 80, timeElapsedThresholdPct: 50 }),
     preferredTrigger: "daily_check",
+  },
+  contribute_to_goal_pct: {
+    label: "Contribute % of income to a goal",
+    description: "Push a percentage of every incoming paycheck into a savings goal.",
+    defaults: () => ({ goalId: "", pct: 10 }),
+    preferredTrigger: "income_landed",
   },
   flag_duplicate: {
     label: "Flag possible duplicate",
@@ -5092,6 +5216,12 @@ const ACTION_META = {
     defaults: () => ({ budgetId: "", maxRollover: "" }),
     preferredTrigger: "period_rolled_over",
   },
+  round_up_to_goal: {
+    label: "Round-up to a goal",
+    description: "Round every expense up to the nearest dollar (or roundTo) and send the change to a goal.",
+    defaults: () => ({ goalId: "", roundTo: 1 }),
+    preferredTrigger: "transaction_arrived",
+  },
   seasonal_bump: {
     label: "Seasonal budget bump",
     description: "When a specific month starts, add extra to a budget for that period.",
@@ -5110,10 +5240,22 @@ const ACTION_META = {
     defaults: () => ({ splits: [{ category: "", amount: "", note: "" }] }),
     preferredTrigger: "transaction_arrived",
   },
+  sweep_excess_income: {
+    label: "Sweep excess income to a goal",
+    description: "At period end, send (income − budgeted) to a goal, up to an optional cap.",
+    defaults: () => ({ goalId: "", maxSweep: "" }),
+    preferredTrigger: "period_rolled_over",
+  },
+  sweep_to_goal: {
+    label: "Sweep fixed $ from paycheck",
+    description: "Send a fixed dollar amount to a goal after every income transaction.",
+    defaults: () => ({ goalId: "", amount: 100 }),
+    preferredTrigger: "income_landed",
+  },
 };
 
 // Rule builder — trigger picker + conditions + actions.
-function RuleBuilderSheet({ open, onClose, rule, vocab, catList = [], accounts = [], budgets = [], theme, darkMode, onSave }) {
+function RuleBuilderSheet({ open, onClose, rule, vocab, catList = [], accounts = [], budgets = [], goals = [], theme, darkMode, onSave }) {
   const emptyRule = () => ({
     name: "",
     triggerType: "transaction_arrived",
@@ -5273,6 +5415,7 @@ function RuleBuilderSheet({ open, onClose, rule, vocab, catList = [], accounts =
                       catList={catList}
                       accounts={accounts}
                       budgets={budgets}
+                      goals={goals}
                       currentTrigger={form.triggerType}
                       theme={theme} darkMode={darkMode}
                     />
