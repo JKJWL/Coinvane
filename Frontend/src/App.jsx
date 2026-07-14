@@ -2804,30 +2804,147 @@ function ScheduleSheet({ open, onClose, copyFrom, accounts, catList, theme, dark
   );
 }
 
+// ─── Action taxonomy ─────────────────────────────────────────────────────────
+// Groups the 22 actions into six navigable categories. The rule builder's
+// + Add action dropdown uses this table for its cascading menu (categories
+// on the left, actions on the right when a category is hovered/clicked)
+// and the "Recommended order" button uses ACTION_PRIORITY to sort rules
+// within their trigger group.
+//
+// Keep an action referenced in EXACTLY ONE category — a duplicate would
+// appear twice in the menu and the sort would use whichever category
+// listed it last.
+const ACTION_CATEGORIES = [
+  {
+    id: "hygiene",
+    label: "Transaction hygiene",
+    description: "Categorize, tag, or split incoming transactions.",
+    kinds: ["mark_as_transfer", "flag_duplicate", "set_category", "add_note", "split_txn"],
+  },
+  {
+    id: "alerts",
+    label: "Alerts",
+    description: "Notify when something crosses a threshold.",
+    kinds: [
+      "notify_low_balance", "notify_cc_utilization",
+      "notify_scheduled_miss", "notify_unusually_large_txn",
+      "burn_rate_alarm",
+    ],
+  },
+  {
+    id: "budget",
+    label: "Budget adjustments",
+    description: "Shift or roll over budget caps between periods.",
+    kinds: ["rollover_unused_budget", "seasonal_bump", "move_budget_slack"],
+  },
+  {
+    id: "savings",
+    label: "Savings & goals",
+    description: "Contribute or sweep money into a goal.",
+    kinds: ["contribute_to_goal_pct", "sweep_to_goal", "round_up_to_goal", "sweep_excess_income"],
+  },
+  {
+    id: "paystub",
+    label: "Paystub & recurring",
+    description: "Layer paystub detail or propose scheduled rows.",
+    kinds: ["apply_paystub_template", "propose_recurring_schedule"],
+  },
+  {
+    id: "housekeeping",
+    label: "Housekeeping",
+    description: "Retention cleanup + summary reports.",
+    kinds: [
+      "archive_completed_goals", "cleanup_old_notifications",
+      "monthly_summary_notification",
+    ],
+  },
+];
+
+// Lower priority runs FIRST in the Recommended-order sort. The idea:
+//   - Detection / classification runs before mutation
+//   - Content enrichment before content creation
+//   - Alerts fire after the row's state has settled
+//   - Money movement (goals / budgets) is late — depends on final amount
+//   - Housekeeping is last (retention / summaries)
+// Any kind not listed defaults to 500 (middle of the pack).
+const ACTION_PRIORITY = {
+  flag_duplicate:               10,
+  mark_as_transfer:             20,
+  set_category:                 30,
+  apply_paystub_template:       40,
+  add_note:                     50,
+  split_txn:                    60,
+  notify_unusually_large_txn:  100,
+  notify_low_balance:          110,
+  notify_cc_utilization:       120,
+  notify_scheduled_miss:       130,
+  burn_rate_alarm:             140,
+  contribute_to_goal_pct:      200,
+  sweep_to_goal:               210,
+  round_up_to_goal:            220,
+  sweep_excess_income:         230,
+  rollover_unused_budget:      300,
+  seasonal_bump:               310,
+  move_budget_slack:           320,
+  propose_recurring_schedule:  400,
+  monthly_summary_notification:800,
+  archive_completed_goals:     900,
+  cleanup_old_notifications:   910,
+};
+
+// Trigger sort order for Recommended-order. Rules with the same trigger
+// stay together (their internal order matters); triggers are laid out
+// most-frequent → least-frequent so hot-path rules run first when the
+// user scans the list.
+const TRIGGER_PRIORITY = {
+  transaction_arrived: 10,
+  income_landed:       20,
+  balance_changed:     30,
+  daily_check:         40,
+  period_rolled_over:  50,
+};
+
 // ─── Action add menu ─────────────────────────────────────────────────────────
-// "+ Add action" dropdown for the rule builder. Lists every action kind
-// the server currently supports (from /vocab.actions) with a friendly
-// label pulled from ACTION_META. Clicking picks one and closes.
+// Cascading menu:
+//   [category list] → hover/click → [actions in that category]
+// The whole thing is portaled to document.body with fixed positioning so
+// the sheet's scroll container doesn't clip it (same trick the native
+// <select> in Add Transaction uses). Only categories with at least one
+// available action are rendered.
 function ActionAddMenu({ available, onPick, theme, darkMode }) {
   const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState(null); // { top, right } in viewport coords
+  const [pos, setPos] = useState(null); // { top, left } in viewport coords
+  const [activeCat, setActiveCat] = useState(null);
   const btnRef = useRef(null);
   const menuRef = useRef(null);
 
-  // Recompute anchor position whenever the menu opens. Uses fixed
-  // positioning + a body portal so the dropdown ESCAPES the Sheet's
-  // scroll/overflow context — same as how a native <select> works. Fixes
-  // the "dropdown gets clipped inside the sheet" glitch that made the
-  // Actions menu feel cramped compared to Add Transaction's category
-  // <select>.
+  // Only categories with at least one server-recognized action show up.
+  // If a stage's actions haven't rolled out to the connected backend
+  // yet, that category is silently omitted.
+  const availableSet = useMemo(() => new Set(available || []), [available]);
+  const visibleCategories = useMemo(() =>
+    ACTION_CATEGORIES
+      .map(cat => ({ ...cat, kinds: cat.kinds.filter(k => availableSet.has(k)) }))
+      .filter(cat => cat.kinds.length > 0),
+    [availableSet]
+  );
+
+  // Left-anchor so the submenu extends RIGHTWARD (classic cascading
+  // pattern). If the whole thing would overflow the viewport we clamp
+  // to a small right margin — desktop viewports have ample room past
+  // the sheet, so overflow is rare in practice.
   useEffect(() => {
     if (!open || !btnRef.current) return;
     const rect = btnRef.current.getBoundingClientRect();
-    setPos({
-      top: rect.bottom + 4,
-      right: Math.max(8, window.innerWidth - rect.right),
-    });
-  }, [open]);
+    // Assume main list ~208px + submenu ~272px + gap = ~480px total.
+    const APPROX_MENU_WIDTH = 500;
+    const left = Math.min(
+      rect.left,
+      Math.max(8, window.innerWidth - APPROX_MENU_WIDTH - 8)
+    );
+    setPos({ top: rect.bottom + 4, left });
+    setActiveCat(prev => prev || visibleCategories[0]?.id || null);
+  }, [open, visibleCategories]);
 
   // Click-outside: close when clicking anywhere that isn't the button
   // OR the portaled menu. Both refs must be checked because the menu
@@ -2851,6 +2968,9 @@ function ActionAddMenu({ available, onPick, theme, darkMode }) {
     );
   }
 
+  const activeCategory =
+    visibleCategories.find(c => c.id === activeCat) || visibleCategories[0];
+
   return (
     <>
       <button ref={btnRef} type="button" onClick={() => setOpen(o => !o)}
@@ -2859,30 +2979,57 @@ function ActionAddMenu({ available, onPick, theme, darkMode }) {
       </button>
       {open && pos && createPortal(
         <div ref={menuRef}
-          // z-index above Sheet (z-40) and its backdrop; max-height caps
-          // the dropdown so it stays "not too far down" and the menu
-          // itself becomes the scroll region.
           style={{
             position: "fixed",
             top: pos.top,
-            right: pos.right,
-            maxHeight: "min(24rem, 55vh)",
+            left: pos.left,
             zIndex: 90,
           }}
-          className={`w-64 ${theme.surface} border ${theme.border} rounded-xl shadow-xl overflow-y-auto`}>
-          {available.map(k => {
-            const meta = ACTION_META[k] || { label: k };
-            return (
-              <button key={k} type="button"
-                onClick={() => { onPick(k); setOpen(false); }}
-                className={`w-full text-left px-3 py-2 ${theme.hover} text-xs`}>
-                <div className="font-semibold">{meta.label}</div>
-                {meta.description && (
-                  <div className={`text-[10px] ${theme.textSubtle}`}>{meta.description}</div>
-                )}
-              </button>
-            );
-          })}
+          className="flex items-start">
+          {/* Categories column — main list */}
+          <div className={`w-52 ${theme.surface} border ${theme.border} rounded-l-xl shadow-xl`}
+            style={{ maxHeight: "min(24rem, 55vh)", overflowY: "auto" }}>
+            {visibleCategories.map(cat => {
+              const isActive = cat.id === activeCategory?.id;
+              return (
+                <button key={cat.id} type="button"
+                  onMouseEnter={() => setActiveCat(cat.id)}
+                  onClick={() => setActiveCat(cat.id)}
+                  className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between gap-2 transition-colors ${
+                    isActive
+                      ? (darkMode ? "bg-slate-800 text-emerald-400" : "bg-slate-100 text-emerald-600")
+                      : theme.hover
+                  }`}>
+                  <div className="min-w-0">
+                    <div className="font-semibold">{cat.label}</div>
+                    <div className={`text-[10px] ${theme.textSubtle} truncate`}>
+                      {cat.kinds.length} action{cat.kinds.length !== 1 ? "s" : ""}
+                    </div>
+                  </div>
+                  <ChevronRight className={`w-3.5 h-3.5 flex-shrink-0 ${isActive ? "text-emerald-500" : "opacity-40"}`} />
+                </button>
+              );
+            })}
+          </div>
+          {/* Actions column — child submenu for the active category */}
+          {activeCategory && (
+            <div className={`w-64 ${theme.surface} border-t border-r border-b ${theme.border} rounded-r-xl shadow-xl -ml-px`}
+              style={{ maxHeight: "min(24rem, 55vh)", overflowY: "auto" }}>
+              {activeCategory.kinds.map(k => {
+                const meta = ACTION_META[k] || { label: k };
+                return (
+                  <button key={k} type="button"
+                    onClick={() => { onPick(k); setOpen(false); }}
+                    className={`w-full text-left px-3 py-2 ${theme.hover} text-xs`}>
+                    <div className="font-semibold">{meta.label}</div>
+                    {meta.description && (
+                      <div className={`text-[10px] ${theme.textSubtle}`}>{meta.description}</div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>,
         document.body
       )}
@@ -5059,6 +5206,41 @@ function AutomationsPanel({ theme, darkMode, toast }) {
     } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
   };
 
+  // Sort rules by:
+  //   1. TRIGGER_PRIORITY (transaction_arrived first, period_rolled_over last)
+  //   2. Priority of the rule's FIRST action (detection → mutation → alerts
+  //      → money movement → housekeeping) — see ACTION_PRIORITY
+  //   3. Rule name alphabetical for stable tie-breaking
+  // Rules with no actions fall to the bottom of their trigger group so
+  // the user notices and either adds actions or deletes them.
+  const applyRecommendedOrder = async () => {
+    const sorted = [...rules].sort((a, b) => {
+      const trigA = TRIGGER_PRIORITY[a.triggerType] ?? 999;
+      const trigB = TRIGGER_PRIORITY[b.triggerType] ?? 999;
+      if (trigA !== trigB) return trigA - trigB;
+      const actA = a.actions?.[0]?.kind
+        ? (ACTION_PRIORITY[a.actions[0].kind] ?? 500)
+        : 999;
+      const actB = b.actions?.[0]?.kind
+        ? (ACTION_PRIORITY[b.actions[0].kind] ?? 500)
+        : 999;
+      if (actA !== actB) return actA - actB;
+      return String(a.name).localeCompare(String(b.name));
+    });
+    // Bail if nothing would change — user hits the button, gets a toast,
+    // moves on. No API call.
+    const same = sorted.every((r, i) => r.id === rules[i].id);
+    if (same) {
+      toast?.("Rules are already in the recommended order", "success");
+      return;
+    }
+    try {
+      await api.reorderAutomations(sorted.map(r => r.id));
+      toast?.("Rules re-sorted by recommended order", "success");
+      load();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+
   return (
     <div className="space-y-4">
       {/* Subpage pill */}
@@ -5081,7 +5263,7 @@ function AutomationsPanel({ theme, darkMode, toast }) {
 
       {subpage === "rules" ? (
         <div className="space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
             <p className={`text-sm ${theme.textSubtle}`}>
               {rules.length} rule{rules.length !== 1 ? "s" : ""}
               {!desktop && rules.length === 0 && (
@@ -5089,11 +5271,22 @@ function AutomationsPanel({ theme, darkMode, toast }) {
               )}
             </p>
             {desktop && (
-              <motion.button whileTap={{ scale: 0.95 }}
-                onClick={() => setEditing("new")}
-                className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-1.5 shadow-sm shadow-emerald-500/30">
-                <Plus className="w-4 h-4" /> New Rule
-              </motion.button>
+              <div className="flex items-center gap-2">
+                {rules.length > 1 && (
+                  <button type="button"
+                    onClick={applyRecommendedOrder}
+                    title="Sort rules by recommended execution order (detection → mutation → alerts → money movement → housekeeping)"
+                    className={`text-xs font-semibold px-3 py-2 rounded-xl border ${theme.border} ${theme.surface} ${theme.hover} flex items-center gap-1.5`}>
+                    <Sparkles className="w-3.5 h-3.5" />
+                    Recommended order
+                  </button>
+                )}
+                <motion.button whileTap={{ scale: 0.95 }}
+                  onClick={() => setEditing("new")}
+                  className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-1.5 shadow-sm shadow-emerald-500/30">
+                  <Plus className="w-4 h-4" /> New Rule
+                </motion.button>
+              </div>
             )}
           </div>
           {rules.length === 0 ? (
