@@ -2814,7 +2814,7 @@ function ActionAddMenu({ available, onPick, theme, darkMode }) {
 // Per-action UI. Each case renders whatever inputs that action's params
 // need. Unknown kinds render a raw JSON textarea as a safety net so a
 // future stage's action still works if the deploy is ahead of the client.
-function ActionParamsEditor({ kind, params, onPatch, catList = [], accounts = [], currentTrigger, theme, darkMode }) {
+function ActionParamsEditor({ kind, params, onPatch, catList = [], accounts = [], budgets = [], currentTrigger, theme, darkMode }) {
   const inputCls = `w-full px-2.5 py-1.5 ${theme.inputBg} border ${theme.border} rounded-lg text-xs focus:outline-none focus:border-emerald-500`;
 
   // Trigger-mismatch hint — nudge the user if their rule's trigger
@@ -3027,6 +3027,192 @@ function ActionParamsEditor({ kind, params, onPatch, catList = [], accounts = []
         </div>
         <p className={`text-[10px] ${theme.textSubtle}`}>
           Needs at least 3 prior transactions at the same merchant to run — the median is meaningless below that.
+        </p>
+        {MismatchHint}
+      </div>
+    );
+  }
+
+  // Shared: a budget picker. Excludes card-usage budgets (accountId
+  // set) since those aren't category budgets and rollover doesn't
+  // apply the same way. "All budgets" is offered only where the
+  // action supports scope=all (rollover_unused_budget, burn_rate_alarm).
+  const budgetOptions = budgets.filter(b => !b.accountId);
+  const budgetLabel = (b) => b.category;
+
+  if (kind === "rollover_unused_budget") {
+    return (
+      <div className="space-y-1.5">
+        <div className="grid grid-cols-2 gap-1.5">
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Budget</label>
+            <select value={params.budgetId || ""}
+              onChange={e => onPatch({ budgetId: e.target.value })}
+              className={inputCls}>
+              <option value="">All category budgets</option>
+              {budgetOptions.map(b =>
+                <option key={b.id} value={b.id}>{budgetLabel(b)}</option>
+              )}
+            </select>
+          </div>
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Max rollover ($, optional)</label>
+            <input type="number" step="0.01" min="0"
+              value={params.maxRollover ?? ""}
+              onChange={e => onPatch({ maxRollover: e.target.value })}
+              placeholder="No cap" className={`${inputCls} text-right`} />
+          </div>
+        </div>
+        <p className={`text-[10px] ${theme.textSubtle}`}>
+          Fires at the end of every master period. Unused amount carries
+          into the next period (up to Max, if set). Sets rollover credit
+          each time — leftover shrinks naturally when the credit is spent.
+        </p>
+        {MismatchHint}
+      </div>
+    );
+  }
+
+  if (kind === "seasonal_bump") {
+    const MONTHS = [
+      "January","February","March","April","May","June",
+      "July","August","September","October","November","December",
+    ];
+    return (
+      <div className="space-y-1.5">
+        <div className="grid grid-cols-3 gap-1.5">
+          <div className="col-span-2">
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Budget</label>
+            <select value={params.budgetId || ""}
+              onChange={e => onPatch({ budgetId: e.target.value })}
+              className={inputCls}>
+              <option value="">— Pick a budget —</option>
+              {budgetOptions.map(b =>
+                <option key={b.id} value={b.id}>{budgetLabel(b)}</option>
+              )}
+            </select>
+          </div>
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Month</label>
+            <select value={params.monthNumber ?? 12}
+              onChange={e => onPatch({ monthNumber: Number(e.target.value) })}
+              className={inputCls}>
+              {MONTHS.map((m, i) =>
+                <option key={i} value={i + 1}>{m}</option>
+              )}
+            </select>
+          </div>
+        </div>
+        <div>
+          <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Bump amount ($)</label>
+          <input type="number" step="0.01" min="0"
+            value={params.bumpAmount ?? ""}
+            onChange={e => onPatch({ bumpAmount: e.target.value })}
+            placeholder="0.00"
+            className={`${inputCls} text-right`} />
+        </div>
+        <p className={`text-[10px] ${theme.textSubtle}`}>
+          Fires at every period boundary but only applies when the new
+          period starts in the selected month. Adds to whatever rollover
+          credit is already there.
+        </p>
+        {MismatchHint}
+      </div>
+    );
+  }
+
+  if (kind === "burn_rate_alarm") {
+    return (
+      <div className="space-y-1.5">
+        <div>
+          <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Budget</label>
+          <select value={params.budgetId || ""}
+            onChange={e => onPatch({ budgetId: e.target.value })}
+            className={inputCls}>
+            <option value="">All category budgets</option>
+            {budgetOptions.map(b =>
+              <option key={b.id} value={b.id}>{budgetLabel(b)}</option>
+            )}
+          </select>
+        </div>
+        <div className="grid grid-cols-2 gap-1.5">
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Warn at spent %</label>
+            <input type="number" step="1" min="1" max="100"
+              value={params.warnPct ?? 80}
+              onChange={e => onPatch({ warnPct: Math.max(1, Math.min(100, Number(e.target.value) || 80)) })}
+              className={`${inputCls} text-right`} />
+          </div>
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Only after elapsed %</label>
+            <input type="number" step="1" min="1" max="100"
+              value={params.timeElapsedThresholdPct ?? 50}
+              onChange={e => onPatch({ timeElapsedThresholdPct: Math.max(1, Math.min(100, Number(e.target.value) || 50)) })}
+              className={`${inputCls} text-right`} />
+          </div>
+        </div>
+        <p className={`text-[10px] ${theme.textSubtle}`}>
+          Only fires when BOTH thresholds are crossed — e.g. 80% spent
+          with only 50% of the period elapsed. Prevents nagging on a
+          budget that legitimately runs out at the end.
+        </p>
+        {MismatchHint}
+      </div>
+    );
+  }
+
+  if (kind === "move_budget_slack") {
+    return (
+      <div className="space-y-1.5">
+        <div className="grid grid-cols-2 gap-1.5">
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>From (source)</label>
+            <select value={params.sourceBudgetId || ""}
+              onChange={e => onPatch({ sourceBudgetId: e.target.value })}
+              className={inputCls}>
+              <option value="">— Source budget —</option>
+              {budgetOptions.map(b =>
+                <option key={b.id} value={b.id}>{budgetLabel(b)}</option>
+              )}
+            </select>
+          </div>
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>To (target)</label>
+            <select value={params.targetBudgetId || ""}
+              onChange={e => onPatch({ targetBudgetId: e.target.value })}
+              className={inputCls}>
+              <option value="">— Target budget —</option>
+              {budgetOptions.map(b =>
+                <option key={b.id} value={b.id}>{budgetLabel(b)}</option>
+              )}
+            </select>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-1.5">
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Amount to move ($)</label>
+            <input type="number" step="0.01" min="0"
+              value={params.amount ?? 50}
+              onChange={e => onPatch({ amount: e.target.value })}
+              className={`${inputCls} text-right`} />
+          </div>
+          <div>
+            <label className={`text-[10px] ${theme.textSubtle} block mb-1`}>Source under %</label>
+            <input type="number" step="1" min="1" max="100"
+              value={params.sourceMaxUsedPct ?? 40}
+              onChange={e => onPatch({ sourceMaxUsedPct: Math.max(1, Math.min(100, Number(e.target.value) || 40)) })}
+              className={`${inputCls} text-right`} />
+          </div>
+        </div>
+        <label className="flex items-center gap-1.5 text-[11px]">
+          <input type="checkbox"
+            checked={params.requireTargetOver !== false}
+            onChange={e => onPatch({ requireTargetOver: e.target.checked })} />
+          <span className={theme.textSubtle}>Only move when target is already over cap</span>
+        </label>
+        <p className={`text-[10px] ${theme.textSubtle}`}>
+          Runs at most once per period per rule. Clamps to whatever slack the
+          source actually has — never puts source below zero.
         </p>
         {MismatchHint}
       </div>
@@ -3351,7 +3537,15 @@ function BudgetHistoryDropdown({ theme, darkMode, history, open, onOpen, onClose
 // ── Single budget card (used inside Reorder.Item) ──────────────────────────
 function BudgetCard({ b, theme, darkMode, onEdit, onDelete, reorderLocked,
                      expanded, transactions, onToggleExpand, readOnly = false }) {
-  const pct = Math.min(100, (Number(b.spent) / Number(b.amount)) * 100);
+  // Effective cap folds in any rollover_credit set by an automation rule
+  // (rollover_unused_budget, seasonal_bump, move_budget_slack). Falls
+  // back to `amount` for older server responses that don't send it, and
+  // for historical snapshots (history view doesn't track rollover).
+  const rolloverCredit = Number(b.rolloverCredit) || 0;
+  const effectiveCap = Number(b.effectiveAmount)
+    || Number(b.amount) + rolloverCredit
+    || Number(b.amount);
+  const pct = Math.min(100, (Number(b.spent) / effectiveCap) * 100);
   const over = pct >= 100;
   const isCardBudget = !!b.accountId;
   const displayName = isCardBudget ? (b.accountName || "Credit Card") : b.category;
@@ -3402,13 +3596,26 @@ function BudgetCard({ b, theme, darkMode, onEdit, onDelete, reorderLocked,
         </div>
         <div className={`flex justify-between text-sm mb-2 ${theme.textMuted}`}>
           <span>{fmt(b.spent)}</span>
-          <span className="font-medium">{fmt(b.amount)}</span>
+          <span className="font-medium">
+            {fmt(effectiveCap)}
+            {Math.abs(rolloverCredit) >= 0.01 && (
+              <span className={`ml-1 text-[10px] font-semibold uppercase tracking-wider ${
+                rolloverCredit > 0
+                  ? (darkMode ? "text-indigo-400" : "text-indigo-600")
+                  : (darkMode ? "text-rose-400" : "text-rose-600")
+              }`} title={rolloverCredit > 0
+                ? `+${fmt(rolloverCredit)} added by an automation rule this period`
+                : `${fmt(rolloverCredit)} shifted out by an automation rule`}>
+                {rolloverCredit > 0 ? "+" : ""}{fmt(rolloverCredit)}
+              </span>
+            )}
+          </span>
         </div>
         <ProgressBar value={pct} color={over ? "bg-rose-500" : pct > 80 ? "bg-amber-500" : "bg-emerald-500"} darkMode={darkMode} />
         <div className="flex items-center justify-between mt-1.5">
           {over
-            ? <div className="text-xs text-rose-500 font-medium">Over by {fmt(Number(b.spent) - Number(b.amount))}</div>
-            : <div className={`text-xs ${theme.textSubtle}`}>{fmt(Number(b.amount) - Number(b.spent))} left</div>
+            ? <div className="text-xs text-rose-500 font-medium">Over by {fmt(Number(b.spent) - effectiveCap)}</div>
+            : <div className={`text-xs ${theme.textSubtle}`}>{fmt(effectiveCap - Number(b.spent))} left</div>
           }
           {/* Show-transactions toggle */}
           <button {...stopDrag} onClick={onToggleExpand}
@@ -4757,6 +4964,7 @@ function AutomationsPanel({ theme, darkMode, toast }) {
         vocab={vocab}
         catList={catList}
         accounts={accounts}
+        budgets={budgets}
         theme={theme} darkMode={darkMode}
         onSave={saveRule}
       />
@@ -4787,6 +4995,12 @@ const ACTION_META = {
     defaults: () => ({ note: "", mode: "overwrite" }),
     preferredTrigger: "transaction_arrived",
   },
+  burn_rate_alarm: {
+    label: "Alert on budget burn rate",
+    description: "Notify when a budget is being spent faster than the period is elapsing.",
+    defaults: () => ({ budgetId: "", warnPct: 80, timeElapsedThresholdPct: 50 }),
+    preferredTrigger: "daily_check",
+  },
   flag_duplicate: {
     label: "Flag possible duplicate",
     description: "Drop an in-app notification if another same-amount txn is nearby in time.",
@@ -4798,6 +5012,15 @@ const ACTION_META = {
     description: "Flag the row so it's excluded from income + budget totals.",
     defaults: () => ({}),
     preferredTrigger: "transaction_arrived",
+  },
+  move_budget_slack: {
+    label: "Move budget slack",
+    description: "Shift unused budget from one category into another that's over.",
+    defaults: () => ({
+      sourceBudgetId: "", targetBudgetId: "",
+      amount: 50, sourceMaxUsedPct: 40, requireTargetOver: true,
+    }),
+    preferredTrigger: "daily_check",
   },
   notify_cc_utilization: {
     label: "Alert on credit-card utilization",
@@ -4823,6 +5046,18 @@ const ACTION_META = {
     defaults: () => ({ multiplier: 3, lookbackDays: 90 }),
     preferredTrigger: "transaction_arrived",
   },
+  rollover_unused_budget: {
+    label: "Roll over unused budget",
+    description: "When a period ends, carry leftover budget into the next period (capped optional).",
+    defaults: () => ({ budgetId: "", maxRollover: "" }),
+    preferredTrigger: "period_rolled_over",
+  },
+  seasonal_bump: {
+    label: "Seasonal budget bump",
+    description: "When a specific month starts, add extra to a budget for that period.",
+    defaults: () => ({ budgetId: "", monthNumber: 12, bumpAmount: 100 }),
+    preferredTrigger: "period_rolled_over",
+  },
   set_category: {
     label: "Set category",
     description: "Override the category on matching rows. Fires AFTER merchant rules.",
@@ -4838,7 +5073,7 @@ const ACTION_META = {
 };
 
 // Rule builder — trigger picker + conditions + actions.
-function RuleBuilderSheet({ open, onClose, rule, vocab, catList = [], accounts = [], theme, darkMode, onSave }) {
+function RuleBuilderSheet({ open, onClose, rule, vocab, catList = [], accounts = [], budgets = [], theme, darkMode, onSave }) {
   const emptyRule = () => ({
     name: "",
     triggerType: "transaction_arrived",
@@ -4997,6 +5232,7 @@ function RuleBuilderSheet({ open, onClose, rule, vocab, catList = [], accounts =
                       onPatch={patch => patchActionParams(i, patch)}
                       catList={catList}
                       accounts={accounts}
+                      budgets={budgets}
                       currentTrigger={form.triggerType}
                       theme={theme} darkMode={darkMode}
                     />

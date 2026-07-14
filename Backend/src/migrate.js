@@ -386,6 +386,25 @@ const SCHEMA = [
   // Surfaced as a red "Error" pill on the txn with a tooltip pointing
   // the user at Automation history.
   `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS has_automation_error BOOLEAN DEFAULT FALSE`,
+
+  // ── Automations Stage 4: budget rules ───────────────────────────
+  // rollover_credit is a one-time per-period adjustment on top of the
+  // budget's standing amount. Effective cap = amount + rollover_credit.
+  //   - rollover_unused_budget action SETS this at period boundary
+  //   - seasonal_bump action ADDS to it if the current period's month
+  //     matches
+  //   - move_budget_slack action shifts it between two budgets
+  // Kept simple on purpose: no per-period ledger of what changed, no
+  // audit table beyond automation_history. If a rule stops firing, the
+  // credit just... freezes at its last value until another rule touches
+  // it or the user edits the budget.
+  `ALTER TABLE budgets ADD COLUMN IF NOT EXISTS rollover_credit DECIMAL(14,2) DEFAULT 0`,
+
+  // Per-user "last master-period start we processed" — the daily cron
+  // uses this to fire period_rolled_over EXACTLY ONCE per boundary
+  // (rather than once per cron tick). Nullable so brand-new users
+  // don't trigger a bogus rollover on their first cron run.
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS last_budget_period_processed DATE NULL`,
 ];
 
 const DEFAULT_CATEGORIES = [

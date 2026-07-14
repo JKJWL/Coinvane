@@ -9,6 +9,7 @@ import { generateNotifications } from "./notification-engine.js";
 import { syncQueue } from "./queue.js";
 import { getSyncIntervalMinutes } from "./app-settings.js";
 import { runRulesForTrigger } from "./automation-engine.js";
+import { getMasterPeriod, getPastPeriods, isoDate } from "./budget-utils.js";
 // Register every automation action with the engine so sync-time
 // runRulesForTrigger() calls in sync.js can dispatch.
 import "./automation-actions.js";
@@ -108,6 +109,58 @@ new Worker("sync", async (job) => {
       // actions scan the DB themselves.
       try { await runRulesForTrigger(u.id, "daily_check", {}); }
       catch (e) { console.error(`daily automations failed for user ${u.id}:`, e.message); }
+
+      // Period-rollover detection. Fire period_rolled_over EXACTLY ONCE
+      // per master-period boundary per user, no matter how often this
+      // cron runs (also survives worker restarts). We compare the current
+      // master-period start to the last one we recorded on the user row:
+      //   - equal → nothing crossed, skip
+      //   - null  → first-ever run, just seed without firing (avoids a
+      //             bogus rollover on brand-new users)
+      //   - differ→ a boundary was crossed; fire, then stamp the new
+      //             start on the user row
+      // Context payload gives rules access to previous + current period
+      // bounds so rollover_unused_budget can compute leftover for the
+      // period that just ended.
+      try {
+        const master = await getMasterPeriod(u.id);
+        const currentStart = master.startStr;
+        const usr = await queryOne(
+          "SELECT last_budget_period_processed FROM users WHERE id = ?",
+          [u.id]
+        );
+        const last = usr?.last_budget_period_processed
+          ? (usr.last_budget_period_processed instanceof Date
+              ? isoDate(usr.last_budget_period_processed)
+              : String(usr.last_budget_period_processed).slice(0, 10))
+          : null;
+        if (last === null) {
+          await query(
+            "UPDATE users SET last_budget_period_processed = ? WHERE id = ?",
+            [currentStart, u.id]
+          );
+        } else if (last !== currentStart) {
+          // Determine the previous period bounds by asking the master-period
+          // helper for the last 2 periods and grabbing the earlier one.
+          const past = getPastPeriods(
+            master.period, master.periodStart, master.periodDays,
+            2, undefined, master.weekStart
+          );
+          const prev = past[past.length - 2] || past[0]; // fallback safe
+          await runRulesForTrigger(u.id, "period_rolled_over", {
+            previousPeriodStart: isoDate(prev.start),
+            previousPeriodEnd:   isoDate(prev.end),
+            currentPeriodStart:  currentStart,
+            currentPeriodEnd:    master.endStr,
+          });
+          await query(
+            "UPDATE users SET last_budget_period_processed = ? WHERE id = ?",
+            [currentStart, u.id]
+          );
+        }
+      } catch (e) {
+        console.error(`period_rolled_over failed for user ${u.id}:`, e.message);
+      }
     }
     return { ok: true };
   }

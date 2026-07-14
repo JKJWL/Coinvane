@@ -169,7 +169,11 @@ export async function runRulesForTrigger(userId, triggerType, context = {}) {
         continue;
       }
       try {
-        const res = await handler(action, context, userId);
+        // Actions can key on rule identity for per-rule per-period
+        // dedup (e.g. move_budget_slack only wants to fire once per
+        // budget period per rule). Add non-enumerable-ish _rule so
+        // it doesn't clash with any field extractor names.
+        const res = await handler(action, { ...context, _rule: rule }, userId);
         await logHistory(userId, rule, {
           status: res?.status || "success",
           summary: res?.summary || `${action.kind} ran`,

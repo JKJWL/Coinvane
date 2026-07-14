@@ -25,6 +25,10 @@
 
 import { registerAction } from "./automation-engine.js";
 import { query, queryOne } from "./db.js";
+import {
+  getMasterPeriod,
+  spentForBudgetInWindow,
+} from "./budget-utils.js";
 
 // ─── mark_as_transfer ────────────────────────────────────────────────
 // No params. Sets is_transfer=1 on the current transaction. Idempotent.
@@ -379,16 +383,254 @@ registerAction("notify_unusually_large_txn", async (action, context, userId) => 
   return { status: "success", summary: `Flagged: ${(current / median).toFixed(1)}× median` };
 });
 
+// ═══ Stage 4: budget rules ═══════════════════════════════════════════
+//
+// All four actions manipulate budgets.rollover_credit — a per-period
+// adjustment layered on top of the budget's standing amount. The
+// EFFECTIVE cap presented to the user (and used everywhere spending is
+// compared) is amount + rollover_credit. See migrate.js comment for
+// the model rationale.
+//
+// Nothing in this stage auto-resets rollover_credit — if a user only
+// uses seasonal_bump without rollover_unused_budget, credits stack
+// forever, which is legitimate ("December is always +$300 for
+// groceries"). Users who want reset semantics add
+// rollover_unused_budget with the appropriate maxRollover.
+
+// Fetch budgets for an action, honoring an optional single-budget scope.
+async function fetchScopedBudgets(userId, budgetId) {
+  return budgetId
+    ? await query(
+        `SELECT id, category, amount, rollover_credit, account_id
+         FROM budgets WHERE id = ? AND user_id = ?`,
+        [budgetId, userId]
+      )
+    : await query(
+        `SELECT id, category, amount, rollover_credit, account_id
+         FROM budgets WHERE user_id = ?`,
+        [userId]
+      );
+}
+
+// ─── rollover_unused_budget ─────────────────────────────────────────
+// Fires on period_rolled_over. For each in-scope budget, computes
+// leftover for the period that just ended and SETS rollover_credit to
+// that value (clamped to [0, maxRollover]). "Sets" not "adds" because
+// on subsequent periods where nothing was left over we still want the
+// old credit to drop.
+registerAction("rollover_unused_budget", async (action, context, userId) => {
+  const budgetId = action?.params?.budgetId ? Number(action.params.budgetId) : null;
+  const maxRollover = Number.isFinite(Number(action?.params?.maxRollover))
+    && Number(action.params.maxRollover) > 0
+      ? Number(action.params.maxRollover)
+      : Number.POSITIVE_INFINITY;
+  const prevStart = context?.previousPeriodStart;
+  const prevEnd   = context?.previousPeriodEnd;
+  if (!prevStart || !prevEnd) {
+    return { status: "skipped", summary: "No previous period bounds in context" };
+  }
+  const budgets = await fetchScopedBudgets(userId, budgetId);
+  if (budgets.length === 0) return { status: "skipped", summary: "No budgets in scope" };
+  let updated = 0;
+  for (const b of budgets) {
+    const spent = await spentForBudgetInWindow(userId, b, prevStart, prevEnd);
+    const effectiveCap = Number(b.amount) + Number(b.rollover_credit);
+    const leftover = effectiveCap - spent;
+    const newCredit = Math.max(0, Math.min(leftover, maxRollover));
+    if (Math.abs(newCredit - Number(b.rollover_credit)) < 0.01) continue;
+    await query(
+      "UPDATE budgets SET rollover_credit = ? WHERE id = ? AND user_id = ?",
+      [Number(newCredit.toFixed(2)), b.id, userId]
+    );
+    updated++;
+  }
+  return {
+    status: "success",
+    summary: updated === 0
+      ? "No budgets needed a rollover change"
+      : `Rolled over on ${updated} budget${updated !== 1 ? "s" : ""}`,
+  };
+});
+
+// ─── seasonal_bump ──────────────────────────────────────────────────
+// Fires on period_rolled_over. If the new period's START MONTH matches
+// `monthNumber` (1-12), ADD `bumpAmount` to the target budget's
+// rollover_credit. Runs at most once per period boundary per rule
+// (period_rolled_over itself only fires once per boundary).
+registerAction("seasonal_bump", async (action, context, userId) => {
+  const budgetId    = Number(action?.params?.budgetId);
+  const monthNumber = Number(action?.params?.monthNumber);
+  const bumpAmount  = Number(action?.params?.bumpAmount);
+  if (!budgetId || !monthNumber || !Number.isFinite(bumpAmount) || bumpAmount <= 0) {
+    return { status: "skipped", summary: "Missing or invalid params" };
+  }
+  const currentStart = context?.currentPeriodStart;
+  if (!currentStart) return { status: "skipped", summary: "No current period bounds in context" };
+  const currentMonth = Number(String(currentStart).slice(5, 7));
+  if (currentMonth !== monthNumber) {
+    return { status: "skipped", summary: `Not month ${monthNumber} (current is ${currentMonth})` };
+  }
+  const owned = await queryOne(
+    "SELECT id, category, rollover_credit FROM budgets WHERE id = ? AND user_id = ?",
+    [budgetId, userId]
+  );
+  if (!owned) return { status: "skipped", summary: "Target budget not found" };
+  await query(
+    "UPDATE budgets SET rollover_credit = rollover_credit + ? WHERE id = ? AND user_id = ?",
+    [bumpAmount, budgetId, userId]
+  );
+  return {
+    status: "success",
+    summary: `Bumped "${owned.category}" by $${bumpAmount.toFixed(2)} for month ${monthNumber}`,
+    budgetId,
+  };
+});
+
+// ─── burn_rate_alarm ────────────────────────────────────────────────
+// Fires on daily_check. When (elapsed% of period) >= timeElapsedThresholdPct
+// AND (spent% of effective cap) >= warnPct, drops a notification.
+// Dedup key includes the period start so a fresh period gets a fresh
+// alert (rather than the previous period's suppressing it).
+registerAction("burn_rate_alarm", async (action, _context, userId) => {
+  const budgetId = action?.params?.budgetId ? Number(action.params.budgetId) : null;
+  const warnPct = Math.max(1, Math.min(100, Number(action?.params?.warnPct) || 80));
+  const timeElapsedThresholdPct =
+    Math.max(1, Math.min(100, Number(action?.params?.timeElapsedThresholdPct) || 50));
+
+  const master = await getMasterPeriod(userId);
+  const totalMs = master.end - master.start;
+  const elapsedMs = Math.max(0, Date.now() - master.start);
+  const elapsedPct = totalMs > 0 ? (elapsedMs / totalMs) * 100 : 100;
+  if (elapsedPct < timeElapsedThresholdPct) {
+    return { status: "skipped", summary: "Not enough of period elapsed yet" };
+  }
+
+  const budgets = await fetchScopedBudgets(userId, budgetId);
+  if (budgets.length === 0) return { status: "skipped", summary: "No budgets in scope" };
+  let alerted = 0;
+  for (const b of budgets) {
+    const spent = await spentForBudgetInWindow(userId, b, master.startStr, master.endStr);
+    const cap = Number(b.amount) + Number(b.rollover_credit);
+    if (cap <= 0) continue;
+    const spentPct = (spent / cap) * 100;
+    if (spentPct < warnPct) continue;
+    const dedupKey = `burn_rate:${b.id}:${master.startStr}`;
+    if (await alreadyNotified(userId, dedupKey)) continue;
+    await insertAlert(userId, {
+      title: `Burn rate: ${b.category}`,
+      body:
+        `${spentPct.toFixed(0)}% spent with ${(100 - elapsedPct).toFixed(0)}% ` +
+        `of the period left. On pace to exceed $${cap.toFixed(2)}.`,
+      dedupKey,
+      color: "amber",
+    });
+    alerted++;
+  }
+  return {
+    status: alerted > 0 ? "success" : "skipped",
+    summary: alerted > 0
+      ? `Alerted on ${alerted} budget${alerted !== 1 ? "s" : ""}`
+      : "No budgets over the burn-rate threshold",
+  };
+});
+
+// ─── move_budget_slack ──────────────────────────────────────────────
+// Fires on daily_check. Once per master period per rule.
+// If the source budget's spent% is below sourceMaxUsedPct AND the
+// target budget is over cap (spent > effective cap), move `amount`
+// (clamped to source's available slack) from source's rollover_credit
+// to target's rollover_credit.
+registerAction("move_budget_slack", async (action, context, userId) => {
+  const sourceBudgetId    = Number(action?.params?.sourceBudgetId);
+  const targetBudgetId    = Number(action?.params?.targetBudgetId);
+  const moveAmount        = Number(action?.params?.amount);
+  const sourceMaxUsedPct  = Math.max(1, Math.min(100,
+    Number(action?.params?.sourceMaxUsedPct) || 40));
+  const requireTargetOver = action?.params?.requireTargetOver !== false; // default true
+
+  if (!sourceBudgetId || !targetBudgetId ||
+      !Number.isFinite(moveAmount) || moveAmount <= 0) {
+    return { status: "skipped", summary: "Missing or invalid params" };
+  }
+  if (sourceBudgetId === targetBudgetId) {
+    return { status: "skipped", summary: "Source and target must differ" };
+  }
+
+  const master = await getMasterPeriod(userId);
+  const ruleId = context?._rule?.id;
+
+  // Per-rule per-period dedup — if this rule already recorded a
+  // successful fire in the current period, skip. This is the ONE
+  // Stage 4 action that would otherwise fire daily and drain the
+  // source budget dry.
+  if (ruleId) {
+    const already = await queryOne(
+      `SELECT id FROM automation_history
+       WHERE user_id = ? AND rule_id = ? AND status = 'success'
+         AND fired_at >= ?
+       LIMIT 1`,
+      [userId, ruleId, `${master.startStr} 00:00:00`]
+    );
+    if (already) return { status: "skipped", summary: "Already moved this period" };
+  }
+
+  const source = await queryOne(
+    "SELECT id, category, amount, rollover_credit FROM budgets WHERE id = ? AND user_id = ?",
+    [sourceBudgetId, userId]
+  );
+  const target = await queryOne(
+    "SELECT id, category, amount, rollover_credit FROM budgets WHERE id = ? AND user_id = ?",
+    [targetBudgetId, userId]
+  );
+  if (!source || !target) return { status: "skipped", summary: "Budget not found" };
+
+  const sourceSpent = await spentForBudgetInWindow(userId, source, master.startStr, master.endStr);
+  const sourceCap = Number(source.amount) + Number(source.rollover_credit);
+  const sourceUsedPct = sourceCap > 0 ? (sourceSpent / sourceCap) * 100 : 100;
+  if (sourceUsedPct >= sourceMaxUsedPct) {
+    return { status: "skipped", summary: `Source at ${sourceUsedPct.toFixed(0)}% — not underused enough` };
+  }
+  const sourceAvailable = sourceCap - sourceSpent;
+  if (sourceAvailable < 0.01) return { status: "skipped", summary: "No slack available in source" };
+
+  if (requireTargetOver) {
+    const targetSpent = await spentForBudgetInWindow(userId, target, master.startStr, master.endStr);
+    const targetCap = Number(target.amount) + Number(target.rollover_credit);
+    if (targetSpent <= targetCap) {
+      return { status: "skipped", summary: "Target not over cap yet" };
+    }
+  }
+
+  const actualMove = Math.min(moveAmount, sourceAvailable);
+  await query(
+    "UPDATE budgets SET rollover_credit = rollover_credit - ? WHERE id = ? AND user_id = ?",
+    [Number(actualMove.toFixed(2)), sourceBudgetId, userId]
+  );
+  await query(
+    "UPDATE budgets SET rollover_credit = rollover_credit + ? WHERE id = ? AND user_id = ?",
+    [Number(actualMove.toFixed(2)), targetBudgetId, userId]
+  );
+  return {
+    status: "success",
+    summary: `Moved $${actualMove.toFixed(2)} from "${source.category}" to "${target.category}"`,
+    budgetId: targetBudgetId,
+  };
+});
+
 // Available action kinds (used by /vocab endpoint). Keep alphabetized
 // so the picker shows a stable order.
 export const ACTION_KINDS = [
   "add_note",
+  "burn_rate_alarm",
   "flag_duplicate",
   "mark_as_transfer",
+  "move_budget_slack",
   "notify_cc_utilization",
   "notify_low_balance",
   "notify_scheduled_miss",
   "notify_unusually_large_txn",
+  "rollover_unused_budget",
+  "seasonal_bump",
   "set_category",
   "split_txn",
 ];

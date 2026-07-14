@@ -80,7 +80,8 @@ export default async function (app) {
     const master = await getMasterPeriod(req.user.id, atDate);
 
     const budgets = await query(
-      `SELECT b.id, b.category, b.amount, b.period, b.period_start, b.period_days,
+      `SELECT b.id, b.category, b.amount, b.rollover_credit AS rolloverCredit,
+              b.period, b.period_start, b.period_days,
               b.account_id AS accountId, b.sort_order AS sortOrder,
               a.name AS accountName, a.type AS accountType
        FROM budgets b
@@ -93,6 +94,11 @@ export default async function (app) {
       b.spent = await spentForBudgetInWindow(req.user.id, b, master.startStr, master.endStr);
       b.periodStart = master.startStr;
       b.periodEnd   = master.endStr;
+      b.rolloverCredit = Number(b.rolloverCredit) || 0;
+      // Effective cap = user-set amount + any automation-adjusted
+      // rollover credit. The frontend compares spent against this,
+      // and displays the credit as a "+$X rolled over" hint.
+      b.effectiveAmount = Number(b.amount) + b.rolloverCredit;
       // Surface the master period info on each budget so the frontend can
       // display "Resets every X days starting Y" consistently.
       b.period = master.period;
