@@ -161,11 +161,23 @@ function ConfirmDialog({
   destructive = true,
   busy = false,
 }) {
+  // Hold the LATEST callbacks in refs so the effect's dep array only
+  // depends on `open`. Every ancestor re-render normally hands us fresh
+  // arrow-fn refs for onConfirm/onCancel (they're inline in the JSX),
+  // which used to force this effect to tear down + re-run — including
+  // during framer-motion's exit animation, which pollutes the global
+  // projection tracker and can freeze motion.div's on other tabs at
+  // opacity:0 the next time the user navigates. Refs remove the fake
+  // dep churn without changing behavior.
+  const onConfirmRef = useRef(onConfirm);
+  const onCancelRef  = useRef(onCancel);
+  useEffect(() => { onConfirmRef.current = onConfirm; });
+  useEffect(() => { onCancelRef.current  = onCancel;  });
   useEffect(() => {
     if (!open) return;
     const h = (e) => {
-      if (e.key === "Escape") onCancel();
-      if (e.key === "Enter")  onConfirm();
+      if (e.key === "Escape") onCancelRef.current?.();
+      if (e.key === "Enter")  onConfirmRef.current?.();
     };
     document.addEventListener("keydown", h);
     document.body.style.overflow = "hidden";
@@ -173,7 +185,7 @@ function ConfirmDialog({
       document.removeEventListener("keydown", h);
       document.body.style.overflow = "";
     };
-  }, [open, onConfirm, onCancel]);
+  }, [open]);
 
   const confirmCls = destructive
     ? "bg-rose-500 hover:bg-rose-600 text-white shadow-sm shadow-rose-500/30"
@@ -4230,11 +4242,22 @@ function BudgetsTab({ theme, darkMode, toast }) {
   const performDeleteBudget = async () => {
     if (!confirmDelete) return;
     setDeletingBudget(true);
+    const budgetId = confirmDelete.id;
     try {
-      await api.deleteBudget(confirmDelete.id);
+      await api.deleteBudget(budgetId);
       toast?.("Budget removed", "success");
+      // Optimistic local removal — Reorder.Group updates immediately
+      // and gets to finish its item unmount BEFORE the ConfirmDialog
+      // exit animation starts fighting with anything else.
+      setOrdered(prev => prev.filter(b => b.id !== budgetId));
       setConfirmDelete(null);
-      refreshAll();
+      // Give the ConfirmDialog's ~180ms exit animation a full beat to
+      // land before we cascade the 14 setState calls refreshAll fires.
+      // Running them concurrently is the pattern that polluted framer-
+      // motion's projection tracker and froze motion.div's on other
+      // tabs at opacity:0 — see the useRef change in ConfirmDialog
+      // above for the other half of this fix.
+      setTimeout(refreshAll, 250);
     } catch (e) {
       toast?.("Failed: " + (e.message || ""), "error");
     } finally {
