@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { query, queryOne } from "../db.js";
+import { runRulesForTrigger } from "../automation-engine.js";
 
 // Update a manual account's balance by the given delta.
 // Plaid-linked accounts are NEVER touched here — their balances come from Plaid sync.
@@ -90,6 +91,30 @@ export default async function (app) {
     // Reflect the change in the linked manual account's balance
     // (income +, expense −). Plaid accounts are skipped.
     await adjustManualAccountBalance(req.user.id, accountId, Number(amount));
+    // Fire automation triggers for manual creates too. `account_type`
+    // pulled fresh so rules can key on cash/credit/etc. Errors don't
+    // block the response — the engine is silent-fail by design.
+    const row = await queryOne(
+      `SELECT t.id, t.merchant, t.category, t.amount, t.account_id,
+              t.pending, t.is_transfer, t.date, a.type AS account_type
+       FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
+       WHERE t.id = ?`,
+      [r.insertId]
+    );
+    if (row) {
+      const ctx = {
+        transaction: {
+          id: row.id, merchant: row.merchant, category: row.category,
+          amount: Number(row.amount), account_id: row.account_id,
+          account_type: row.account_type, pending: !!row.pending,
+          is_transfer: !!row.is_transfer, date: row.date,
+        },
+      };
+      await runRulesForTrigger(req.user.id, "transaction_arrived", ctx);
+      if (Number(row.amount) > 0 && !row.is_transfer) {
+        await runRulesForTrigger(req.user.id, "income_landed", ctx);
+      }
+    }
     return queryOne("SELECT * FROM transactions WHERE id = ?", [r.insertId]);
   });
 

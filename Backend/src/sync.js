@@ -2,6 +2,7 @@
 import { plaid } from "./plaid-client.js";
 import { query, queryOne } from "./db.js";
 import { decrypt } from "./crypto.js";
+import { runRulesForTrigger } from "./automation-engine.js";
 import crypto from "node:crypto";
 
 const PLAID_TO_INTERNAL_TYPE = {
@@ -81,6 +82,13 @@ export async function syncTransactions(userId, itemId, accessToken) {
   let pendingAdded = 0, postedAdded = 0;
 
   let scheduledAdopted = 0;
+  // Plaid transaction_ids for rows that ARE truly new this sync — used
+  // after pairing to fire automation triggers only on new arrivals, not
+  // on modified/re-synced rows (whose triggers already ran on first
+  // landing). Adopted-scheduled rows also fire, since to the user they
+  // "arrived" now even if the row id is old.
+  const newPlaidIds = new Set(added.map(t => t.transaction_id));
+  const adoptedIds = new Set();
   for (const t of [...added, ...modified]) {
     const accId = accountMap.get(t.account_id) || null;
     const merchant = t.merchant_name || t.name || "Unknown";
@@ -103,11 +111,15 @@ export async function syncTransactions(userId, itemId, accessToken) {
     // (or already-real) row. If a user has multiple candidates we pick
     // the closest by date, then by lowest id (deterministic).
     if (accId) {
-      const inserted = await tryAdoptScheduled(
+      const adoptedId = await tryAdoptScheduled(
         userId, accId, -t.amount, t.date, t.transaction_id,
         merchant, finalCat, t.pending ? 1 : 0, plaidIsTransfer ? 1 : 0
       );
-      if (inserted) { scheduledAdopted++; continue; }
+      if (adoptedId) {
+        scheduledAdopted++;
+        adoptedIds.add(adoptedId);
+        continue;
+      }
     }
 
     await query(
@@ -131,6 +143,36 @@ export async function syncTransactions(userId, itemId, accessToken) {
   // Pair up two-sided transfers across the user's own accounts. Runs after
   // every sync so newly landed rows get grouped in the same pass.
   const pairedCount = await pairInternalTransfers(userId);
+
+  // ── Fire automation triggers for genuinely-new arrivals ─────────
+  // Runs AFTER pairInternalTransfers so is_transfer is fully settled
+  // before rules see the row. Otherwise a fallback-paired transfer
+  // would look like income to a rule that keys on isTransfer.
+  //
+  // For each row, we fire "transaction_arrived" unconditionally and
+  // "income_landed" when amount > 0 (post-transfer-flag). Both use
+  // the same context. Modified/re-synced rows are skipped — their
+  // triggers ran on first landing.
+  const ruleTargets = await pickTriggerTargets(userId, newPlaidIds, adoptedIds);
+  for (const row of ruleTargets) {
+    const context = {
+      transaction: {
+        id:           row.id,
+        merchant:     row.merchant,
+        category:     row.category,
+        amount:       Number(row.amount),
+        account_id:   row.account_id,
+        account_type: row.account_type,
+        pending:      !!row.pending,
+        is_transfer:  !!row.is_transfer,
+        date:         row.date,
+      },
+    };
+    await runRulesForTrigger(userId, "transaction_arrived", context);
+    if (Number(row.amount) > 0 && !row.is_transfer) {
+      await runRulesForTrigger(userId, "income_landed", context);
+    }
+  }
 
   await query("UPDATE plaid_items SET sync_cursor = ?, last_sync_at = NOW() WHERE id = ?",
     [cursor, itemId]);
@@ -156,7 +198,7 @@ export async function syncTransactions(userId, itemId, accessToken) {
  *   - date within ±3 days of the incoming date
  *   - closest date-delta wins; lowest id breaks ties
  *
- * Returns true if a row was adopted, false otherwise.
+ * Returns the adopted row's id on success, or null if no match.
  */
 async function tryAdoptScheduled(
   userId, accountId, signedAmount, incomingDate,
@@ -181,7 +223,7 @@ async function tryAdoptScheduled(
      incomingDate, DAY_WINDOW, incomingDate, DAY_WINDOW, incomingDate]
   );
   const match = rows[0];
-  if (!match) return false;
+  if (!match) return null;
 
   // Adopt: keep the row's identity, stamp Plaid's data over it, flip the
   // scheduled flag off. plaid_transaction_id becomes the incoming id so
@@ -200,7 +242,42 @@ async function tryAdoptScheduled(
     [plaidTxnId, incomingDate, merchant, category,
      signedAmount, pending, isTransfer, match.id, userId]
   );
-  return true;
+  return match.id;
+}
+
+/**
+ * Load the full row snapshots for automation triggers. Rows are pulled
+ * fresh from the DB after the pair-transfers pass has run, so is_transfer
+ * reflects the FINAL post-pairing state. `newPlaidIds` are added rows
+ * (matched by plaid_transaction_id); `adoptedIds` are already-existing
+ * row ids that got promoted out of scheduled state this sync.
+ */
+async function pickTriggerTargets(userId, newPlaidIds, adoptedIds) {
+  const targets = [];
+  const cols = `t.id, t.merchant, t.category, t.amount, t.account_id,
+                t.pending, t.is_transfer, t.date,
+                a.type AS account_type`;
+  if (newPlaidIds.size > 0) {
+    const placeholders = [...newPlaidIds].map(() => "?").join(",");
+    const rows = await query(
+      `SELECT ${cols}
+       FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
+       WHERE t.user_id = ? AND t.plaid_transaction_id IN (${placeholders})`,
+      [userId, ...newPlaidIds]
+    );
+    targets.push(...rows);
+  }
+  if (adoptedIds.size > 0) {
+    const placeholders = [...adoptedIds].map(() => "?").join(",");
+    const rows = await query(
+      `SELECT ${cols}
+       FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
+       WHERE t.user_id = ? AND t.id IN (${placeholders})`,
+      [userId, ...adoptedIds]
+    );
+    targets.push(...rows);
+  }
+  return targets;
 }
 
 /**

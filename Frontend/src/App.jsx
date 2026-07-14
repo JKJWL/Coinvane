@@ -2754,6 +2754,172 @@ function ScheduleSheet({ open, onClose, copyFrom, accounts, catList, theme, dark
   );
 }
 
+// ─── Action add menu ─────────────────────────────────────────────────────────
+// "+ Add action" dropdown for the rule builder. Lists every action kind
+// the server currently supports (from /vocab.actions) with a friendly
+// label pulled from ACTION_META. Clicking picks one and closes.
+function ActionAddMenu({ available, onPick, theme, darkMode }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [open]);
+  if (!available?.length) {
+    return (
+      <span className={`text-[11px] ${theme.textSubtle}`}>
+        No actions available yet
+      </span>
+    );
+  }
+  return (
+    <div ref={ref} className="relative">
+      <button type="button" onClick={() => setOpen(o => !o)}
+        className="text-[11px] font-semibold text-emerald-500 flex items-center gap-1">
+        <Plus className="w-3 h-3" /> Add action
+      </button>
+      {open && (
+        <div className={`absolute right-0 top-full mt-1 w-56 z-40 ${theme.surface} border ${theme.border} rounded-xl shadow-xl overflow-hidden`}>
+          {available.map(k => {
+            const meta = ACTION_META[k] || { label: k };
+            return (
+              <button key={k} type="button"
+                onClick={() => { onPick(k); setOpen(false); }}
+                className={`w-full text-left px-3 py-2 ${theme.hover} text-xs`}>
+                <div className="font-semibold">{meta.label}</div>
+                {meta.description && (
+                  <div className={`text-[10px] ${theme.textSubtle}`}>{meta.description}</div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Action params editor ────────────────────────────────────────────────────
+// Per-action UI. Each case renders whatever inputs that action's params
+// need. Unknown kinds render a raw JSON textarea as a safety net so a
+// future stage's action still works if the deploy is ahead of the client.
+function ActionParamsEditor({ kind, params, onPatch, catList = [], theme, darkMode }) {
+  const inputCls = `w-full px-2.5 py-1.5 ${theme.inputBg} border ${theme.border} rounded-lg text-xs focus:outline-none focus:border-emerald-500`;
+
+  if (kind === "mark_as_transfer") {
+    return <p className={`text-[11px] ${theme.textSubtle}`}>No settings needed.</p>;
+  }
+
+  if (kind === "add_note") {
+    return (
+      <div className="space-y-1.5">
+        <input value={params.note || ""}
+          onChange={e => onPatch({ note: e.target.value })}
+          placeholder="Note text (e.g. 'Business meal — reimbursable')"
+          className={inputCls} />
+        <div className={`flex items-center gap-2 text-[11px] ${theme.textSubtle}`}>
+          <label className="flex items-center gap-1 cursor-pointer">
+            <input type="radio" name={`note-mode-${kind}`}
+              checked={params.mode !== "append"}
+              onChange={() => onPatch({ mode: "overwrite" })} />
+            Overwrite
+          </label>
+          <label className="flex items-center gap-1 cursor-pointer">
+            <input type="radio" name={`note-mode-${kind}`}
+              checked={params.mode === "append"}
+              onChange={() => onPatch({ mode: "append" })} />
+            Append
+          </label>
+        </div>
+      </div>
+    );
+  }
+
+  if (kind === "set_category") {
+    return (
+      <select value={params.category || ""}
+        onChange={e => onPatch({ category: e.target.value })}
+        className={inputCls}>
+        <option value="">— Pick a category —</option>
+        {catList.map(c => <option key={c} value={c}>{c}</option>)}
+      </select>
+    );
+  }
+
+  if (kind === "flag_duplicate") {
+    return (
+      <div className="flex items-center gap-2">
+        <span className={`text-[11px] ${theme.textSubtle}`}>Match within</span>
+        <input type="number" min="0" max="7"
+          value={params.withinDays ?? 0}
+          onChange={e => onPatch({ withinDays: Math.max(0, Math.min(7, Number(e.target.value) || 0)) })}
+          className={`w-14 ${inputCls}`} />
+        <span className={`text-[11px] ${theme.textSubtle}`}>day(s) of this transaction</span>
+      </div>
+    );
+  }
+
+  if (kind === "split_txn") {
+    const splits = Array.isArray(params.splits) ? params.splits : [];
+    const patchSplit = (i, patch) =>
+      onPatch({ splits: splits.map((s, idx) => idx === i ? { ...s, ...patch } : s) });
+    const addSplit = () =>
+      onPatch({ splits: [...splits, { category: "", amount: "", note: "" }] });
+    const removeSplit = (i) =>
+      onPatch({ splits: splits.filter((_, idx) => idx !== i) });
+    return (
+      <div className="space-y-1.5">
+        {splits.map((s, i) => (
+          <div key={i} className="grid grid-cols-[1fr_80px_1fr_28px] gap-1.5 items-center">
+            <select value={s.category || ""}
+              onChange={e => patchSplit(i, { category: e.target.value })}
+              className={inputCls}>
+              <option value="">— Category —</option>
+              {catList.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <input type="number" step="0.01" min="0"
+              value={s.amount}
+              onChange={e => patchSplit(i, { amount: e.target.value })}
+              placeholder="0.00"
+              className={`${inputCls} text-right`} />
+            <input value={s.note || ""}
+              onChange={e => patchSplit(i, { note: e.target.value })}
+              placeholder="Split note (optional)"
+              className={inputCls} />
+            <button type="button" onClick={() => removeSplit(i)}
+              className={`p-1 rounded-md ${theme.textSubtle} hover:text-rose-500`}>
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        ))}
+        <button type="button" onClick={addSplit}
+          className="text-[11px] font-semibold text-emerald-500 flex items-center gap-1">
+          <Plus className="w-3 h-3" /> Add split
+        </button>
+        <p className={`text-[10px] ${theme.textSubtle}`}>
+          Sum of splits must be ≤ the transaction's amount. Rules are idempotent —
+          re-firing on a re-synced row won't double-split.
+        </p>
+      </div>
+    );
+  }
+
+  // Unknown kind — raw JSON escape hatch.
+  return (
+    <textarea
+      value={JSON.stringify(params, null, 2)}
+      onChange={e => {
+        try { onPatch(JSON.parse(e.target.value) || {}); }
+        catch { /* invalid JSON while typing — ignore */ }
+      }}
+      rows={4}
+      className={inputCls}
+    />
+  );
+}
+
 // ─── Budgets Tab ──────────────────────────────────────────────────────────────
 const WEEK_DAY_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 
@@ -4219,6 +4385,7 @@ const FIELD_LABELS = {
 };
 
 function AutomationsPanel({ theme, darkMode, toast }) {
+  const { budgets, categories } = useData();
   const [subpage, setSubpage] = useState("rules");
   const [rules, setRules] = useState([]);
   const [history, setHistory] = useState([]);
@@ -4226,6 +4393,24 @@ function AutomationsPanel({ theme, darkMode, toast }) {
   const [editing, setEditing] = useState(null);  // rule object or "new" sentinel
   const [confirmDel, setConfirmDel] = useState(null);
   const [desktop, setDesktop] = useState(true);
+
+  // Category picker vocabulary — same fold used elsewhere: real
+  // categories table first, custom budget categories folded in,
+  // built-in fallback last. Passed through to the action builder so
+  // set_category and split_txn dropdowns show every category the
+  // user could pick anywhere else in the app.
+  const catList = (() => {
+    const seen = new Set(), out = [];
+    const push = (n) => {
+      const t = String(n || "").trim();
+      if (!t || seen.has(t.toLowerCase())) return;
+      seen.add(t.toLowerCase()); out.push(t);
+    };
+    if (categories?.length) for (const c of categories) push(c.name);
+    else for (const c of Object.keys(CAT_COLORS)) push(c);
+    for (const b of budgets || []) { if (!b.accountId) push(b.category); }
+    return out;
+  })();
 
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 1024px)");
@@ -4443,6 +4628,7 @@ function AutomationsPanel({ theme, darkMode, toast }) {
         onClose={() => setEditing(null)}
         rule={editing === "new" ? null : editing}
         vocab={vocab}
+        catList={catList}
         theme={theme} darkMode={darkMode}
         onSave={saveRule}
       />
@@ -4458,10 +4644,40 @@ function AutomationsPanel({ theme, darkMode, toast }) {
   );
 }
 
-// Rule builder — trigger picker + conditions + actions. Actions vocabulary
-// is empty in the foundation stage so the picker shows a note explaining
-// which future stage will fill each category. Conditions are usable today.
-function RuleBuilderSheet({ open, onClose, rule, vocab, theme, darkMode, onSave }) {
+// Action metadata — the frontend owns per-action label + param schema so
+// server /vocab just publishes the list of KINDS. New stages add entries
+// here alongside the backend action handler. Keep alphabetized by kind
+// so the picker order stays stable.
+const ACTION_META = {
+  add_note: {
+    label: "Add note",
+    description: "Attach a note to matching transactions.",
+    defaults: () => ({ note: "", mode: "overwrite" }),
+  },
+  flag_duplicate: {
+    label: "Flag possible duplicate",
+    description: "Drop an in-app notification if another same-amount txn is nearby in time.",
+    defaults: () => ({ withinDays: 0 }),
+  },
+  mark_as_transfer: {
+    label: "Mark as transfer",
+    description: "Flag the row so it's excluded from income + budget totals.",
+    defaults: () => ({}),
+  },
+  set_category: {
+    label: "Set category",
+    description: "Override the category on matching rows. Fires AFTER merchant rules.",
+    defaults: () => ({ category: "" }),
+  },
+  split_txn: {
+    label: "Split into pieces",
+    description: "Reduce the original amount and create child rows for each split.",
+    defaults: () => ({ splits: [{ category: "", amount: "", note: "" }] }),
+  },
+};
+
+// Rule builder — trigger picker + conditions + actions.
+function RuleBuilderSheet({ open, onClose, rule, vocab, catList = [], theme, darkMode, onSave }) {
   const emptyRule = () => ({
     name: "",
     triggerType: "transaction_arrived",
@@ -4484,6 +4700,28 @@ function RuleBuilderSheet({ open, onClose, rule, vocab, theme, darkMode, onSave 
   const removeCondition = (i) => setForm(f => ({
     ...f, conditions: f.conditions.filter((_, idx) => idx !== i),
   }));
+
+  // Actions — same add/patch/remove pattern. Each action is
+  // { kind, params: {...} } where params matches ACTION_META[kind].defaults()
+  // shape.
+  const addAction = (kind) => setForm(f => ({
+    ...f, actions: [
+      ...(f.actions || []),
+      { kind, params: (ACTION_META[kind]?.defaults || (() => ({})))() },
+    ],
+  }));
+  const patchAction = (i, patch) => setForm(f => ({
+    ...f, actions: f.actions.map((a, idx) => idx === i ? { ...a, ...patch } : a),
+  }));
+  const patchActionParams = (i, patchP) => setForm(f => ({
+    ...f, actions: f.actions.map((a, idx) =>
+      idx === i ? { ...a, params: { ...(a.params || {}), ...patchP } } : a),
+  }));
+  const removeAction = (i) => setForm(f => ({
+    ...f, actions: f.actions.filter((_, idx) => idx !== i),
+  }));
+
+  const availableActions = (vocab?.actions || []);
 
   const submit = (e) => {
     e.preventDefault();
@@ -4558,25 +4796,51 @@ function RuleBuilderSheet({ open, onClose, rule, vocab, theme, darkMode, onSave 
           )}
         </div>
 
-        {/* Actions — empty vocab in foundation stage */}
+        {/* Actions */}
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider`}>Actions</label>
+            <ActionAddMenu
+              available={availableActions}
+              onPick={addAction}
+              theme={theme} darkMode={darkMode}
+            />
           </div>
-          {(vocab?.actions?.length || 0) === 0 ? (
-            <div className={`rounded-xl border ${theme.border} ${darkMode ? "bg-amber-500/5" : "bg-amber-50/40"} p-3 text-xs`}>
-              <div className={`font-semibold ${darkMode ? "text-amber-400" : "text-amber-700"} mb-1`}>
-                Actions coming in the next release
-              </div>
-              <p className={theme.textSubtle}>
-                The action library (mark as transfer, sweep round-ups to a goal, roll
-                over unused budget, low-balance alert, etc.) lands in the next stages.
-                For now you can save a rule with just conditions — actions will show up
-                as pickable options here once they ship.
-              </p>
-            </div>
+          {form.actions?.length === 0 ? (
+            <p className={`text-xs ${theme.textSubtle}`}>
+              No actions yet — pick one from the "+ Add action" menu above.
+              A rule with 0 actions is a no-op (never fires).
+            </p>
           ) : (
-            <p className={`text-xs ${theme.textSubtle}`}>Action builder coming in Stage 2+.</p>
+            <div className="space-y-2">
+              {form.actions.map((a, i) => {
+                const meta = ACTION_META[a.kind] || { label: a.kind, defaults: () => ({}) };
+                return (
+                  <div key={i} className={`rounded-xl border ${theme.border} ${theme.surface} p-3`}>
+                    <div className="flex items-start justify-between gap-2 mb-1">
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold">{meta.label}</div>
+                        {meta.description && (
+                          <div className={`text-[11px] ${theme.textSubtle}`}>{meta.description}</div>
+                        )}
+                      </div>
+                      <button type="button" onClick={() => removeAction(i)}
+                        title="Remove action"
+                        className={`p-1 rounded-md ${theme.textSubtle} hover:text-rose-500 flex-shrink-0`}>
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <ActionParamsEditor
+                      kind={a.kind}
+                      params={a.params || {}}
+                      onPatch={patch => patchActionParams(i, patch)}
+                      catList={catList}
+                      theme={theme} darkMode={darkMode}
+                    />
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
 

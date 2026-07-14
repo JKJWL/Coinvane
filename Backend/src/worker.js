@@ -8,6 +8,9 @@ import { sendMail } from "./mailer.js";
 import { generateNotifications } from "./notification-engine.js";
 import { syncQueue } from "./queue.js";
 import { getSyncIntervalMinutes } from "./app-settings.js";
+// Register every automation action with the engine so sync-time
+// runRulesForTrigger() calls in sync.js can dispatch.
+import "./automation-actions.js";
 
 const connection = {
   host: process.env.REDIS_HOST || "redis",

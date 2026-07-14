@@ -20,6 +20,9 @@ import plaidRoutes from "./routes/plaid.js";
 import adminRoutes from "./routes/admin.js";
 import exportRoutes from "./routes/export.js";
 import automationsRoutes from "./routes/automations.js";
+// Register every automation action with the engine at startup so any
+// runRulesForTrigger() call made from a route handler can dispatch.
+import "./automation-actions.js";
 
 const isProd = process.env.NODE_ENV === "production";
 

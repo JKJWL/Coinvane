@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { query, queryOne } from "../db.js";
 import { TRIGGER_TYPES, RULE_VOCAB } from "../automation-engine.js";
+import { ACTION_KINDS } from "../automation-actions.js";
 
 /**
  * Per-user automation rule CRUD + private history endpoints.
@@ -23,9 +24,10 @@ export default async function (app) {
     triggers: TRIGGER_TYPES,
     fields:   RULE_VOCAB.fields,
     ops:      RULE_VOCAB.ops,
-    // Populated in Stages 2–6. Empty in the foundation stage — the
-    // Actions picker will show "No actions available yet" until then.
-    actions:  [],
+    // Grows stage by stage as new actions register with the engine. The
+    // frontend owns the per-action label + param schema so this endpoint
+    // just publishes the list of KINDS the client should recognize.
+    actions:  ACTION_KINDS,
   }));
 
   // ── Rule list ───────────────────────────────────────────────────
