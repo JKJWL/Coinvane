@@ -271,6 +271,26 @@ function TransferPill({ isTransfer, darkMode, size = "sm" }) {
   );
 }
 
+// ─── ScheduledPill ────────────────────────────────────────────────────────────
+// Indigo chip for user-scheduled (future / expected) transactions. Distinct
+// from Pending (amber, Plaid-reported) so the user can tell "not settled yet"
+// from "I planned this ahead". Once sync.js adopts the row on a matching
+// real transaction, the pill disappears.
+function ScheduledPill({ isScheduled, darkMode, size = "sm" }) {
+  if (!isScheduled) return null;
+  const cls = size === "xs"
+    ? "text-[9px] px-1.5 py-px"
+    : "text-[10px] px-1.5 py-0.5";
+  return (
+    <span className={`inline-flex items-center gap-1 ${cls} rounded-full font-semibold uppercase tracking-wide ${
+      darkMode ? "bg-indigo-500/15 text-indigo-400" : "bg-indigo-50 text-indigo-700"
+    }`}>
+      <span className="w-1 h-1 rounded-full bg-indigo-500" />
+      Scheduled
+    </span>
+  );
+}
+
 // ─── IconButton ───────────────────────────────────────────────────────────────
 function IconButton({ children, onClick, theme }) {
   return (
@@ -1465,12 +1485,25 @@ function TransactionsTab({ theme, darkMode, toast }) {
   // Saved via api.savePaystub, then refreshAll picks up the new blob for the
   // detail sheet's summary render.
   const [paystubEdit, setPaystubEdit] = useState(null);
+  // Scheduled transactions — separate list from the main table. Loaded on
+  // mount + refreshed whenever we mutate one; also picks up sync-time
+  // adoptions since a full refreshAll re-fetches this endpoint too.
+  const [scheduled, setScheduled] = useState([]);
+  const [showScheduleForm, setShowScheduleForm] = useState(false);
+  // Copy-and-schedule flow: seed the schedule form from an existing txn.
+  const [copyFrom, setCopyFrom] = useState(null);
   const today = new Date().toISOString().slice(0, 10);
   const [form, setForm] = useState({
     date: today, merchant: "", amount: "", category: "Other",
     account_id: "", note: "", sign: "out",
   });
   const [adding, setAdding] = useState(false);
+
+  const loadScheduled = useCallback(async () => {
+    try { setScheduled(await api.getScheduledTransactions()); }
+    catch { /* non-fatal */ }
+  }, []);
+  useEffect(() => { loadScheduled(); }, [loadScheduled, transactions]);
 
   const deleteTransaction = async () => {
     if (!detail) return;
@@ -1750,6 +1783,73 @@ function TransactionsTab({ theme, darkMode, toast }) {
         )}
       </AnimatePresence>
 
+      {/* Scheduled income — pinned above the transaction list. Only shown
+          when the user actually has upcoming scheduled rows; hidden
+          entirely otherwise so it doesn't take up empty space for users
+          who never touch this feature. */}
+      {scheduled.length > 0 && (
+        <div className={`${theme.surface} rounded-2xl border ${theme.border} overflow-hidden`}>
+          <div className={`px-4 py-2.5 border-b ${theme.border} flex items-center justify-between`}>
+            <div className="flex items-center gap-1.5">
+              <Calendar className={`w-3.5 h-3.5 ${theme.textSubtle}`} />
+              <span className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider`}>
+                Scheduled ({scheduled.length})
+              </span>
+            </div>
+            <button type="button"
+              onClick={() => { setCopyFrom(null); setShowScheduleForm(true); }}
+              className="text-xs font-semibold text-emerald-500 flex items-center gap-1">
+              <Plus className="w-3 h-3" /> Schedule
+            </button>
+          </div>
+          <div className={`divide-y ${theme.divide}`}>
+            {scheduled.map(s => {
+              const SIcon = CAT_ICONS[s.category] || Briefcase;
+              const sColor = CAT_COLORS[s.category] || "#64748b";
+              const isPositive = Number(s.amount) >= 0;
+              return (
+                <button key={s.id} type="button"
+                  onClick={() => setDetail(s)}
+                  className={`w-full flex items-center gap-3 px-4 py-2.5 text-left ${theme.hover}`}>
+                  <div className={`w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+                    <SIcon className="w-4 h-4" style={{ color: sColor }} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <div className="font-medium text-sm truncate">{s.merchant}</div>
+                      <ScheduledPill isScheduled darkMode={darkMode} />
+                    </div>
+                    <div className={`text-xs ${theme.textSubtle} truncate`}>
+                      Expected {s.date} · <span className="private-name" tabIndex={0}>{s.accountName || "—"}</span>
+                    </div>
+                  </div>
+                  <div className={`font-semibold text-sm flex-shrink-0 private-amount ${
+                    isPositive ? "text-emerald-500" : ""
+                  }`} tabIndex={0}>
+                    {isPositive ? "+" : "−"}{fmt(Math.abs(Number(s.amount)))}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Empty-state schedule CTA — only for users who have zero scheduled
+          rows AND at least one real transaction (so it doesn't clutter the
+          empty-app state). Gives a discoverable entry point. */}
+      {scheduled.length === 0 && transactions.length > 0 && (
+        <button type="button"
+          onClick={() => { setCopyFrom(null); setShowScheduleForm(true); }}
+          className={`w-full ${theme.surface} border ${theme.border} border-dashed rounded-2xl px-4 py-2.5 text-left flex items-center gap-2 ${theme.textSubtle} hover:text-emerald-500 transition-colors`}>
+          <Calendar className="w-3.5 h-3.5" />
+          <span className="text-xs font-medium">
+            Schedule an upcoming paycheck or bill…
+          </span>
+          <Plus className="w-3.5 h-3.5 ml-auto" />
+        </button>
+      )}
+
       {/* Grouped transaction list */}
       {grouped.length === 0 ? (
         <div className={`${theme.surface} rounded-2xl border ${theme.border} px-5 py-12 text-center text-sm ${theme.textSubtle}`}>
@@ -1974,6 +2074,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
                   <div className="text-xl font-semibold">{detail.merchant}</div>
                   <PendingPill pending={detail.pending} darkMode={darkMode} />
                   <TransferPill isTransfer={detail.isTransfer} darkMode={darkMode} />
+                  <ScheduledPill isScheduled={detail.isScheduled} darkMode={darkMode} />
                 </div>
                 <div className={`text-3xl font-bold mt-2 ${
                   detail.isTransfer ? "text-sky-500" : isIncome ? "text-emerald-500" : ""
@@ -1990,6 +2091,13 @@ function TransactionsTab({ theme, darkMode, toast }) {
                   <p className={`text-[11px] ${theme.textSubtle} mt-2 max-w-[260px]`}>
                     Internal transfer between your own accounts — excluded
                     from income, spending, and budget totals.
+                  </p>
+                )}
+                {!!detail.isScheduled && (
+                  <p className={`text-[11px] ${theme.textSubtle} mt-2 max-w-[260px]`}>
+                    Scheduled — expected to arrive on this date. Excluded
+                    from budget + income totals until adopted by a real
+                    transaction from your bank (or you mark it arrived).
                   </p>
                 )}
               </div>
@@ -2071,6 +2179,41 @@ function TransactionsTab({ theme, darkMode, toast }) {
                   This is a synced transaction. Deleting it here won't remove it from your bank.
                 </p>
               )}
+
+              {/* Schedule actions — split so the primary CTA reflects the
+                  row's current mode. Non-scheduled rows get "Copy &
+                  schedule" (make a future placeholder from this one).
+                  Scheduled rows get "Mark as arrived" for the manual
+                  fallback when the auto-matcher misses. */}
+              <div className="flex gap-2">
+                {detail.isScheduled ? (
+                  <button type="button"
+                    onClick={async () => {
+                      try {
+                        await api.setTransactionScheduled(detail.id, false);
+                        toast?.("Marked as arrived", "success");
+                        setDetail(null);
+                        refreshAll();
+                      } catch (e) {
+                        toast?.("Failed: " + (e.message || ""), "error");
+                      }
+                    }}
+                    className={`flex-1 py-2.5 rounded-xl text-sm font-medium border ${theme.border} ${theme.surface} text-emerald-500 hover:bg-emerald-500/10 flex items-center justify-center gap-2`}>
+                    <Check className="w-4 h-4" /> Mark as arrived
+                  </button>
+                ) : (
+                  <button type="button"
+                    onClick={() => {
+                      setCopyFrom(detail);
+                      setShowScheduleForm(true);
+                      setDetail(null);
+                    }}
+                    className={`flex-1 py-2.5 rounded-xl text-sm font-medium border ${theme.border} ${theme.surface} text-indigo-500 hover:bg-indigo-500/10 flex items-center justify-center gap-2`}>
+                    <Calendar className="w-4 h-4" /> Copy &amp; schedule
+                  </button>
+                )}
+              </div>
+
               <motion.button whileTap={{ scale: 0.97 }} onClick={deleteTransaction} disabled={deleting}
                 className="w-full bg-rose-500 hover:bg-rose-600 text-white py-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-60">
                 <Trash2 className="w-4 h-4" />
@@ -2094,6 +2237,19 @@ function TransactionsTab({ theme, darkMode, toast }) {
         theme={theme} darkMode={darkMode}
         toast={toast}
         onSaved={refreshAll}
+      />
+
+      {/* Schedule form — new scheduled row, or a copy-and-schedule seeded
+          from `copyFrom`. Reused for both entry points. */}
+      <ScheduleSheet
+        open={showScheduleForm}
+        onClose={() => { setShowScheduleForm(false); setCopyFrom(null); }}
+        copyFrom={copyFrom}
+        accounts={accounts}
+        catList={catList}
+        theme={theme} darkMode={darkMode}
+        toast={toast}
+        onSaved={() => { setShowScheduleForm(false); setCopyFrom(null); loadScheduled(); refreshAll(); }}
       />
     </div>
   );
@@ -2365,6 +2521,159 @@ function PaystubSheet({ open, onClose, transaction, initial, accounts, theme, da
         confirmLabel="Clear"
       />
     </>
+  );
+}
+
+// ─── Schedule sheet ───────────────────────────────────────────────────────────
+// Create-a-scheduled-transaction form. Handles both fresh schedules ("Schedule
+// an upcoming paycheck") and copy-and-schedule (right-click / detail-sheet
+// action → prefills from an existing transaction so the user only has to
+// pick a future date). Both entry points route through the same submit path.
+function ScheduleSheet({ open, onClose, copyFrom, accounts, catList, theme, darkMode, toast, onSaved }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const initial = () => copyFrom
+    ? {
+        date: today, // future date is the whole point — never keep the source's date
+        merchant: copyFrom.merchant || "",
+        amount: String(Math.abs(Number(copyFrom.amount) || 0)),
+        category: copyFrom.category || "Other",
+        account_id: copyFrom.accountId ? String(copyFrom.accountId) : "",
+        note: copyFrom.note || "",
+        sign: Number(copyFrom.amount) >= 0 ? "in" : "out",
+      }
+    : {
+        date: today, merchant: "", amount: "", category: "Other",
+        account_id: "", note: "", sign: "in",
+      };
+  const [form, setForm] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  // Re-seed when the sheet opens (may be for a fresh entry OR a copy).
+  useEffect(() => { if (open) setForm(initial()); /* eslint-disable-next-line */ }, [open, copyFrom?.id]);
+
+  const inputCls = `w-full px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!form.merchant || !form.amount) {
+      toast?.("Merchant and amount required", "error");
+      return;
+    }
+    setSaving(true);
+    try {
+      const raw = Number(form.amount);
+      if (!Number.isFinite(raw) || raw <= 0) {
+        toast?.("Amount must be positive", "error");
+        return;
+      }
+      const signed = form.sign === "in" ? raw : -raw;
+      await api.createScheduledTransaction({
+        date: form.date,
+        merchant: form.merchant.trim(),
+        category: form.category || "Other",
+        amount: signed,
+        accountId: form.account_id || null,
+        note: form.note || null,
+      });
+      toast?.("Scheduled", "success");
+      onSaved?.();
+    } catch (e) {
+      toast?.("Failed: " + (e.message || ""), "error");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <Sheet open={open} onClose={onClose}
+      title={copyFrom ? `Schedule (copy of "${copyFrom.merchant}")` : "Schedule transaction"}
+      theme={theme}>
+      <form onSubmit={submit} className="space-y-3">
+        {/* In / Out toggle — same UX as Add Transaction. Scheduled income
+            (in) is what most users will pick; keeping the toggle lets
+            them also schedule a known upcoming bill if they want. */}
+        <div className={`flex p-1 rounded-xl ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+          {[
+            { id: "in", label: "Income" },
+            { id: "out", label: "Expense" },
+          ].map(o => (
+            <button type="button" key={o.id}
+              onClick={() => setForm({ ...form, sign: o.id })}
+              className={`flex-1 py-2 rounded-lg text-sm font-semibold transition ${
+                form.sign === o.id
+                  ? (darkMode ? "bg-slate-900 shadow text-emerald-400" : "bg-white shadow text-emerald-600")
+                  : theme.textMuted
+              }`}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Expected date</label>
+            <input type="date" required value={form.date}
+              onChange={e => setForm({ ...form, date: e.target.value })}
+              className={inputCls} />
+          </div>
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Amount</label>
+            <input type="number" step="0.01" min="0.01" required
+              value={form.amount}
+              onChange={e => setForm({ ...form, amount: e.target.value })}
+              placeholder="0.00" className={inputCls} />
+          </div>
+        </div>
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Merchant / source</label>
+          <input required value={form.merchant}
+            onChange={e => setForm({ ...form, merchant: e.target.value })}
+            placeholder="e.g. Paycheck — Farm Mutual" className={inputCls} />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Category</label>
+            <select value={form.category}
+              onChange={e => setForm({ ...form, category: e.target.value })}
+              className={inputCls}>
+              {catList.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Account</label>
+            <select value={form.account_id}
+              onChange={e => setForm({ ...form, account_id: e.target.value })}
+              className={inputCls}>
+              <option value="">— None —</option>
+              {accounts.map(a =>
+                <option key={a.id} value={a.id}>
+                  {a.name}{a.institution ? ` · ${a.institution}` : ""}
+                </option>
+              )}
+            </select>
+          </div>
+        </div>
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Note (optional)</label>
+          <input value={form.note}
+            onChange={e => setForm({ ...form, note: e.target.value })}
+            className={inputCls} />
+        </div>
+        <p className={`text-[11px] ${theme.textSubtle}`}>
+          Scheduled rows don't affect your budget or income totals. When your
+          bank reports a matching transaction (same account, within $5, within
+          3 days), this scheduled row is adopted in place and the pill
+          disappears automatically. You can also mark it as arrived manually
+          from its detail view.
+        </p>
+        <div className="flex gap-2 pt-1">
+          <button type="button" onClick={onClose}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.surface} border ${theme.border}`}>
+            Cancel
+          </button>
+          <motion.button whileTap={{ scale: 0.97 }} type="submit" disabled={saving}
+            className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
+            {saving ? "Scheduling…" : "Schedule"}
+          </motion.button>
+        </div>
+      </form>
+    </Sheet>
   );
 }
 

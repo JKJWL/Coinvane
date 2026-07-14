@@ -316,6 +316,24 @@ const SCHEMA = [
   // parses the payload — it's opaque to backend queries — the client owns
   // rendering + validation.
   `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS paystub_json LONGTEXT NULL`,
+
+  // ── Scheduled transactions (Feature: schedule + copy + auto-match) ──
+  // User-authored placeholder rows for upcoming income / bills. Rules:
+  //   - is_scheduled = TRUE     → hidden from budget income, cashflow, and
+  //                                notification triggers until it "arrives"
+  //   - has no plaid_transaction_id (all scheduled rows are user-created)
+  //   - listed in the dedicated Scheduled section at the top of the
+  //     Transactions tab regardless of its `date` (which is the future
+  //     expected date, not today)
+  //   - sync.js's Plaid pipeline treats these as PROTECTED: real Plaid
+  //     rows that match (same account, |amount| within $5, date within
+  //     ±3 days) ADOPT the scheduled row instead of inserting a new one
+  //     — the row keeps its id but flips is_scheduled=0 and gets the
+  //     Plaid transaction_id + real merchant/date/amount stamped in.
+  //   - user can toggle is_scheduled manually from the detail sheet if
+  //     the matcher guesses wrong
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_scheduled BOOLEAN DEFAULT FALSE`,
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMP NULL`,
 ];
 
 const DEFAULT_CATEGORIES = [
@@ -346,6 +364,9 @@ const SOFT_SCHEMA = [
   // ADD INDEX, so this lives in SOFT_SCHEMA and errors are swallowed on
   // subsequent runs where the index already exists.
   `ALTER TABLE transactions ADD INDEX idx_transfer_group (transfer_group_id)`,
+  // Adopt-match lookup runs on every Plaid insert, so this index is
+  // load-bearing (user_id, account_id, is_scheduled, date).
+  `ALTER TABLE transactions ADD INDEX idx_scheduled_match (user_id, account_id, is_scheduled, date)`,
 ];
 
 async function run() {

@@ -79,7 +79,8 @@ export async function generateNotifications(userId) {
       `SELECT merchant, amount, date FROM transactions
        WHERE user_id = ? AND amount < -?
          AND date >= DATE_SUB(CURDATE(), INTERVAL 1 DAY)
-         AND (is_transfer = 0 OR is_transfer IS NULL)`,
+         AND (is_transfer = 0 OR is_transfer IS NULL)
+         AND (is_scheduled = 0 OR is_scheduled IS NULL)`,
       [userId, largeTxnAmt]
     );
     for (const t of big) {
@@ -104,6 +105,7 @@ export async function generateNotifications(userId) {
        WHERE t.user_id = ? AND t.amount > ?
          AND (a.type IS NULL OR a.type <> 'credit')
          AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+         AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
          AND t.date >= DATE_SUB(CURDATE(), INTERVAL 1 DAY)`,
       [userId, incomeAmt]
     );

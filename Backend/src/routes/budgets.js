@@ -37,7 +37,8 @@ async function sumIncomeInWindow(userId, startStr, endStr) {
      WHERE t.user_id = ? AND t.amount > 0
        AND t.date >= ? AND t.date < ?
        AND (a.type IS NULL OR a.type <> 'credit')
-       AND (t.is_transfer = 0 OR t.is_transfer IS NULL)`,
+       AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+       AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)`,
     [userId, startStr, endStr]
   );
   return Number(row.total) || 0;
@@ -53,6 +54,7 @@ async function creditUsageInWindow(userId, startStr, endStr) {
      LEFT JOIN transactions t ON t.account_id = a.id AND t.amount < 0
        AND t.date >= ? AND t.date < ?
        AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+       AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
      WHERE a.user_id = ? AND a.type = 'credit'
      GROUP BY a.id, a.name, a.institution`,
     [startStr, endStr, userId]
@@ -423,6 +425,7 @@ export default async function (app) {
          WHERE t.user_id = ? AND t.account_id = ? AND t.amount < 0
            AND t.date >= ? AND t.date < ?
            AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+           AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
          ORDER BY t.date DESC, t.id DESC`,
         [req.user.id, b.account_id, startStr, endStr]
       );
@@ -436,6 +439,7 @@ export default async function (app) {
            AND t.date >= ? AND t.date < ?
            AND (a.type IS NULL OR a.type <> 'credit')
            AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+           AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
          ORDER BY t.date DESC, t.id DESC`,
         [req.user.id, b.category, startStr, endStr]
       );

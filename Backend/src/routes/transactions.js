@@ -28,6 +28,10 @@ export default async function (app) {
     if (search)    { where.push("t.merchant LIKE ?"); params.push(`%${search}%`); }
     if (from)      { where.push("t.date >= ?"); params.push(from); }
     if (to)        { where.push("t.date <= ?"); params.push(to); }
+    // Scheduled rows are excluded from the main list — they show in the
+    // dedicated /scheduled endpoint at the top of the Transactions tab.
+    // Once adopted (is_scheduled flips to 0) they reappear here naturally.
+    where.push("(t.is_scheduled = 0 OR t.is_scheduled IS NULL)");
 
     // Collapse detected transfer pairs to a SINGLE row in the list. Both
     // sides still exist in the DB (so account balances remain accurate) but
@@ -50,6 +54,7 @@ export default async function (app) {
     const rows = await query(
       `SELECT t.id, t.date, t.merchant, t.category, t.amount, t.pending, t.note,
               t.is_transfer AS isTransfer, t.transfer_group_id AS transferGroupId,
+              t.is_scheduled AS isScheduled,
               t.paystub_json AS paystubJson,
               a.name AS accountName, a.id AS accountId, a.plaid_item_id AS plaidItemId
        FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
@@ -87,6 +92,81 @@ export default async function (app) {
     return queryOne("SELECT * FROM transactions WHERE id = ?", [r.insertId]);
   });
 
+  // ── Scheduled transactions ─────────────────────────────────────────
+  // Purpose-built list for the "Scheduled income" section at the top of
+  // the Transactions tab. Ordered by expected date (earliest first) so the
+  // upcoming ones surface first regardless of when they were scheduled.
+  app.get("/scheduled", async (req) => {
+    const rows = await query(
+      `SELECT t.id, t.date, t.merchant, t.category, t.amount, t.note,
+              t.paystub_json AS paystubJson,
+              a.name AS accountName, a.id AS accountId
+       FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
+       WHERE t.user_id = ? AND t.is_scheduled = 1
+       ORDER BY t.date ASC, t.id ASC`,
+      [req.user.id]
+    );
+    for (const r of rows) {
+      if (r.paystubJson) {
+        try { r.paystub = JSON.parse(r.paystubJson); }
+        catch { r.paystub = null; }
+      } else {
+        r.paystub = null;
+      }
+      delete r.paystubJson;
+    }
+    return rows;
+  });
+
+  // Create a scheduled row. Distinguished from regular POST / by the
+  // `is_scheduled: true` flag. The row is invisible to budget/income
+  // rollups until adopted by a Plaid sync or manually flipped.
+  app.post("/scheduled", async (req, reply) => {
+    const { date, merchant, category, amount, accountId, note, paystub } = req.body || {};
+    if (!date || !merchant || amount === undefined) {
+      return reply.code(400).send({ error: "date, merchant, amount required" });
+    }
+    // Ownership check the account if one was supplied.
+    if (accountId) {
+      const owned = await queryOne(
+        "SELECT id FROM accounts WHERE id = ? AND user_id = ?",
+        [accountId, req.user.id]
+      );
+      if (!owned) return reply.code(400).send({ error: "invalid account" });
+    }
+    const paystubJson = paystub ? JSON.stringify(paystub) : null;
+    const r = await query(
+      `INSERT INTO transactions
+         (user_id, account_id, date, merchant, category, amount, note,
+          is_scheduled, scheduled_at, paystub_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW(), ?)`,
+      [req.user.id, accountId || null, date, merchant,
+       category || "Other", amount, note || null, paystubJson]
+    );
+    return queryOne("SELECT * FROM transactions WHERE id = ?", [r.insertId]);
+  });
+
+  // Manual override: flip is_scheduled on an existing row. Used by the
+  // detail sheet's "Actually already arrived — remove pending marker"
+  // action if the auto-matcher missed, or by the schedule flow to demote
+  // a synced row into a scheduled placeholder.
+  app.patch("/:id/scheduled", async (req, reply) => {
+    const { is_scheduled } = req.body || {};
+    if (typeof is_scheduled !== "boolean") {
+      return reply.code(400).send({ error: "is_scheduled boolean required" });
+    }
+    const owned = await queryOne(
+      "SELECT id FROM transactions WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    if (!owned) return reply.code(404).send({ error: "not found" });
+    await query(
+      "UPDATE transactions SET is_scheduled = ? WHERE id = ? AND user_id = ?",
+      [is_scheduled ? 1 : 0, req.params.id, req.user.id]
+    );
+    return { ok: true };
+  });
+
   // Dedicated paystub-detail endpoint. Body: { paystub: <object> | null }.
   // Null clears the attached detail. The client-owned schema is opaque here
   // — we just JSON-stringify and store. Guarded by user ownership.
@@ -113,9 +193,10 @@ export default async function (app) {
 
   app.patch("/:id", async (req) => {
     const { merchant, category, amount, note, date } = req.body || {};
-    // If amount changes on a manual account txn, adjust balance by the delta
+    // If amount changes on a manual account txn, adjust balance by the delta.
+    // Scheduled rows are excluded (see DELETE handler above).
     const existing = await queryOne(
-      "SELECT account_id, amount FROM transactions WHERE id = ? AND user_id = ?",
+      "SELECT account_id, amount, is_scheduled FROM transactions WHERE id = ? AND user_id = ?",
       [req.params.id, req.user.id]
     );
     await query(
@@ -129,7 +210,8 @@ export default async function (app) {
       [merchant ?? null, category ?? null, amount ?? null, note ?? null, date ?? null,
        req.params.id, req.user.id]
     );
-    if (existing && amount !== undefined && Number(amount) !== Number(existing.amount)) {
+    if (existing && !existing.is_scheduled
+        && amount !== undefined && Number(amount) !== Number(existing.amount)) {
       const delta = Number(amount) - Number(existing.amount);
       await adjustManualAccountBalance(req.user.id, existing.account_id, delta);
     }
@@ -137,14 +219,17 @@ export default async function (app) {
   });
 
   app.delete("/:id", async (req) => {
-    // Reverse the balance impact before deleting
+    // Reverse the balance impact before deleting. Scheduled rows never
+    // touched the manual-account balance on creation (see POST /scheduled),
+    // so we skip the reversal for them — otherwise deleting a scheduled
+    // paycheck would fictitiously debit the account.
     const existing = await queryOne(
-      "SELECT account_id, amount FROM transactions WHERE id = ? AND user_id = ?",
+      "SELECT account_id, amount, is_scheduled FROM transactions WHERE id = ? AND user_id = ?",
       [req.params.id, req.user.id]
     );
     await query("DELETE FROM transactions WHERE id = ? AND user_id = ?",
       [req.params.id, req.user.id]);
-    if (existing) {
+    if (existing && !existing.is_scheduled) {
       await adjustManualAccountBalance(req.user.id, existing.account_id, -Number(existing.amount));
     }
     return { ok: true };
@@ -166,6 +251,7 @@ export default async function (app) {
        WHERE t.user_id = ? AND t.amount < 0
          AND (a.type IS NULL OR a.type <> 'credit')
          AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+         AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
          ${dateClause}
        GROUP BY t.category ORDER BY total DESC`,
       params
@@ -188,6 +274,7 @@ export default async function (app) {
          AND t.date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
          AND (a.type IS NULL OR a.type <> 'credit')
          AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+         AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
        GROUP BY month ORDER BY month`,
       [req.user.id]
     );

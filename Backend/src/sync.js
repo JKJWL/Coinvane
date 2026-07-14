@@ -80,6 +80,7 @@ export async function syncTransactions(userId, itemId, accessToken) {
   // not a sync bug.
   let pendingAdded = 0, postedAdded = 0;
 
+  let scheduledAdopted = 0;
   for (const t of [...added, ...modified]) {
     const accId = accountMap.get(t.account_id) || null;
     const merchant = t.merchant_name || t.name || "Unknown";
@@ -92,6 +93,23 @@ export async function syncTransactions(userId, itemId, accessToken) {
     const plaidIsTransfer =
       plaidCat === "TRANSFER_IN" || plaidCat === "TRANSFER_OUT";
     if (t.pending) pendingAdded++; else postedAdded++;
+
+    // ── Adopt a scheduled row if the incoming txn matches one ──
+    // Same account, sign-matched amount within $5, date within ±3 days.
+    // We match on the amount as stored (positive for income, negative for
+    // expense) so a scheduled paycheck doesn't accidentally adopt an
+    // outgoing bill of similar magnitude. Only rows without a
+    // plaid_transaction_id are candidates — never touch an already-adopted
+    // (or already-real) row. If a user has multiple candidates we pick
+    // the closest by date, then by lowest id (deterministic).
+    if (accId) {
+      const inserted = await tryAdoptScheduled(
+        userId, accId, -t.amount, t.date, t.transaction_id,
+        merchant, finalCat, t.pending ? 1 : 0, plaidIsTransfer ? 1 : 0
+      );
+      if (inserted) { scheduledAdopted++; continue; }
+    }
+
     await query(
       `INSERT INTO transactions (user_id, account_id, plaid_transaction_id, date, merchant,
                                   category, amount, pending, is_transfer)
@@ -123,7 +141,66 @@ export async function syncTransactions(userId, itemId, accessToken) {
     pending: pendingAdded,
     posted: postedAdded,
     pairedTransfers: pairedCount,
+    scheduledAdopted,
   };
+}
+
+/**
+ * Look for a scheduled row that matches an incoming Plaid transaction and,
+ * if found, promote it in place instead of inserting a new row.
+ *
+ * Rules:
+ *   - same user + same account
+ *   - is_scheduled = TRUE, plaid_transaction_id IS NULL
+ *   - amount matches by sign AND within $5
+ *   - date within ±3 days of the incoming date
+ *   - closest date-delta wins; lowest id breaks ties
+ *
+ * Returns true if a row was adopted, false otherwise.
+ */
+async function tryAdoptScheduled(
+  userId, accountId, signedAmount, incomingDate,
+  plaidTxnId, merchant, category, pending, isTransfer
+) {
+  const AMOUNT_EPS = 5;   // dollars
+  const DAY_WINDOW = 3;   // days
+  // Same-sign filter to keep a scheduled paycheck from adopting a bill.
+  const signClause = signedAmount >= 0 ? "amount >= 0" : "amount < 0";
+  const rows = await query(
+    `SELECT id, date, amount FROM transactions
+     WHERE user_id = ? AND account_id = ?
+       AND is_scheduled = 1
+       AND plaid_transaction_id IS NULL
+       AND ${signClause}
+       AND ABS(amount - ?) <= ?
+       AND date BETWEEN DATE_SUB(?, INTERVAL ? DAY)
+                    AND DATE_ADD(?, INTERVAL ? DAY)
+     ORDER BY ABS(DATEDIFF(date, ?)) ASC, id ASC
+     LIMIT 1`,
+    [userId, accountId, signedAmount, AMOUNT_EPS,
+     incomingDate, DAY_WINDOW, incomingDate, DAY_WINDOW, incomingDate]
+  );
+  const match = rows[0];
+  if (!match) return false;
+
+  // Adopt: keep the row's identity, stamp Plaid's data over it, flip the
+  // scheduled flag off. plaid_transaction_id becomes the incoming id so
+  // future syncs update this row in place via the ON DUPLICATE KEY path.
+  await query(
+    `UPDATE transactions SET
+       plaid_transaction_id = ?,
+       date = ?,
+       merchant = ?,
+       category = ?,
+       amount = ?,
+       pending = ?,
+       is_transfer = GREATEST(is_transfer, ?),
+       is_scheduled = 0
+     WHERE id = ? AND user_id = ?`,
+    [plaidTxnId, incomingDate, merchant, category,
+     signedAmount, pending, isTransfer, match.id, userId]
+  );
+  return true;
 }
 
 /**

@@ -179,7 +179,8 @@ export async function spentForBudgetInWindow(userId, b, startStr, endStr) {
        FROM transactions t
        WHERE t.user_id = ? AND t.account_id = ? AND t.amount < 0
          AND t.date >= ? AND t.date < ?
-         AND (t.is_transfer = 0 OR t.is_transfer IS NULL)`,
+         AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+         AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)`,
       [userId, b.account_id, startStr, endStr]
     );
     return Number(row.spent) || 0;
