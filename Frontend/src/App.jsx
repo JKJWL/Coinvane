@@ -2568,7 +2568,7 @@ function PaystubSheet({ open, onClose, transaction, initial, accounts, theme, da
 // Notification-preference row in SettingsPanel. Same rationale as
 // PaystubSection — extracted from inline to prevent focus-loss on
 // keystroke in the threshold inputs some rows expose via children.
-function NotifRow({ theme, emailOn, label, hint, checked, onToggle, children }) {
+function NotifRow({ theme, darkMode, emailOn, label, hint, checked, onToggle, children }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
@@ -2576,10 +2576,28 @@ function NotifRow({ theme, emailOn, label, hint, checked, onToggle, children }) 
           <div className="text-sm font-medium">{label}</div>
           {hint && <div className={`text-xs ${theme.textSubtle} mt-0.5`}>{hint}</div>}
         </div>
-        <Toggle checked={checked} onChange={onToggle} disabled={!emailOn} />
+        <Toggle checked={checked} onChange={onToggle} disabled={!emailOn} darkMode={darkMode} />
       </div>
       {checked && emailOn && children && <div className="pl-1">{children}</div>}
     </div>
+  );
+}
+
+// Toggle switch used in Settings + a few other places. Lives at module
+// scope so extracted components (like NotifRow) can reference it too —
+// having it nested inside SettingsPanel earlier is what caused the
+// "Toggle is not defined" crash when Settings mounted after NotifRow
+// was moved to module scope.
+function Toggle({ checked, onChange, disabled, darkMode }) {
+  return (
+    <button type="button" onClick={() => !disabled && onChange(!checked)}
+      disabled={disabled}
+      className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${
+        disabled ? "opacity-50 cursor-not-allowed" : ""
+      } ${checked ? "bg-emerald-500" : darkMode ? "bg-slate-700" : "bg-slate-300"}`}>
+      <motion.div animate={{ x: checked ? 20 : 0 }} transition={{ type: "spring", damping: 25, stiffness: 500 }}
+        className="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow-sm" />
+    </button>
   );
 }
 
@@ -6601,18 +6619,9 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
   };
 
 
-  function Toggle({ checked, onChange, disabled }) {
-    return (
-      <button type="button" onClick={() => !disabled && onChange(!checked)}
-        disabled={disabled}
-        className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${
-          disabled ? "opacity-50 cursor-not-allowed" : ""
-        } ${checked ? "bg-emerald-500" : darkMode ? "bg-slate-700" : "bg-slate-300"}`}>
-        <motion.div animate={{ x: checked ? 20 : 0 }} transition={{ type: "spring", damping: 25, stiffness: 500 }}
-          className="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow-sm" />
-      </button>
-    );
-  }
+  // Toggle lives at module scope below (SettingsToggle). Previously
+  // defined inline here, but the module-scope NotifRow needs it too, so
+  // it had to move out.
 
   const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
   const numCls   = `w-28 px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500 text-right`;
@@ -6651,14 +6660,14 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
             <div className="text-sm font-medium">Dark mode</div>
             <div className={`text-xs ${theme.textSubtle} mt-0.5`}>Synced across all your devices</div>
           </div>
-          <Toggle checked={darkMode} onChange={onToggleDark} />
+          <Toggle checked={darkMode} onChange={onToggleDark} darkMode={darkMode} />
         </div>
         <div className="flex items-center justify-between">
           <div className="min-w-0">
             <div className="text-sm font-medium">Privacy mode</div>
             <div className={`text-xs ${theme.textSubtle} mt-0.5`}>Blur dollar amounts; hover to reveal. Good for screenshots.</div>
           </div>
-          <Toggle checked={form.privacy_mode} onChange={v => setForm({ ...form, privacy_mode: v })} />
+          <Toggle checked={form.privacy_mode} onChange={v => setForm({ ...form, privacy_mode: v })} darkMode={darkMode} />
         </div>
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
@@ -6731,13 +6740,14 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
               }
               setForm({ ...form, notification_email: v });
             }}
+            darkMode={darkMode}
           />
         </div>
 
         {/* Nested notification controls — greyed out when emailOn is false. */}
         <div className={`pl-4 border-l-2 ${darkMode ? "border-slate-700" : "border-slate-200"} space-y-3 ${!emailOn ? "opacity-50 pointer-events-none" : ""}`}>
           <NotifRow
-            theme={theme} emailOn={emailOn}
+            theme={theme} darkMode={darkMode} emailOn={emailOn}
             label="Large transactions"
             hint="Alert when a single expense exceeds your threshold."
             checked={form.notify_large_txn}
@@ -6751,7 +6761,7 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
           </NotifRow>
 
           <NotifRow
-            theme={theme} emailOn={emailOn}
+            theme={theme} darkMode={darkMode} emailOn={emailOn}
             label="Income received"
             hint='Alert when a deposit lands above the threshold ("Congrats You Got Paid!").'
             checked={form.notify_income}
@@ -6765,7 +6775,7 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
           </NotifRow>
 
           <NotifRow
-            theme={theme} emailOn={emailOn}
+            theme={theme} darkMode={darkMode} emailOn={emailOn}
             label="Approaching budget limit"
             hint="Alert when a budget reaches a percentage of its cap."
             checked={form.notify_budget_warning}
@@ -6780,14 +6790,14 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
           </NotifRow>
 
           <NotifRow
-            theme={theme} emailOn={emailOn}
+            theme={theme} darkMode={darkMode} emailOn={emailOn}
             label="Budget exceeded"
             hint="Alert when a budget goes over 100%."
             checked={form.notify_budget_exceeded}
             onToggle={v => setForm({ ...form, notify_budget_exceeded: v })} />
 
           <NotifRow
-            theme={theme} emailOn={emailOn}
+            theme={theme} darkMode={darkMode} emailOn={emailOn}
             label="Goal milestones"
             hint="Alert at 75% progress and when a goal completes."
             checked={form.notify_goal_milestone}
@@ -6831,7 +6841,7 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
               Show alerts in the bell icon menu (independent of email).
             </div>
           </div>
-          <Toggle checked={form.notification_push} onChange={v => setForm({ ...form, notification_push: v })} />
+          <Toggle checked={form.notification_push} onChange={v => setForm({ ...form, notification_push: v })} darkMode={darkMode} />
         </div>
         {/* No bottom Save button — the sticky bar at the top of the page is
             the single save action whenever the form is dirty. */}
