@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
-import { motion, AnimatePresence, Reorder, animate as framerAnimate } from "framer-motion";
+import { motion, AnimatePresence, Reorder, LayoutGroup, animate as framerAnimate } from "framer-motion";
 import {
   Home, Receipt, PieChart as PieChartIcon, Target, TrendingUp, FileText,
   Settings, Bell, Search, X, RefreshCw, LogOut, Users,
@@ -4549,31 +4549,43 @@ function BudgetsTab({ theme, darkMode, toast }) {
           prop is permanently `ordered` — history view does NOT rebind it. */}
       {keepReorderMounted && (
         <div className={viewingHistory ? "hidden" : ""}>
-          <Reorder.Group axis="y"
-            values={orderedIds}
-            onReorder={onReorder}
-            className="space-y-3">
-            {orderedIds.map(id => {
-              const b = budgetsById.get(id);
-              if (!b) return null; // sync-effect will drop stale ids next render
-              const lockDrag = reorderLocked;
-              return (
-                <Reorder.Item key={id} value={id}
-                  dragListener={!lockDrag}
-                  whileDrag={{ scale: 1.02, zIndex: 50 }}
-                  className={lockDrag ? "" : "cursor-grab active:cursor-grabbing touch-none"}>
-                  <BudgetCard b={b} theme={theme} darkMode={darkMode}
-                    reorderLocked={lockDrag}
-                    readOnly={false}
-                    expanded={expandedId === b.id}
-                    transactions={budgetTxns[txCacheKey(b)]}
-                    onToggleExpand={() => toggleExpand(b)}
-                    onEdit={() => openEdit(b)}
-                    onDelete={() => deleteBudget(b)} />
-                </Reorder.Item>
-              );
-            })}
-          </Reorder.Group>
+          {/* LayoutGroup creates an ISOLATED framer-motion projection
+              context around the Reorder.Group. Any projection-tracker
+              churn caused by Reorder.Item remount/unmount cycles
+              (during delete or refreshAll) is confined to this scope —
+              it cannot leak into the global tracker and freeze
+              motion.div's on other tabs at opacity:0. This is the fix
+              that actually addresses the mechanism; the earlier
+              refactors (ID-tracked values, callback stabilisation,
+              refreshAll delay) are still useful but insufficient on
+              their own for framer-motion 11.3's projection model. */}
+          <LayoutGroup id="budgets-reorder">
+            <Reorder.Group axis="y"
+              values={orderedIds}
+              onReorder={onReorder}
+              className="space-y-3">
+              {orderedIds.map(id => {
+                const b = budgetsById.get(id);
+                if (!b) return null; // sync-effect will drop stale ids next render
+                const lockDrag = reorderLocked;
+                return (
+                  <Reorder.Item key={id} value={id}
+                    dragListener={!lockDrag}
+                    whileDrag={{ scale: 1.02, zIndex: 50 }}
+                    className={lockDrag ? "" : "cursor-grab active:cursor-grabbing touch-none"}>
+                    <BudgetCard b={b} theme={theme} darkMode={darkMode}
+                      reorderLocked={lockDrag}
+                      readOnly={false}
+                      expanded={expandedId === b.id}
+                      transactions={budgetTxns[txCacheKey(b)]}
+                      onToggleExpand={() => toggleExpand(b)}
+                      onEdit={() => openEdit(b)}
+                      onDelete={() => deleteBudget(b)} />
+                  </Reorder.Item>
+                );
+              })}
+            </Reorder.Group>
+          </LayoutGroup>
           {/* Post-delete empty state: Reorder.Group stays mounted (see
               hasMountedReorderRef) but has no children. Show the CTA as a
               sibling inside the same wrapper so the layout matches the

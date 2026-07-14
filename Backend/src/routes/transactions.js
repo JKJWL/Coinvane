@@ -123,10 +123,19 @@ export default async function (app) {
   // the Transactions tab. Ordered by expected date (earliest first) so the
   // upcoming ones surface first regardless of when they were scheduled.
   app.get("/scheduled", async (req) => {
+    // Include the full flag surface so the client's detail sheet knows
+    // this is a scheduled row (and can therefore show Mark Present).
+    // The main GET / hides scheduled rows entirely, so this endpoint is
+    // the ONLY source of them — omitting isScheduled here left the
+    // Mark Present button rendering under `!!detail.isScheduled` which
+    // was always undefined.
     const rows = await query(
-      `SELECT t.id, t.date, t.merchant, t.category, t.amount, t.note,
+      `SELECT t.id, t.date, t.merchant, t.category, t.amount, t.pending, t.note,
+              t.is_scheduled AS isScheduled,
+              t.is_transfer AS isTransfer, t.transfer_group_id AS transferGroupId,
+              t.has_automation_error AS hasAutomationError,
               t.paystub_json AS paystubJson,
-              a.name AS accountName, a.id AS accountId
+              a.name AS accountName, a.id AS accountId, a.plaid_item_id AS plaidItemId
        FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
        WHERE t.user_id = ? AND t.is_scheduled = 1
        ORDER BY t.date ASC, t.id ASC`,
