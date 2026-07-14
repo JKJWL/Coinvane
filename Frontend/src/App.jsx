@@ -1436,7 +1436,7 @@ function AccountsTab({ theme, darkMode, toast }) {
 
 // ─── Transactions Tab ─────────────────────────────────────────────────────────
 function TransactionsTab({ theme, darkMode, toast }) {
-  const { transactions, accounts, categories, refreshAll } = useData();
+  const { transactions, accounts, categories, budgets, refreshAll } = useData();
   const [search, setSearch] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
@@ -1619,9 +1619,39 @@ function TransactionsTab({ theme, darkMode, toast }) {
   };
 
   const inputCls = `w-full px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
-  const catList = (categories && categories.length > 0)
-    ? categories.map(c => c.name)
-    : Object.keys(CAT_COLORS);
+  // Merchant-rule + txn-recategorize picker categories.
+  // Priority order:
+  //   1. User's actual `categories` rows (custom created + defaults)
+  //   2. Any budget category the user has set up that isn't already a row
+  //      in `categories` — custom budget labels ("Pet Supplies", "Rainy
+  //      Day", etc) that were created via the budgets tab need to be
+  //      selectable here too, or the user can't attach a merchant rule to
+  //      their custom category.
+  //   3. Built-in category keys as a last-ditch fallback for fresh installs
+  //      where `categories` hasn't been seeded yet.
+  // Card budgets (account-scoped, category starts with "card:") are skipped
+  // since they're not a real spending category the user would pick.
+  const catList = (() => {
+    const seen = new Set();
+    const list = [];
+    const push = (name) => {
+      const trimmed = String(name || "").trim();
+      if (!trimmed) return;
+      if (seen.has(trimmed.toLowerCase())) return;
+      seen.add(trimmed.toLowerCase());
+      list.push(trimmed);
+    };
+    if (categories && categories.length > 0) {
+      for (const c of categories) push(c.name);
+    } else {
+      for (const c of Object.keys(CAT_COLORS)) push(c);
+    }
+    for (const b of budgets || []) {
+      if (b.accountId) continue;
+      push(b.category);
+    }
+    return list;
+  })();
 
   return (
     <div className="space-y-3">
@@ -2455,6 +2485,19 @@ function BudgetsTab({ theme, darkMode, toast }) {
   const [ordered, setOrdered] = useState(budgets);
   useEffect(() => { setOrdered(budgets); }, [budgets]);
 
+  // Once Reorder.Group has been mounted with items in this session, keep it
+  // mounted for the rest of the session even if the user deletes the last
+  // budget. Unmounting a populated Reorder.Group tears down framer-motion's
+  // global projection state and freezes motion components on every OTHER
+  // tab at opacity:0 — user reported exactly this after deleting the only
+  // budget on the current period. Mounting a Reorder.Group with empty
+  // values *from the start* has its own corruption pattern (7ceb435,
+  // reverted), which is why we still gate the initial mount on
+  // ordered.length > 0.
+  const hasMountedReorderRef = useRef(false);
+  if (ordered.length > 0) hasMountedReorderRef.current = true;
+  const keepReorderMounted = hasMountedReorderRef.current;
+
   const [form, setForm] = useState({
     kind: "category",
     category: "",
@@ -2790,9 +2833,12 @@ function BudgetsTab({ theme, darkMode, toast }) {
           source of corruption in commit 7ceb435 (reverted), so we
           keep the established "don't mount when ordered=[]" pattern. */}
 
-      {/* Current period empty state — only when not viewing history.
-          Reorder.Group is intentionally not mounted in this case. */}
-      {!viewingHistory && ordered.length === 0 && (
+      {/* Current period empty state — shown when the user has never had a
+          budget in this session. Once Reorder.Group has mounted (keep-
+          mounted latch below), the empty state is rendered *inside* that
+          block instead so we don't have to tear down and rebuild the
+          motion tree when the user deletes their last budget. */}
+      {!viewingHistory && ordered.length === 0 && !keepReorderMounted && (
         <div className={`${theme.surface} border-2 border-dashed ${darkMode ? "border-slate-700" : "border-slate-300"} rounded-2xl p-12 text-center`}>
           <PieChartIcon className={`w-12 h-12 ${theme.textSubtle} mx-auto mb-3`} />
           <p className={`${theme.textMuted} mb-4 text-sm`}>
@@ -2806,12 +2852,13 @@ function BudgetsTab({ theme, darkMode, toast }) {
         </div>
       )}
 
-      {/* Current period Reorder.Group. Always rendered while ordered
-          has items, just CSS-hidden when the user is in history view
-          so its framer-motion projection state is never disturbed
-          mid-session. The `values` prop is permanently `ordered` —
-          history view does NOT rebind it to snapshot data. */}
-      {ordered.length > 0 && (
+      {/* Current period Reorder.Group. First-mounted only when ordered.length
+          becomes > 0; from then on it stays mounted for the session even if
+          the user deletes every budget — see hasMountedReorderRef above for
+          why. CSS-hidden while viewing history so its framer-motion
+          projection state is never disturbed mid-session. The `values`
+          prop is permanently `ordered` — history view does NOT rebind it. */}
+      {keepReorderMounted && (
         <div className={viewingHistory ? "hidden" : ""}>
           <Reorder.Group axis="y"
             values={ordered}
@@ -2836,6 +2883,24 @@ function BudgetsTab({ theme, darkMode, toast }) {
               );
             })}
           </Reorder.Group>
+          {/* Post-delete empty state: Reorder.Group stays mounted (see
+              hasMountedReorderRef) but has no children. Show the CTA as a
+              sibling inside the same wrapper so the layout matches the
+              original empty-state placement without ever unmounting the
+              motion tree. */}
+          {ordered.length === 0 && !viewingHistory && (
+            <div className={`${theme.surface} border-2 border-dashed ${darkMode ? "border-slate-700" : "border-slate-300"} rounded-2xl p-12 text-center`}>
+              <PieChartIcon className={`w-12 h-12 ${theme.textSubtle} mx-auto mb-3`} />
+              <p className={`${theme.textMuted} mb-4 text-sm`}>
+                No budgets yet. Track spending by category or cap credit-card usage.
+              </p>
+              <motion.button whileTap={{ scale: 0.97 }}
+                onClick={() => { resetForm(); setShowAdd(true); }}
+                className="bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm font-semibold">
+                Create your first budget
+              </motion.button>
+            </div>
+          )}
         </div>
       )}
 
