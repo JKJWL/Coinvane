@@ -4115,9 +4115,52 @@ function BudgetsTab({ theme, darkMode, toast }) {
     && historyIndex >= 0
     && historyIndex < history.length
     && !history[historyIndex]?.isCurrent;
-  // Local ordered copy of budgets for drag-reorder
-  const [ordered, setOrdered] = useState(budgets);
-  useEffect(() => { setOrdered(budgets); }, [budgets]);
+  // Ordered LIST OF BUDGET IDS (not budget objects) for Reorder.Group.
+  //
+  // Why IDs, not objects: Reorder.Group tracks items via reference
+  // identity of the `values` array entries. When refreshAll re-fetches
+  // /budgets after a delete, EVERY budget object gets a fresh reference
+  // even if its contents are identical. Reorder.Group interpreted that
+  // as "all items are new" and remounted the entire Reorder.Item
+  // subtree, flooding framer-motion's global projection tracker. That
+  // corruption is what stuck motion.div's on other tabs at opacity:0
+  // after any budget delete — matches CLAUDE.md's documented failure
+  // mode but comes from a different mechanism than the empty-values
+  // case earlier fixes targeted.
+  //
+  // Primitive numbers have stable === across renders regardless of
+  // source, so the values array only changes when actual reorder /
+  // delete happens.
+  const [orderedIds, setOrderedIds] = useState(() => budgets.map(b => b.id));
+  // Sync from the server whenever the id-SET changes (add or delete),
+  // preserving the user's current drag order for surviving items.
+  useEffect(() => {
+    const serverIds = budgets.map(b => b.id);
+    setOrderedIds(prev => {
+      const serverSet = new Set(serverIds);
+      // Keep prior order for ids that still exist, then append any
+      // brand-new ones the server introduced.
+      const kept = prev.filter(id => serverSet.has(id));
+      const additions = serverIds.filter(id => !prev.includes(id));
+      const merged = [...kept, ...additions];
+      // Only trigger a re-render if the id sequence actually differs;
+      // otherwise we'd churn Reorder.Group's values array for no
+      // reason (the whole point of this refactor).
+      if (merged.length === prev.length && merged.every((id, i) => id === prev[i])) return prev;
+      return merged;
+    });
+  }, [budgets]);
+  const budgetsById = useMemo(
+    () => new Map((budgets || []).map(b => [b.id, b])),
+    [budgets]
+  );
+  // Materialised list — used for length checks, empty-state, zero-based
+  // summary math, etc. Filter is defensive against a stale id lingering
+  // in orderedIds for one render before the sync effect runs.
+  const ordered = useMemo(
+    () => orderedIds.map(id => budgetsById.get(id)).filter(Boolean),
+    [orderedIds, budgetsById]
+  );
 
   // Once Reorder.Group has been mounted with items in this session, keep it
   // mounted for the rest of the session even if the user deletes the last
@@ -4221,10 +4264,12 @@ function BudgetsTab({ theme, darkMode, toast }) {
     } finally { setAdding(false); }
   };
 
-  const onReorder = async (next) => {
-    setOrdered(next); // optimistic
+  // Reorder receives the fresh order of IDs (Reorder.Group emits the
+  // new `values` array). Optimistic-set locally, persist to server.
+  const onReorder = async (nextIds) => {
+    setOrderedIds(nextIds);
     try {
-      await api.reorderBudgets(next.map(b => b.id));
+      await api.reorderBudgets(nextIds);
     } catch {
       toast?.("Couldn't save order — refreshing", "error");
       refreshAll();
@@ -4246,17 +4291,16 @@ function BudgetsTab({ theme, darkMode, toast }) {
     try {
       await api.deleteBudget(budgetId);
       toast?.("Budget removed", "success");
-      // Optimistic local removal — Reorder.Group updates immediately
-      // and gets to finish its item unmount BEFORE the ConfirmDialog
-      // exit animation starts fighting with anything else.
-      setOrdered(prev => prev.filter(b => b.id !== budgetId));
+      // Optimistic local removal — Reorder.Group's values array (of ids)
+      // updates immediately. Because it's an array of primitives, the
+      // only ref change is the array itself; framer-motion sees exactly
+      // one item disappear and reconciles cleanly instead of remounting
+      // every survivor.
+      setOrderedIds(prev => prev.filter(id => id !== budgetId));
       setConfirmDelete(null);
       // Give the ConfirmDialog's ~180ms exit animation a full beat to
-      // land before we cascade the 14 setState calls refreshAll fires.
-      // Running them concurrently is the pattern that polluted framer-
-      // motion's projection tracker and froze motion.div's on other
-      // tabs at opacity:0 — see the useRef change in ConfirmDialog
-      // above for the other half of this fix.
+      // land before we cascade the setState calls refreshAll fires,
+      // so the exit doesn't race the render cascade.
       setTimeout(refreshAll, 250);
     } catch (e) {
       toast?.("Failed: " + (e.message || ""), "error");
@@ -4506,13 +4550,15 @@ function BudgetsTab({ theme, darkMode, toast }) {
       {keepReorderMounted && (
         <div className={viewingHistory ? "hidden" : ""}>
           <Reorder.Group axis="y"
-            values={ordered}
+            values={orderedIds}
             onReorder={onReorder}
             className="space-y-3">
-            {ordered.map(b => {
+            {orderedIds.map(id => {
+              const b = budgetsById.get(id);
+              if (!b) return null; // sync-effect will drop stale ids next render
               const lockDrag = reorderLocked;
               return (
-                <Reorder.Item key={b.id} value={b}
+                <Reorder.Item key={id} value={id}
                   dragListener={!lockDrag}
                   whileDrag={{ scale: 1.02, zIndex: 50 }}
                   className={lockDrag ? "" : "cursor-grab active:cursor-grabbing touch-none"}>
