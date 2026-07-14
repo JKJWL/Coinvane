@@ -7109,25 +7109,37 @@ function Shell({ user, onLogout, refreshUser }) {
         {/* ── Main ── */}
         <main className="flex-1 min-w-0 pb-[calc(96px+env(safe-area-inset-bottom))] lg:pb-8 overflow-hidden">
           <div className="p-4 sm:p-6">
-            <AnimatePresence mode="wait" custom={direction}>
-              <motion.div key={tab} custom={direction}
-                initial={{ opacity: 0, x: direction > 0 ? 28 : -28 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: direction > 0 ? -28 : 28 }}
-                transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-              >
-                {tab === "dashboard"    && <OverviewTab      theme={theme} darkMode={darkMode} onNavigate={navigate} />}
-                {tab === "accounts"     && <AccountsTab      theme={theme} darkMode={darkMode} toast={toast} />}
-                {tab === "transactions" && <TransactionsTab  theme={theme} darkMode={darkMode} toast={toast} />}
-                {tab === "investments"  && <InvestmentsTab   theme={theme} darkMode={darkMode} />}
-                {tab === "budgets"      && <BudgetsTab       theme={theme} darkMode={darkMode} toast={toast} />}
-                {tab === "goals"        && <GoalsTab         theme={theme} darkMode={darkMode} toast={toast} />}
-                {tab === "notes"        && <NotesTab         theme={theme} darkMode={darkMode} toast={toast} />}
-                {tab === "admin"        && <UsersPanel       currentUser={user} theme={theme} darkMode={darkMode} toast={toast} />}
-                {tab === "settings"     && <SettingsPanel    user={user} onUpdate={refreshUser} theme={theme} darkMode={darkMode} onToggleDark={setDarkMode} />}
-                {tab === "automations"  && <AutomationsPanel theme={theme} darkMode={darkMode} toast={toast} />}
-              </motion.div>
-            </AnimatePresence>
+            {/* Plain-div tab switcher — DELIBERATELY no AnimatePresence.
+                Root cause of "delete budget → other tabs blank until F5"
+                (confirmed with DOM + React DevTools):
+                  1. Delete triggers refreshAll's 14 setState cascade
+                  2. That cascade races with the outgoing tab's exit
+                     animation and corrupts framer-motion's animation
+                     queue for THAT motion.div
+                  3. The exit animation reaches its end state
+                     (opacity: 0, translateX(28px)) but its
+                     onAnimationComplete callback never fires
+                  4. mode="wait" AnimatePresence therefore never
+                     unmounts the outgoing tab, and never mounts the
+                     destination — OverviewTab literally isn't in the
+                     component tree until a full reload rebuilds the
+                     AnimatePresence subtree
+                Removing the tab-switch animation eliminates the
+                failure surface entirely. React unmounts + mounts
+                instantly on `tab` change. Trade: no horizontal slide
+                between tabs. Feels like a normal SPA click. */}
+            <div key={tab}>
+              {tab === "dashboard"    && <OverviewTab      theme={theme} darkMode={darkMode} onNavigate={navigate} />}
+              {tab === "accounts"     && <AccountsTab      theme={theme} darkMode={darkMode} toast={toast} />}
+              {tab === "transactions" && <TransactionsTab  theme={theme} darkMode={darkMode} toast={toast} />}
+              {tab === "investments"  && <InvestmentsTab   theme={theme} darkMode={darkMode} />}
+              {tab === "budgets"      && <BudgetsTab       theme={theme} darkMode={darkMode} toast={toast} />}
+              {tab === "goals"        && <GoalsTab         theme={theme} darkMode={darkMode} toast={toast} />}
+              {tab === "notes"        && <NotesTab         theme={theme} darkMode={darkMode} toast={toast} />}
+              {tab === "admin"        && <UsersPanel       currentUser={user} theme={theme} darkMode={darkMode} toast={toast} />}
+              {tab === "settings"     && <SettingsPanel    user={user} onUpdate={refreshUser} theme={theme} darkMode={darkMode} onToggleDark={setDarkMode} />}
+              {tab === "automations"  && <AutomationsPanel theme={theme} darkMode={darkMode} toast={toast} />}
+            </div>
           </div>
         </main>
       </div>
