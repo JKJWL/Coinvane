@@ -2275,15 +2275,28 @@ function DetailRow({ label, value, theme }) {
 //
 // The whole payload is opaque to the backend (LONGTEXT JSON). If the user
 // clears every row we PUT `null` to remove the attachment.
-const EMPTY_ROW      = { name: "", category: "", amount: "" };
-const EMPTY_DEPOSIT  = { accountId: "", memo: "", amount: "" };
+// Row shapes per section:
+//   Earnings + Taxes: { name, category, amount }
+//     — earnings come FROM the employer; taxes go OUT to a tax authority.
+//     Neither routes to a Ledger account.
+//   Pre-Tax + Post-Tax deductions: { name, category, accountId?, amount }
+//     — many deductions ARE the paycheck being split into another account
+//     (401k, HSA, Roth, ESPP, savings sweep). accountId is optional; when
+//     set, the amount is destined for that Ledger account and the user
+//     can see the split reflected across their book. Matches Quicken's
+//     bracketed "[Account name]" rows in those sections.
+//   Deposits: { accountId, memo, amount }
+//     — always account-scoped by definition.
+const EMPTY_ROW           = { name: "", category: "", amount: "" };
+const EMPTY_DEDUCTION_ROW = { name: "", category: "", accountId: "", amount: "" };
+const EMPTY_DEPOSIT       = { accountId: "", memo: "", amount: "" };
 const emptyPaystub = () => ({
   companyName: "",
   memo: "",
   earnings: [{ ...EMPTY_ROW }],
-  preTax:   [{ ...EMPTY_ROW }],
+  preTax:   [{ ...EMPTY_DEDUCTION_ROW }],
   taxes:    [{ ...EMPTY_ROW }],
-  postTax:  [{ ...EMPTY_ROW }],
+  postTax:  [{ ...EMPTY_DEDUCTION_ROW }],
   deposits: [{ ...EMPTY_DEPOSIT }],
 });
 function normalizePaystub(p) {
@@ -2291,11 +2304,11 @@ function normalizePaystub(p) {
   return {
     companyName: p.companyName || "",
     memo:        p.memo        || "",
-    earnings:    (p.earnings || []).map(r => ({ ...EMPTY_ROW,     ...r })),
-    preTax:      (p.preTax   || []).map(r => ({ ...EMPTY_ROW,     ...r })),
-    taxes:       (p.taxes    || []).map(r => ({ ...EMPTY_ROW,     ...r })),
-    postTax:     (p.postTax  || []).map(r => ({ ...EMPTY_ROW,     ...r })),
-    deposits:    (p.deposits || []).map(r => ({ ...EMPTY_DEPOSIT, ...r })),
+    earnings:    (p.earnings || []).map(r => ({ ...EMPTY_ROW,           ...r })),
+    preTax:      (p.preTax   || []).map(r => ({ ...EMPTY_DEDUCTION_ROW, ...r })),
+    taxes:       (p.taxes    || []).map(r => ({ ...EMPTY_ROW,           ...r })),
+    postTax:     (p.postTax  || []).map(r => ({ ...EMPTY_DEDUCTION_ROW, ...r })),
+    deposits:    (p.deposits || []).map(r => ({ ...EMPTY_DEPOSIT,       ...r })),
   };
 }
 function sumRows(rows) {
@@ -2321,9 +2334,13 @@ function PaystubSheet({ open, onClose, transaction, initial, accounts, theme, da
   const setSection = (key, updater) =>
     setForm(f => ({ ...f, [key]: typeof updater === "function" ? updater(f[key]) : updater }));
 
-  const addRow = (key) => setSection(key,
-    rows => [...rows, key === "deposits" ? { ...EMPTY_DEPOSIT } : { ...EMPTY_ROW }]
-  );
+  const addRow = (key) => setSection(key, rows => {
+    let template;
+    if (key === "deposits") template = EMPTY_DEPOSIT;
+    else if (key === "preTax" || key === "postTax") template = EMPTY_DEDUCTION_ROW;
+    else template = EMPTY_ROW;
+    return [...rows, { ...template }];
+  });
   const removeRow = (key, i) => setSection(key, rows => rows.filter((_, idx) => idx !== i));
   const patchRow  = (key, i, patch) => setSection(key,
     rows => rows.map((r, idx) => idx === i ? { ...r, ...patch } : r)
@@ -2343,19 +2360,34 @@ function PaystubSheet({ open, onClose, transaction, initial, accounts, theme, da
     setSaving(true);
     try {
       // Strip fully-blank rows on save so we don't persist scaffolding.
-      const clean = (rows, isDeposit = false) => (rows || [])
-        .filter(r => Number(r.amount) > 0 || (r.name && r.name.trim()) || (isDeposit && (r.accountId || r.memo)))
-        .map(r => isDeposit
-          ? { accountId: r.accountId || null, memo: r.memo || "", amount: Number(r.amount) || 0 }
-          : { name: r.name || "", category: r.category || "", amount: Number(r.amount) || 0 });
+      // Deduction rows keep accountId when set (pre/post-tax splits).
+      const clean = (rows, kind = "line") => (rows || [])
+        .filter(r =>
+          Number(r.amount) > 0
+          || (r.name && r.name.trim())
+          || (kind === "deposit" && (r.accountId || r.memo))
+          || (kind === "deduction" && r.accountId)
+        )
+        .map(r => {
+          if (kind === "deposit") return {
+            accountId: r.accountId ? Number(r.accountId) : null,
+            memo: r.memo || "", amount: Number(r.amount) || 0,
+          };
+          if (kind === "deduction") return {
+            name: r.name || "", category: r.category || "",
+            accountId: r.accountId ? Number(r.accountId) : null,
+            amount: Number(r.amount) || 0,
+          };
+          return { name: r.name || "", category: r.category || "", amount: Number(r.amount) || 0 };
+        });
       const payload = hasContent ? {
         companyName: form.companyName || "",
         memo: form.memo || "",
         earnings: clean(form.earnings),
-        preTax:   clean(form.preTax),
+        preTax:   clean(form.preTax, "deduction"),
         taxes:    clean(form.taxes),
-        postTax:  clean(form.postTax),
-        deposits: clean(form.deposits, true),
+        postTax:  clean(form.postTax, "deduction"),
+        deposits: clean(form.deposits, "deposit"),
       } : null;
       await api.savePaystub(transaction.id, payload);
       toast?.(payload ? "Paystub saved" : "Paystub cleared", "success");
@@ -2380,10 +2412,18 @@ function PaystubSheet({ open, onClose, transaction, initial, accounts, theme, da
     } finally { setSaving(false); }
   };
 
-  // Renders a section header + rows + Add button. Deposits section uses a
-  // slightly different row shape (accountId dropdown instead of category).
-  const Section = ({ title, sectionKey, subtotal, isDeposit }) => {
+  // Renders a section header + rows + Add button.
+  //   isDeposit    → account is the primary field (no category)
+  //   isDeduction  → account is OPTIONAL alongside category (splits paycheck
+  //                  into a specific account, e.g. 401k, HSA, savings sweep)
+  //   otherwise    → free-text category only
+  const Section = ({ title, sectionKey, subtotal, isDeposit, isDeduction }) => {
     const rows = form[sectionKey] || [];
+    // Deduction rows get a third middle column for the optional account.
+    // Deposits and normal earnings/taxes rows keep the two-column middle.
+    const gridCls = isDeduction
+      ? "grid grid-cols-[1fr_1fr_1fr_90px_28px] gap-1.5 items-center"
+      : "grid grid-cols-[1fr_1fr_90px_28px] gap-1.5 items-center";
     return (
       <div>
         <div className="flex items-center justify-between mb-1.5">
@@ -2396,7 +2436,7 @@ function PaystubSheet({ open, onClose, transaction, initial, accounts, theme, da
         </div>
         <div className="space-y-1.5">
           {rows.map((r, i) => (
-            <div key={i} className="grid grid-cols-[1fr_1fr_90px_28px] gap-1.5 items-center">
+            <div key={i} className={gridCls}>
               <input
                 value={r.name}
                 onChange={e => patchRow(sectionKey, i, { name: e.target.value })}
@@ -2420,6 +2460,18 @@ function PaystubSheet({ open, onClose, transaction, initial, accounts, theme, da
                   placeholder="Category (optional)"
                   className={inputCls}
                 />
+              )}
+              {isDeduction && (
+                <select
+                  value={r.accountId || ""}
+                  onChange={e => patchRow(sectionKey, i, { accountId: e.target.value })}
+                  title="Optionally route this deduction into a specific account"
+                  className={inputCls}>
+                  <option value="">→ Account (optional)</option>
+                  {accounts.map(a =>
+                    <option key={a.id} value={a.id}>{a.name}</option>
+                  )}
+                </select>
               )}
               <input
                 type="number" step="0.01" min="0"
@@ -2466,9 +2518,9 @@ function PaystubSheet({ open, onClose, transaction, initial, accounts, theme, da
           </div>
 
           <Section title="Earnings"              sectionKey="earnings" subtotal={grossEarnings} />
-          <Section title="Pre-Tax Deductions"    sectionKey="preTax"   subtotal={preTaxTotal} />
+          <Section title="Pre-Tax Deductions"    sectionKey="preTax"   subtotal={preTaxTotal}   isDeduction />
           <Section title="Taxes"                 sectionKey="taxes"    subtotal={taxesTotal} />
-          <Section title="After-Tax Deductions"  sectionKey="postTax"  subtotal={postTaxTotal} />
+          <Section title="After-Tax Deductions"  sectionKey="postTax"  subtotal={postTaxTotal}  isDeduction />
           <Section title="Deposit Accounts"      sectionKey="deposits" subtotal={depositsTotal} isDeposit />
 
           {/* Totals — matches Quicken's Net Pay / W2 Gross summary rows. */}
