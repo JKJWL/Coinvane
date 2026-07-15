@@ -202,6 +202,67 @@ export default async function (app) {
     return { ok: true };
   });
 
+  // Manual classification override. Body: { classification: "income" | "expense" | "transfer" }.
+  // Lets the user correct a mis-classified transaction from the detail sheet:
+  //   income   → is_transfer=0, amount forced positive, transfer_group_id cleared
+  //   expense  → is_transfer=0, amount forced negative, transfer_group_id cleared
+  //   transfer → is_transfer=1 (amount sign preserved)
+  // If the row was previously half of a detected transfer pair, the OTHER leg
+  // is also unpaired (is_transfer=0, group cleared) so we don't leave a solo
+  // "transfer" row silently excluded from rollups. Sign flips on manual-
+  // account rows adjust the account balance by the delta.
+  app.patch("/:id/classify", async (req, reply) => {
+    const { classification } = req.body || {};
+    if (!["income", "expense", "transfer"].includes(classification)) {
+      return reply.code(400).send({ error: "classification must be income, expense, or transfer" });
+    }
+    const existing = await queryOne(
+      `SELECT id, account_id, amount, is_scheduled, is_transfer, transfer_group_id
+       FROM transactions WHERE id = ? AND user_id = ?`,
+      [req.params.id, req.user.id]
+    );
+    if (!existing) return reply.code(404).send({ error: "not found" });
+
+    const oldAmount = Number(existing.amount);
+    let newAmount = oldAmount;
+    let newIsTransfer = 0;
+    let clearGroup = true;
+
+    if (classification === "income") {
+      newAmount = Math.abs(oldAmount);
+    } else if (classification === "expense") {
+      newAmount = -Math.abs(oldAmount);
+    } else {
+      newIsTransfer = 1;
+      clearGroup = false; // keep the pairing intact when marking as transfer
+    }
+
+    await query(
+      `UPDATE transactions
+       SET amount = ?, is_transfer = ?${clearGroup ? ", transfer_group_id = NULL" : ""}
+       WHERE id = ? AND user_id = ?`,
+      [newAmount, newIsTransfer, req.params.id, req.user.id]
+    );
+
+    // Unpair the other side too if we broke a transfer group.
+    if (clearGroup && existing.transfer_group_id) {
+      await query(
+        `UPDATE transactions
+         SET is_transfer = 0, transfer_group_id = NULL
+         WHERE transfer_group_id = ? AND user_id = ?`,
+        [existing.transfer_group_id, req.user.id]
+      );
+    }
+
+    // Sign flip on a manual account: reflect the delta in the balance.
+    if (!existing.is_scheduled && newAmount !== oldAmount) {
+      await adjustManualAccountBalance(
+        req.user.id, existing.account_id, newAmount - oldAmount
+      );
+    }
+    return { ok: true };
+  });
+
   // Dedicated paystub-detail endpoint. Body: { paystub: <object> | null }.
   // Null clears the attached detail. The client-owned schema is opaque here
   // — we just JSON-stringify and store. Guarded by user ownership.

@@ -2221,6 +2221,57 @@ function TransactionsTab({ theme, darkMode, toast }) {
                 </div>
               )}
 
+              {/* Manual classification override — only offered on posted rows.
+                  Scheduled rows are excluded from rollups anyway, so their
+                  sign / transfer flag doesn't affect anything until adopted. */}
+              {!detail.isScheduled && (() => {
+                const current = detail.isTransfer
+                  ? "transfer"
+                  : Number(detail.amount) >= 0 ? "income" : "expense";
+                const opts = [
+                  { key: "income",   label: "Income",   activeCls: "text-emerald-500 border-emerald-500" },
+                  { key: "expense",  label: "Expense",  activeCls: "text-rose-500 border-rose-500" },
+                  { key: "transfer", label: "Transfer", activeCls: "text-sky-500 border-sky-500" },
+                ];
+                const setClass = async (kind) => {
+                  if (kind === current) return;
+                  try {
+                    await api.classifyTransaction(detail.id, kind);
+                    toast?.(`Marked as ${kind}`, "success");
+                    setDetail(null);
+                    refreshAll();
+                  } catch (e) {
+                    toast?.("Failed: " + (e.message || ""), "error");
+                  }
+                };
+                return (
+                  <div className={`rounded-2xl border ${theme.border} p-4`}>
+                    <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-2`}>
+                      Classification
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      {opts.map(o => {
+                        const active = o.key === current;
+                        return (
+                          <button key={o.key} type="button" onClick={() => setClass(o.key)}
+                            className={`py-2 rounded-xl text-xs font-semibold border transition-colors ${
+                              active ? `${o.activeCls} bg-transparent`
+                                     : `${theme.border} ${theme.textSubtle} hover:${theme.hover}`
+                            }`}>
+                            {o.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className={`text-[11px] ${theme.textSubtle} mt-2`}>
+                      Override auto-classification if it's wrong. Switching to
+                      Income / Expense flips the sign; Transfer excludes the
+                      row from income + spending totals.
+                    </p>
+                  </div>
+                );
+              })()}
+
               {detail.plaidItemId && (
                 <p className={`text-xs ${theme.textSubtle} text-center`}>
                   This is a synced transaction. Deleting it here won't remove it from your bank.

@@ -70,6 +70,10 @@ export const api = {
   createScheduledTransaction: (data) => request("POST", "/transactions/scheduled", data),
   setTransactionScheduled: (id, is_scheduled) =>
     request("PATCH", `/transactions/${id}/scheduled`, { is_scheduled }),
+  // Manual override: force a transaction's classification. classification is
+  // one of "income" | "expense" | "transfer".
+  classifyTransaction: (id, classification) =>
+    request("PATCH", `/transactions/${id}/classify`, { classification }),
 
   // ── Automations (per-user rule engine) ─────────────────────────
   getAutomationVocab:   () => request("GET",    "/automations/vocab"),
