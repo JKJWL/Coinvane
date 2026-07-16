@@ -4642,6 +4642,449 @@ function BudgetCard({ b, theme, darkMode, onEdit, onDelete, reorderLocked,
   );
 }
 
+// ─── Bills Tab ────────────────────────────────────────────────────────────────
+// Recurring outgoing obligations. Distinct from scheduled transactions:
+// each bill is a template that regenerates a "cycle" every period, and
+// each cycle has a paid/unpaid state + variance-vs-average tracking.
+// Auto-match runs on every incoming transaction (sync.js); the manual
+// fallbacks (Mark paid / Undo / Skip) live on each card here.
+const BILL_CYCLES = [
+  { id: "weekly",       label: "Weekly" },
+  { id: "biweekly",     label: "Bi-weekly" },
+  { id: "semimonthly",  label: "Semi-monthly (1st + 15th)" },
+  { id: "monthly",      label: "Monthly" },
+  { id: "yearly",       label: "Yearly" },
+  { id: "custom",       label: "Custom (every N days)" },
+];
+
+function daysBetween(fromIso, toIso) {
+  if (!fromIso || !toIso) return null;
+  const [ay, am, ad] = fromIso.slice(0, 10).split("-").map(Number);
+  const [by, bm, bd] = toIso.slice(0, 10).split("-").map(Number);
+  const a = new Date(ay, am - 1, ad);
+  const b = new Date(by, bm - 1, bd);
+  return Math.round((b - a) / (24 * 3600 * 1000));
+}
+
+function BillsTab({ theme, darkMode, toast }) {
+  const { accounts, categories } = useData();
+  const [bills, setBills] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const today = new Date();
+  const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+
+  const load = useCallback(async () => {
+    try { setBills(await api.listBills(3)); }
+    catch { toast?.("Failed to load bills", "error"); }
+    finally { setLoading(false); }
+  }, [toast]);
+  useEffect(() => { load(); }, [load]);
+
+  // Categorize bills for the two-panel layout.
+  const active = bills.filter(b => !b.archived_at);
+  const dueSoon = active.filter(b =>
+    b.current && !b.current.paid_at && !b.current.skipped
+    && daysBetween(todayIso, b.current.due_date) <= 7
+  );
+  const paidThisCycle = active.filter(b => b.current?.paid_at);
+  const upcoming = active.filter(b => !dueSoon.includes(b) && !paidThisCycle.includes(b));
+
+  const markPaid = async (bill) => {
+    try {
+      await api.markBillPaid(bill.id);
+      toast?.(`${bill.name} — marked paid`, "success");
+      load();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+  const markUnpaid = async (bill) => {
+    try {
+      await api.markBillUnpaid(bill.id);
+      toast?.(`${bill.name} — reset to unpaid`, "success");
+      load();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+  const skipCycle = async (bill) => {
+    try {
+      await api.skipBillCycle(bill.id);
+      toast?.(`${bill.name} — skipped this cycle`, "success");
+      load();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+  const removeBill = async (bill) => {
+    if (!window.confirm(`Archive bill "${bill.name}"? Its history will be kept.`)) return;
+    try {
+      await api.deleteBill(bill.id);
+      toast?.("Bill archived", "success");
+      load();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold">Bills</h2>
+          <p className={`text-xs ${theme.textSubtle}`}>Recurring obligations — auto-matched from your bank when possible.</p>
+        </div>
+        <button type="button" onClick={() => { setEditing(null); setShowForm(true); }}
+          className="px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-500 text-white hover:bg-emerald-600 flex items-center gap-1.5">
+          <Plus className="w-4 h-4" /> Add bill
+        </button>
+      </div>
+
+      {loading ? (
+        <div className={`text-sm ${theme.textSubtle}`}>Loading…</div>
+      ) : active.length === 0 ? (
+        <div className={`${theme.surface} rounded-2xl border ${theme.border} p-8 text-center`}>
+          <Calendar className={`w-8 h-8 mx-auto ${theme.textSubtle} mb-2`} />
+          <div className="font-semibold">No bills yet</div>
+          <p className={`text-xs ${theme.textSubtle} mt-1`}>
+            Add a bill to track when it's due, whether it's been paid, and how
+            much it's varying month-to-month.
+          </p>
+        </div>
+      ) : (
+        <>
+          <BillGroup title="Due this cycle" bills={dueSoon} tone="amber"
+            theme={theme} darkMode={darkMode} accounts={accounts}
+            todayIso={todayIso}
+            onEdit={(b) => { setEditing(b); setShowForm(true); }}
+            onMarkPaid={markPaid} onSkip={skipCycle} onRemove={removeBill} />
+          <BillGroup title="Upcoming" bills={upcoming} tone="slate"
+            theme={theme} darkMode={darkMode} accounts={accounts}
+            todayIso={todayIso}
+            onEdit={(b) => { setEditing(b); setShowForm(true); }}
+            onMarkPaid={markPaid} onSkip={skipCycle} onRemove={removeBill} />
+          <BillGroup title="Paid this cycle" bills={paidThisCycle} tone="emerald"
+            theme={theme} darkMode={darkMode} accounts={accounts}
+            todayIso={todayIso}
+            onEdit={(b) => { setEditing(b); setShowForm(true); }}
+            onMarkPaid={markPaid} onSkip={skipCycle} onRemove={removeBill}
+            onMarkUnpaid={markUnpaid} paid />
+        </>
+      )}
+
+      <BillFormSheet
+        open={showForm}
+        onClose={() => { setShowForm(false); setEditing(null); }}
+        editing={editing}
+        accounts={accounts}
+        categories={categories}
+        theme={theme}
+        darkMode={darkMode}
+        toast={toast}
+        onSaved={() => { setShowForm(false); setEditing(null); load(); }}
+      />
+    </div>
+  );
+}
+
+function BillGroup({ title, bills, tone, theme, darkMode, accounts, todayIso,
+                    onEdit, onMarkPaid, onSkip, onRemove, onMarkUnpaid, paid }) {
+  if (bills.length === 0) return null;
+  const toneCls = {
+    amber:   darkMode ? "text-amber-400"   : "text-amber-600",
+    slate:   theme.textSubtle,
+    emerald: darkMode ? "text-emerald-400" : "text-emerald-600",
+  }[tone];
+  return (
+    <div>
+      <div className={`text-[11px] font-semibold ${toneCls} uppercase tracking-wider mb-2 px-1`}>
+        {title} <span className={theme.textSubtle}>· {bills.length}</span>
+      </div>
+      <div className="space-y-2">
+        {bills.map(b => (
+          <BillCard key={b.id} bill={b} accounts={accounts} theme={theme} darkMode={darkMode}
+            todayIso={todayIso}
+            onEdit={() => onEdit(b)}
+            onMarkPaid={() => onMarkPaid(b)}
+            onMarkUnpaid={onMarkUnpaid ? () => onMarkUnpaid(b) : null}
+            onSkip={() => onSkip(b)}
+            onRemove={() => onRemove(b)}
+            paid={paid} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BillCard({ bill, accounts, theme, darkMode, todayIso,
+                   onEdit, onMarkPaid, onMarkUnpaid, onSkip, onRemove, paid }) {
+  const acct = accounts.find(a => a.id === bill.account_id);
+  const cycle = bill.current || {};
+  const daysUntil = daysBetween(todayIso, cycle.due_date);
+  const overdue = !paid && daysUntil != null && daysUntil < 0;
+  const avg = bill.average_amount || bill.expected_amount || 0;
+  const variance = cycle.variance_pct;
+  const varianceHigh = variance != null && Math.abs(Number(variance)) >= 25;
+  return (
+    <div className={`${theme.surface} rounded-2xl border ${theme.border} p-4`}>
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="font-semibold text-sm">{bill.name}</div>
+            {bill.autopay && (
+              <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
+                darkMode ? "bg-sky-500/15 text-sky-400" : "bg-sky-50 text-sky-700"
+              }`}>Autopay</span>
+            )}
+            {overdue && (
+              <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
+                darkMode ? "bg-rose-500/15 text-rose-400" : "bg-rose-50 text-rose-700"
+              }`}>Overdue</span>
+            )}
+          </div>
+          <div className={`text-xs ${theme.textSubtle} mt-0.5`}>
+            {bill.category} · {(BILL_CYCLES.find(c => c.id === bill.cycle) || {}).label || bill.cycle}
+            {acct ? ` · ${acct.name}` : ""}
+            {bill.account_hint ? ` (${bill.account_hint})` : ""}
+          </div>
+        </div>
+        <div className="text-right flex-shrink-0">
+          <div className="font-bold text-sm private-amount" tabIndex={0}>
+            {fmt(Number(bill.expected_amount) || 0)}
+          </div>
+          {avg > 0 && Number(bill.expected_amount) > 0 && Math.abs(avg - Number(bill.expected_amount)) > 1 && (
+            <div className={`text-[10px] ${theme.textSubtle}`}>
+              avg <span className="private-amount" tabIndex={0}>{fmt(avg)}</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className={`text-xs ${theme.textSubtle} flex items-center gap-2 mb-3 flex-wrap`}>
+        {paid ? (
+          <>
+            <span className={darkMode ? "text-emerald-400" : "text-emerald-600"}>
+              Paid <span className="private-amount" tabIndex={0}>{fmt(Number(cycle.paid_amount) || 0)}</span>
+            </span>
+            {variance != null && (
+              <span className={varianceHigh ? (Number(variance) > 0 ? "text-rose-500" : "text-emerald-500") : theme.textSubtle}>
+                ({Number(variance) > 0 ? "+" : ""}{Number(variance).toFixed(1)}% vs expected)
+              </span>
+            )}
+          </>
+        ) : cycle.skipped ? (
+          <span>Skipped this cycle</span>
+        ) : (
+          <span>Due {cycle.due_date} · {daysUntil == null ? "" : daysUntil >= 0 ? `in ${daysUntil} day${daysUntil === 1 ? "" : "s"}` : `${Math.abs(daysUntil)} day${Math.abs(daysUntil) === 1 ? "" : "s"} ago`}</span>
+        )}
+      </div>
+
+      <div className="flex gap-1.5 flex-wrap">
+        {!paid && !cycle.skipped && (
+          <button type="button" onClick={onMarkPaid}
+            className="flex-1 min-w-[100px] py-1.5 rounded-lg text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600 flex items-center justify-center gap-1">
+            <Check className="w-3 h-3" /> Mark paid
+          </button>
+        )}
+        {paid && onMarkUnpaid && (
+          <button type="button" onClick={onMarkUnpaid}
+            className={`flex-1 min-w-[100px] py-1.5 rounded-lg text-xs font-semibold border ${theme.border} ${theme.hover} flex items-center justify-center gap-1`}>
+            Undo paid
+          </button>
+        )}
+        {!paid && !cycle.skipped && (
+          <button type="button" onClick={onSkip}
+            className={`py-1.5 px-3 rounded-lg text-xs font-semibold border ${theme.border} ${theme.hover}`}>
+            Skip
+          </button>
+        )}
+        <button type="button" onClick={onEdit}
+          className={`py-1.5 px-3 rounded-lg text-xs font-semibold border ${theme.border} ${theme.hover} flex items-center gap-1`}>
+          <Pencil className="w-3 h-3" /> Edit
+        </button>
+        <button type="button" onClick={onRemove}
+          className={`py-1.5 px-2 rounded-lg text-xs font-semibold border ${theme.border} text-rose-500 hover:bg-rose-500/10`}>
+          <Trash2 className="w-3 h-3" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function BillFormSheet({ open, onClose, editing, accounts, categories, theme, darkMode, toast, onSaved }) {
+  const [form, setForm] = useState(() => defaultBillForm());
+  const [saving, setSaving] = useState(false);
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+
+  useEffect(() => {
+    if (!open) return;
+    if (editing) {
+      setForm({
+        name: editing.name || "",
+        category: editing.category || "Bills",
+        cycle: editing.cycle || "monthly",
+        cycle_days: editing.cycle_days || 30,
+        cycle_anchor: editing.cycle_anchor?.slice(0, 10) || new Date().toISOString().slice(0, 10),
+        expected_amount: String(editing.expected_amount ?? ""),
+        account_id: editing.account_id || "",
+        autopay: !!editing.autopay,
+        account_hint: editing.account_hint || "",
+        min_payment: editing.min_payment != null ? String(editing.min_payment) : "",
+        merchant_pattern: editing.merchant_pattern || "",
+        notes: editing.notes || "",
+      });
+    } else {
+      setForm(defaultBillForm());
+    }
+  }, [open, editing]);
+
+  const save = async () => {
+    if (!form.name.trim() || !form.expected_amount) {
+      toast?.("Name and expected amount are required", "error");
+      return;
+    }
+    setSaving(true);
+    try {
+      const payload = {
+        ...form,
+        expected_amount: Number(form.expected_amount),
+        min_payment: form.min_payment ? Number(form.min_payment) : null,
+        cycle_days: form.cycle === "custom" ? Number(form.cycle_days) || 30 : null,
+        account_id: form.account_id || null,
+      };
+      if (editing) {
+        await api.updateBill(editing.id, payload);
+        toast?.("Bill updated", "success");
+      } else {
+        await api.createBill(payload);
+        toast?.("Bill created", "success");
+      }
+      onSaved();
+    } catch (e) {
+      toast?.("Failed: " + (e.message || ""), "error");
+    } finally { setSaving(false); }
+  };
+
+  const catList = useMemo(() => {
+    const seen = new Set();
+    for (const c of (categories || [])) seen.add(c.name);
+    ["Bills", "Utilities", "Rent", "Subscriptions", "Insurance", "Loans"].forEach(c => seen.add(c));
+    return [...seen];
+  }, [categories]);
+
+  return (
+    <Sheet open={open} onClose={onClose} title={editing ? "Edit bill" : "Add bill"} theme={theme}>
+      <div className="space-y-3">
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Name</label>
+          <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
+            placeholder="e.g. Electric, Netflix, Rent" className={inputCls} />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Category</label>
+            <select value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} className={inputCls}>
+              {catList.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Expected amount</label>
+            <input type="number" step="0.01" value={form.expected_amount}
+              onChange={e => setForm({ ...form, expected_amount: e.target.value })}
+              placeholder="0.00" className={inputCls} />
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Cycle</label>
+            <select value={form.cycle} onChange={e => setForm({ ...form, cycle: e.target.value })} className={inputCls}>
+              {BILL_CYCLES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>
+              {form.cycle === "custom" ? "Every N days" : "Cycle anchor"}
+            </label>
+            {form.cycle === "custom" ? (
+              <input type="number" min="1" value={form.cycle_days}
+                onChange={e => setForm({ ...form, cycle_days: e.target.value })}
+                className={inputCls} />
+            ) : (
+              <input type="date" value={form.cycle_anchor}
+                onChange={e => setForm({ ...form, cycle_anchor: e.target.value })}
+                className={inputCls} />
+            )}
+          </div>
+        </div>
+        {form.cycle === "custom" && (
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Cycle anchor date</label>
+            <input type="date" value={form.cycle_anchor}
+              onChange={e => setForm({ ...form, cycle_anchor: e.target.value })}
+              className={inputCls} />
+          </div>
+        )}
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Account (optional)</label>
+          <select value={form.account_id} onChange={e => setForm({ ...form, account_id: e.target.value })} className={inputCls}>
+            <option value="">Any account</option>
+            {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>
+            Merchant pattern (for auto-match)
+          </label>
+          <input value={form.merchant_pattern} onChange={e => setForm({ ...form, merchant_pattern: e.target.value })}
+            placeholder="e.g. netflix, con edison" className={inputCls} />
+          <p className={`text-[11px] ${theme.textSubtle} mt-1`}>
+            Case-insensitive substring match on the transaction merchant. Leave
+            blank to keep this bill manual-only.
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <label className={`flex items-center gap-2 py-2 rounded-xl border ${theme.border} px-3 text-sm cursor-pointer`}>
+            <input type="checkbox" checked={form.autopay}
+              onChange={e => setForm({ ...form, autopay: e.target.checked })} />
+            Autopay
+          </label>
+          <div>
+            <input value={form.account_hint} onChange={e => setForm({ ...form, account_hint: e.target.value })}
+              placeholder="Acct hint (last 4)" className={inputCls} />
+          </div>
+        </div>
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Notes</label>
+          <textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })}
+            rows={2} className={inputCls} />
+        </div>
+        <div className="flex gap-2 pt-2">
+          <button type="button" onClick={onClose}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.textSubtle}`}>
+            Cancel
+          </button>
+          <button type="button" onClick={save} disabled={saving}
+            className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-60">
+            {saving ? "Saving…" : editing ? "Save changes" : "Create bill"}
+          </button>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+function defaultBillForm() {
+  const now = new Date();
+  return {
+    name: "",
+    category: "Bills",
+    cycle: "monthly",
+    cycle_days: 30,
+    cycle_anchor: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`,
+    expected_amount: "",
+    account_id: "",
+    autopay: false,
+    account_hint: "",
+    min_payment: "",
+    merchant_pattern: "",
+    notes: "",
+  };
+}
+
 function BudgetsTab({ theme, darkMode, toast }) {
   const { user: authUser } = useAuth();
   // weekStart drives the tracker sheet's "Weekly · Resets every Xday" subtitle.
@@ -7529,6 +7972,7 @@ function Shell({ user, onLogout, refreshUser }) {
     { id: "transactions", label: "Transactions", icon: Receipt     },
     { id: "investments",  label: "Investments",  icon: TrendingUp  },
     { id: "budgets",      label: "Budgets",      icon: PieChartIcon },
+    { id: "bills",        label: "Bills",        icon: Calendar    },
     { id: "goals",        label: "Goals",        icon: Target      },
     { id: "notes",        label: "Notes",        icon: FileText    },
     { id: "settings",     label: "Settings",     icon: Settings    },
@@ -7542,7 +7986,7 @@ function Shell({ user, onLogout, refreshUser }) {
     // Admin tab; the owner has elevated controls inside the panel.
     ...((user.role === "admin" || user.role === "owner") ? [{ id: "admin", label: "Admin", icon: Users }] : []),
   ];
-  const TITLES = { dashboard:"Overview", accounts:"Accounts", transactions:"Transactions", investments:"Investments", budgets:"Budgets", goals:"Goals", notes:"Notes", automations:"Automations", admin:"Admin", settings:"Settings" };
+  const TITLES = { dashboard:"Overview", accounts:"Accounts", transactions:"Transactions", investments:"Investments", budgets:"Budgets", bills:"Bills", goals:"Goals", notes:"Notes", automations:"Automations", admin:"Admin", settings:"Settings" };
   const mainTabs = ALL_TABS.slice(0, 7);
   const moreTabs = ALL_TABS.slice(7);
   const net = Number(summary?.netWorth || 0);
@@ -7675,6 +8119,7 @@ function Shell({ user, onLogout, refreshUser }) {
               {tab === "transactions" && <TransactionsTab  theme={theme} darkMode={darkMode} toast={toast} />}
               {tab === "investments"  && <InvestmentsTab   theme={theme} darkMode={darkMode} />}
               {tab === "budgets"      && <BudgetsTab       theme={theme} darkMode={darkMode} toast={toast} />}
+              {tab === "bills"        && <BillsTab         theme={theme} darkMode={darkMode} toast={toast} />}
               {tab === "goals"        && <GoalsTab         theme={theme} darkMode={darkMode} toast={toast} />}
               {tab === "notes"        && <NotesTab         theme={theme} darkMode={darkMode} toast={toast} />}
               {tab === "admin"        && <UsersPanel       currentUser={user} theme={theme} darkMode={darkMode} toast={toast} />}

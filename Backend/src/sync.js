@@ -3,6 +3,7 @@ import { plaid } from "./plaid-client.js";
 import { query, queryOne } from "./db.js";
 import { decrypt } from "./crypto.js";
 import { runRulesForTrigger } from "./automation-engine.js";
+import { tryMatchTransactionToBill } from "./bill-utils.js";
 import crypto from "node:crypto";
 
 const PLAID_TO_INTERNAL_TYPE = {
@@ -171,6 +172,12 @@ export async function syncTransactions(userId, itemId, accessToken) {
     await runRulesForTrigger(userId, "transaction_arrived", context);
     if (Number(row.amount) > 0 && !row.is_transfer) {
       await runRulesForTrigger(userId, "income_landed", context);
+    }
+    // Bills auto-match: outgoing payments only, silent-fail so a
+    // matcher error can't stall the sync loop.
+    if (Number(row.amount) < 0 && !row.is_transfer) {
+      try { await tryMatchTransactionToBill(userId, context.transaction); }
+      catch { /* ignore */ }
     }
   }
 

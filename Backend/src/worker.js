@@ -6,6 +6,7 @@ import { decrypt } from "./crypto.js";
 import { query, queryOne, pool } from "./db.js";
 import { sendMail } from "./mailer.js";
 import { generateNotifications } from "./notification-engine.js";
+import { refreshUserBillCycles } from "./bill-utils.js";
 import { syncQueue } from "./queue.js";
 import { getSyncIntervalMinutes } from "./app-settings.js";
 import { runRulesForTrigger } from "./automation-engine.js";
@@ -109,6 +110,11 @@ new Worker("sync", async (job) => {
       // actions scan the DB themselves.
       try { await runRulesForTrigger(u.id, "daily_check", {}); }
       catch (e) { console.error(`daily automations failed for user ${u.id}:`, e.message); }
+
+      // Roll every active bill forward to its current cycle. Idempotent
+      // and silent-fail so a malformed bill can't stop the batch.
+      try { await refreshUserBillCycles(u.id); }
+      catch (e) { console.error(`bill cycle refresh failed for user ${u.id}:`, e.message); }
 
       // Period-rollover detection. Fire period_rolled_over EXACTLY ONCE
       // per master-period boundary per user, no matter how often this

@@ -441,6 +441,62 @@ const SCHEMA = [
     INDEX idx_user_time (user_id, uploaded_at),
     INDEX idx_txn_time (transaction_id, uploaded_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // ── Bills (recurring outgoing obligations) ────────────────────────
+  // Distinct from scheduled_transactions in three ways:
+  //   1. Recurring template that regenerates each cycle
+  //   2. Per-cycle "paid?" state, variance vs rolling average
+  //   3. Dashboard surfaces "due this week" / "paid this cycle"
+  // Auto-match: on each transaction arrival we look for an unpaid cycle
+  // whose merchant_pattern matches the txn merchant + amount within
+  // tolerance, and mark it paid. Manual fallback is always available.
+  `CREATE TABLE IF NOT EXISTS bills (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    category VARCHAR(64) DEFAULT 'Bills',
+    cycle VARCHAR(16) NOT NULL DEFAULT 'monthly',
+    cycle_days INT NULL,
+    cycle_anchor DATE NOT NULL,
+    expected_amount DECIMAL(14,2) NOT NULL DEFAULT 0,
+    average_amount DECIMAL(14,2) NULL,
+    account_id INT NULL,
+    autopay TINYINT DEFAULT 0,
+    account_hint VARCHAR(32) NULL,
+    min_payment DECIMAL(14,2) NULL,
+    merchant_pattern VARCHAR(128) NULL,
+    notes VARCHAR(500) NULL,
+    archived_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user_active (user_id, archived_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Per-cycle history. One row per bill per billing cycle. cycle_start
+  // is the anchor for that cycle; due_date is when we expect to pay
+  // (usually cycle_end - a few days, but simplest = cycle_end).
+  //   paid_at NULL  = unpaid (may be upcoming or overdue)
+  //   paid_at set   = paid, with paid_amount + variance_pct populated
+  //   skipped = 1   = user marked "skip this cycle" (doesn't count as unpaid)
+  `CREATE TABLE IF NOT EXISTS bill_cycles (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    bill_id INT NOT NULL,
+    cycle_start DATE NOT NULL,
+    cycle_end DATE NOT NULL,
+    due_date DATE NOT NULL,
+    expected_amount DECIMAL(14,2) NOT NULL,
+    paid_at TIMESTAMP NULL,
+    paid_amount DECIMAL(14,2) NULL,
+    matched_txn_id INT NULL,
+    skipped TINYINT DEFAULT 0,
+    variance_pct DECIMAL(6,2) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (bill_id) REFERENCES bills(id) ON DELETE CASCADE,
+    INDEX idx_user_open (user_id, paid_at, cycle_end),
+    INDEX idx_bill_start (bill_id, cycle_start)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];
 
 const DEFAULT_CATEGORIES = [

@@ -21,6 +21,7 @@ import plaidRoutes from "./routes/plaid.js";
 import adminRoutes from "./routes/admin.js";
 import exportRoutes from "./routes/export.js";
 import automationsRoutes from "./routes/automations.js";
+import billsRoutes from "./routes/bills.js";
 // Register every automation action with the engine at startup so any
 // runRulesForTrigger() call made from a route handler can dispatch.
 import "./automation-actions.js";
@@ -182,6 +183,7 @@ await app.register(plaidRoutes,        { prefix: "/api/plaid" });
 await app.register(adminRoutes,        { prefix: "/api/admin" });
 await app.register(exportRoutes,       { prefix: "/api/export" });
 await app.register(automationsRoutes,  { prefix: "/api/automations" });
+await app.register(billsRoutes,        { prefix: "/api/bills" });
 
 const port = Number(process.env.PORT || 4000);
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {

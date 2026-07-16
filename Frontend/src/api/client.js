@@ -105,6 +105,17 @@ export const api = {
   },
   deleteAttachment: (id) => request("DELETE", `/transactions/${id}/attachment`),
 
+  // ── Bills (recurring outgoing obligations) ─────────────────────
+  listBills: (historyCount = 0) =>
+    request("GET", `/bills${historyCount ? "?historyCount=" + historyCount : ""}`),
+  createBill: (data) => request("POST", "/bills", data),
+  updateBill: (id, data) => request("PATCH", `/bills/${id}`, data),
+  deleteBill: (id) => request("DELETE", `/bills/${id}`),
+  markBillPaid: (id, amount) => request("POST", `/bills/${id}/mark-paid`, { amount }),
+  markBillUnpaid: (id) => request("POST", `/bills/${id}/mark-unpaid`),
+  skipBillCycle: (id) => request("POST", `/bills/${id}/skip`),
+  refreshBillCycles: () => request("POST", "/bills/refresh-cycles"),
+
   // ── Automations (per-user rule engine) ─────────────────────────
   getAutomationVocab:   () => request("GET",    "/automations/vocab"),
   listAutomations:      () => request("GET",    "/automations"),
