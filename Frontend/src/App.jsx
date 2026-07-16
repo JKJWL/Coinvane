@@ -190,7 +190,7 @@ function ConfirmDialog({
 
   const confirmCls = destructive
     ? "bg-rose-500 hover:bg-rose-600 text-white shadow-sm shadow-rose-500/30"
-    : "bg-emerald-500 hover:bg-emerald-600 text-white shadow-sm shadow-emerald-500/30";
+    : "bg-violet-500 hover:bg-violet-600 text-white shadow-sm shadow-violet-500/30";
 
   return (
     <AnimatePresence>
@@ -576,7 +576,7 @@ function PlaidLinkButton({ onSuccess, full = false }) {
       whileTap={{ scale: 0.97 }}
       onClick={click}
       disabled={exchanging}
-      className={`flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 text-white text-sm font-semibold shadow-sm shadow-emerald-500/30 transition-colors disabled:opacity-60 ${
+      className={`flex items-center justify-center gap-2 bg-violet-500 hover:bg-violet-600 active:bg-violet-700 text-white text-sm font-semibold shadow-sm shadow-violet-500/30 transition-colors disabled:opacity-60 ${
         full ? "w-full py-3 mt-2 rounded-xl" : "px-4 py-2.5 rounded-xl"
       }`}
     >
@@ -645,7 +645,7 @@ function AuthScreen({ onAuth }) {
   }, [CLIENT_ID, onAuth]);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-emerald-900 flex items-center justify-center p-4 safe-pt safe-pb">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-violet-900 flex items-center justify-center p-4 safe-pt safe-pb">
       <motion.div
         initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
         transition={{ type: "spring", damping: 20, stiffness: 200 }}
@@ -669,7 +669,7 @@ function AuthScreen({ onAuth }) {
             {busy ? (
               <div className="flex items-center gap-2 text-sm text-slate-500">
                 <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
-                  className="w-4 h-4 rounded-full border-2 border-slate-200 border-t-emerald-500" />
+                  className="w-4 h-4 rounded-full border-2 border-slate-200 border-t-violet-500" />
                 Signing you in…
               </div>
             ) : (
@@ -719,7 +719,7 @@ function NotificationsBell({ theme, darkMode }) {
                 <h3 className="font-semibold text-sm">Notifications</h3>
                 {unread > 0 && (
                   <button onClick={async () => { await api.markAllNotificationsRead(); refreshAll(); }}
-                    className="text-xs text-emerald-500 font-medium">Mark all read</button>
+                    className="text-xs text-violet-500 font-medium">Mark all read</button>
                 )}
               </div>
               {notifications.length === 0 ? (
@@ -727,7 +727,7 @@ function NotificationsBell({ theme, darkMode }) {
               ) : (
                 <div className={`divide-y ${theme.divide}`}>
                   {notifications.map(n => (
-                    <div key={n.id} className={`px-4 py-3 ${!n.readAt ? (darkMode ? "bg-emerald-500/10" : "bg-emerald-50/50") : ""}`}>
+                    <div key={n.id} className={`px-4 py-3 ${!n.readAt ? (darkMode ? "bg-violet-500/10" : "bg-violet-50/50") : ""}`}>
                       <div className="text-sm font-medium">{n.title}</div>
                       {n.body && <div className={`text-xs ${theme.textMuted} mt-0.5`}>{stripDedupMarker(n.body)}</div>}
                       <div className={`text-xs ${theme.textSubtle} mt-1`}>{new Date(n.createdAt).toLocaleString()}</div>
@@ -757,7 +757,7 @@ function MoreMenu({ tabs, activeTab, setTab, theme, darkMode }) {
     <div ref={ref} className="relative">
       <button onClick={() => setOpen(!open)}
         className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition ${
-          active ? (darkMode ? "text-emerald-400" : "text-emerald-700") : `${theme.textMuted} ${theme.hover}`
+          active ? (darkMode ? "text-violet-400" : "text-violet-700") : `${theme.textMuted} ${theme.hover}`
         }`}>
         {active
           ? <><active.icon className="w-4 h-4 relative" /><span className="relative">{active.label}</span></>
@@ -770,7 +770,7 @@ function MoreMenu({ tabs, activeTab, setTab, theme, darkMode }) {
             className={`absolute top-full mt-1 right-0 w-48 ${theme.surface} border ${theme.border} rounded-xl shadow-lg overflow-hidden z-30`}>
             {tabs.map(t => (
               <button key={t.id} onClick={() => { setTab(t.id); setOpen(false); }}
-                className={`w-full flex items-center gap-2 px-3 py-2.5 text-sm ${theme.hover} ${activeTab === t.id ? "text-emerald-500 font-semibold" : ""}`}>
+                className={`w-full flex items-center gap-2 px-3 py-2.5 text-sm ${theme.hover} ${activeTab === t.id ? "text-violet-500 font-semibold" : ""}`}>
                 <t.icon className="w-4 h-4" /> {t.label}
               </button>
             ))}
@@ -863,7 +863,7 @@ function KpiPeriodChips({ range, setRange, theme, darkMode, expanded, exclude })
         return (
           <button key={p.id} onClick={() => setRange(p.id)}
             className={`${size} rounded-full font-semibold whitespace-nowrap transition ${
-              active ? "bg-emerald-500 text-white" : theme.textMuted
+              active ? "bg-violet-500 text-white" : theme.textMuted
             }`}>
             {p.label}
           </button>
@@ -911,7 +911,7 @@ function NetWorthChart({ theme, darkMode, variant = "hero" }) {
           <button key={p.id} onClick={() => setRange(p.id)}
             className={`px-2.5 py-1 rounded-full text-[11px] font-semibold whitespace-nowrap transition ${
               active
-                ? (isHero ? "bg-white text-emerald-700" : "bg-emerald-500 text-white")
+                ? (isHero ? "bg-white text-violet-700" : "bg-violet-500 text-white")
                 : (isHero ? "text-white/85" : theme.textMuted)
             }`}>
             {p.label}
@@ -931,7 +931,7 @@ function NetWorthChart({ theme, darkMode, variant = "hero" }) {
 
   if (isHero) {
     return (
-      <div className="relative rounded-3xl bg-gradient-to-br from-emerald-400 via-emerald-500 to-emerald-700 p-5 text-white shadow-xl shadow-emerald-500/30 overflow-hidden">
+      <div className="relative rounded-3xl bg-gradient-to-br from-violet-400 via-violet-500 to-violet-700 p-5 text-white shadow-xl shadow-violet-500/30 overflow-hidden">
         <div className="relative">
           <div className="text-[11px] font-semibold uppercase tracking-[0.14em] opacity-90">Net Worth</div>
           <div className="text-[40px] leading-none font-bold mt-1.5 tracking-tight private-amount" tabIndex={0}>
@@ -1224,7 +1224,7 @@ function CashflowCard({ theme, darkMode, expanded, onExpand, showForecast, onFor
             <button type="button" onClick={onForecastToggle}
               title={showForecast ? "Hide forecast" : "Show forecast"}
               className={`hidden lg:inline-flex p-1.5 rounded-lg border ${theme.border} ${theme.hover} ${
-                showForecast ? "text-emerald-500" : theme.textMuted
+                showForecast ? "text-violet-500" : theme.textMuted
               }`}>
               <Sparkles className="w-3.5 h-3.5" />
             </button>
@@ -1287,7 +1287,7 @@ function OneOffAdjustmentSheet({ open, onClose, onSaved, theme, darkMode }) {
   const today = new Date().toISOString().slice(0, 10);
   const [form, setForm] = useState({ date: today, label: "", amount: "", direction: "out" });
   const [saving, setSaving] = useState(false);
-  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
 
   useEffect(() => {
     if (!open) return;
@@ -1323,7 +1323,7 @@ function OneOffAdjustmentSheet({ open, onClose, onSaved, theme, darkMode }) {
             <button key={dir} onClick={() => setForm({ ...form, direction: dir })}
               className={`py-1.5 rounded-full text-xs font-semibold ${
                 form.direction === dir
-                  ? (dir === "in" ? "bg-emerald-500 text-white" : "bg-rose-500 text-white")
+                  ? (dir === "in" ? "bg-violet-500 text-white" : "bg-rose-500 text-white")
                   : "text-slate-500"
               }`}>
               {dir === "in" ? "Inflow" : "Outflow"}
@@ -1355,7 +1355,7 @@ function OneOffAdjustmentSheet({ open, onClose, onSaved, theme, darkMode }) {
             Cancel
           </button>
           <button type="button" onClick={save} disabled={saving || !form.label.trim() || !form.amount}
-            className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-60">
+            className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-60">
             {saving ? "Saving…" : "Add"}
           </button>
         </div>
@@ -1418,11 +1418,11 @@ function SpendingByCategoryCard({ theme, darkMode, expanded, onExpand }) {
         </div>
         <div className={`flex items-center gap-1 p-0.5 rounded-full ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
           <button onClick={() => setSortDir("largest")}
-            className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${sortDir === "largest" ? "bg-emerald-500 text-white" : theme.textMuted}`}>
+            className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${sortDir === "largest" ? "bg-violet-500 text-white" : theme.textMuted}`}>
             Largest
           </button>
           <button onClick={() => setSortDir("smallest")}
-            className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${sortDir === "smallest" ? "bg-emerald-500 text-white" : theme.textMuted}`}>
+            className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${sortDir === "smallest" ? "bg-violet-500 text-white" : theme.textMuted}`}>
             Smallest
           </button>
         </div>
@@ -1615,7 +1615,7 @@ function OverviewTab({ theme, darkMode, onNavigate }) {
         className={`${theme.surface} rounded-2xl border ${theme.border} overflow-hidden`}>
         <div className={`px-5 py-4 border-b ${theme.border} flex items-center justify-between`}>
           <h3 className="font-semibold">Recent transactions</h3>
-          <button onClick={() => onNavigate("transactions")} className="text-xs font-medium text-emerald-500">View all →</button>
+          <button onClick={() => onNavigate("transactions")} className="text-xs font-medium text-violet-500">View all →</button>
         </div>
         <div className={`divide-y ${theme.divide}`}>
           {transactions.slice(0, 8).map(t => {
@@ -1721,7 +1721,7 @@ function AccountsTab({ theme, darkMode, toast }) {
     catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
   };
 
-  const inputCls = `w-full px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+  const inputCls = `w-full px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
   const typeStyle = {
     cash:       { label: "Cash",       light: "bg-emerald-100 text-emerald-700", dark: "bg-emerald-500/20 text-emerald-400", icon: Wallet      },
     credit:     { label: "Credit",     light: "bg-rose-100 text-rose-700",       dark: "bg-rose-500/20 text-rose-400",       icon: CreditCard  },
@@ -1881,7 +1881,7 @@ function AccountsTab({ theme, darkMode, toast }) {
               Cancel
             </button>
             <motion.button whileTap={{ scale: 0.97 }} type="submit" disabled={adding}
-              className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
+              className="flex-1 bg-violet-500 hover:bg-violet-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
               {adding ? "Adding…" : "Add account"}
             </motion.button>
           </div>
@@ -2129,7 +2129,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
     } finally { setAdding(false); }
   };
 
-  const inputCls = `w-full px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+  const inputCls = `w-full px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
   // Merchant-rule + txn-recategorize picker categories.
   // Priority order:
   //   1. User's actual `categories` rows (custom created + defaults)
@@ -2187,7 +2187,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
                 onClick={() => setSide(s)}
                 className={`px-2.5 py-1 rounded-lg text-xs font-semibold capitalize transition ${
                   active
-                    ? "bg-emerald-500 text-white shadow-sm shadow-emerald-500/30"
+                    ? "bg-violet-500 text-white shadow-sm shadow-violet-500/30"
                     : theme.textMuted
                 }`}>
                 {s}
@@ -2197,15 +2197,15 @@ function TransactionsTab({ theme, darkMode, toast }) {
         </div>
         <motion.button whileTap={{ scale: 0.94 }} onClick={() => setShowFilters(!showFilters)}
           className={`relative p-2.5 rounded-xl border ${theme.border} ${theme.surface} flex-shrink-0`}>
-          <Settings className={`w-5 h-5 ${activeFilterCount > 0 ? "text-emerald-500" : theme.textSubtle}`} />
+          <Settings className={`w-5 h-5 ${activeFilterCount > 0 ? "text-violet-500" : theme.textSubtle}`} />
           {activeFilterCount > 0 && (
-            <span className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+            <span className="absolute -top-1 -right-1 w-4 h-4 bg-violet-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
               {activeFilterCount}
             </span>
           )}
         </motion.button>
         <motion.button whileTap={{ scale: 0.94 }} onClick={() => setShowAdd(true)}
-          className="bg-emerald-500 hover:bg-emerald-600 text-white p-2.5 rounded-xl shadow-sm shadow-emerald-500/30 flex-shrink-0">
+          className="bg-violet-500 hover:bg-violet-600 text-white p-2.5 rounded-xl shadow-sm shadow-violet-500/30 flex-shrink-0">
           <Plus className="w-5 h-5" />
         </motion.button>
       </div>
@@ -2249,7 +2249,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
               </div>
               {activeFilterCount > 0 && (
                 <button onClick={() => { setCatFilter(""); setAcctFilter("all"); setSort("date_desc"); }}
-                  className={`text-xs font-medium ${theme.textSubtle} hover:text-emerald-500`}>
+                  className={`text-xs font-medium ${theme.textSubtle} hover:text-violet-500`}>
                   Clear filters
                 </button>
               )}
@@ -2273,7 +2273,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
             </div>
             <button type="button"
               onClick={() => { setCopyFrom(null); setShowScheduleForm(true); }}
-              className="text-xs font-semibold text-emerald-500 flex items-center gap-1">
+              className="text-xs font-semibold text-violet-500 flex items-center gap-1">
               <Plus className="w-3 h-3" /> Schedule
             </button>
           </div>
@@ -2316,7 +2316,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
       {scheduled.length === 0 && transactions.length > 0 && (
         <button type="button"
           onClick={() => { setCopyFrom(null); setShowScheduleForm(true); }}
-          className={`w-full ${theme.surface} border ${theme.border} border-dashed rounded-2xl px-4 py-2.5 text-left flex items-center gap-2 ${theme.textSubtle} hover:text-emerald-500 transition-colors`}>
+          className={`w-full ${theme.surface} border ${theme.border} border-dashed rounded-2xl px-4 py-2.5 text-left flex items-center gap-2 ${theme.textSubtle} hover:text-violet-500 transition-colors`}>
           <Calendar className="w-3.5 h-3.5" />
           <span className="text-xs font-medium">
             Schedule an upcoming paycheck or bill…
@@ -2405,7 +2405,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
                 Expense
               </button>
               <button type="button" onClick={() => setForm({ ...form, sign: "in" })}
-                className={`flex-1 py-2 rounded-lg text-sm font-semibold transition ${form.sign === "in" ? (darkMode ? "bg-slate-900 shadow text-emerald-400" : "bg-white shadow text-emerald-600") : theme.textMuted}`}>
+                className={`flex-1 py-2 rounded-lg text-sm font-semibold transition ${form.sign === "in" ? (darkMode ? "bg-slate-900 shadow text-violet-400" : "bg-white shadow text-violet-600") : theme.textMuted}`}>
                 Income
               </button>
             </div>
@@ -2454,7 +2454,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
               Cancel
             </button>
             <motion.button whileTap={{ scale: 0.97 }} type="submit" disabled={adding}
-              className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
+              className="flex-1 bg-violet-500 hover:bg-violet-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
               {adding ? "Adding…" : "Add transaction"}
             </motion.button>
           </div>
@@ -2500,8 +2500,8 @@ function TransactionsTab({ theme, darkMode, toast }) {
                     <div className={`text-xs ${theme.textSubtle} mt-0.5`}>Only this transaction is recategorised.</div>
                   </motion.button>
                   <motion.button whileTap={{ scale: 0.97 }} onClick={() => applyCategoryChange("all")}
-                    className="w-full p-3.5 rounded-2xl border border-emerald-500 bg-emerald-500/10 text-left">
-                    <div className="font-semibold text-sm text-emerald-600 dark:text-emerald-400">All transactions from {detail.merchant}</div>
+                    className="w-full p-3.5 rounded-2xl border border-violet-500 bg-violet-500/10 text-left">
+                    <div className="font-semibold text-sm text-violet-600 dark:text-violet-400">All transactions from {detail.merchant}</div>
                     <div className={`text-xs ${theme.textSubtle} mt-0.5`}>Saves a rule so future syncs auto-apply this category too.</div>
                   </motion.button>
                 </div>
@@ -2610,7 +2610,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
                     </div>
                     <button type="button"
                       onClick={() => setPaystubEdit(detail)}
-                      className="text-xs font-semibold text-emerald-500 flex items-center gap-1">
+                      className="text-xs font-semibold text-violet-500 flex items-center gap-1">
                       <Pencil className="w-3 h-3" />
                       {detail.paystub ? "Edit" : "Add detail"}
                     </button>
@@ -2778,7 +2778,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
                           { category: "Other", amount: "", note: "" },
                           { category: "Other", amount: "", note: "" },
                         ])}
-                        className="text-xs font-semibold text-emerald-500 flex items-center gap-1">
+                        className="text-xs font-semibold text-violet-500 flex items-center gap-1">
                         <Plus className="w-3 h-3" /> Split
                       </button>
                     )}
@@ -2859,7 +2859,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
                                   toast?.("Failed: " + (e.message || ""), "error");
                                 } finally { setSplitSaving(false); }
                               }}
-                              className={`flex-1 py-2 rounded-lg text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-40`}>
+                              className={`flex-1 py-2 rounded-lg text-xs font-semibold bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-40`}>
                               {splitSaving ? "Splitting…" : "Save split"}
                             </button>
                           </div>
@@ -2878,7 +2878,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
                   ? "transfer"
                   : Number(detail.amount) >= 0 ? "income" : "expense";
                 const opts = [
-                  { key: "income",   label: "Income",   activeCls: "text-emerald-500 border-emerald-500" },
+                  { key: "income",   label: "Income",   activeCls: "text-violet-500 border-violet-500" },
                   { key: "expense",  label: "Expense",  activeCls: "text-rose-500 border-rose-500" },
                   { key: "transfer", label: "Transfer", activeCls: "text-sky-500 border-sky-500" },
                 ];
@@ -2955,7 +2955,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
                         toast?.("Failed: " + (e.message || ""), "error");
                       }
                     }}
-                    className={`flex-1 py-2.5 rounded-xl text-sm font-medium border ${theme.border} ${theme.surface} text-emerald-500 hover:bg-emerald-500/10 flex items-center justify-center gap-2`}>
+                    className={`flex-1 py-2.5 rounded-xl text-sm font-medium border ${theme.border} ${theme.surface} text-violet-500 hover:bg-violet-500/10 flex items-center justify-center gap-2`}>
                     <Check className="w-4 h-4" /> Mark Present
                   </button>
                 )}
@@ -3076,7 +3076,7 @@ function PaystubSheet({ open, onClose, transaction, initial, accounts, theme, da
   const postTaxTotal  = sumRows(form.postTax);
   const depositsTotal = sumRows(form.deposits);
   const computedNet   = grossEarnings - preTaxTotal - taxesTotal - postTaxTotal;
-  const inputCls = `w-full px-2.5 py-1.5 ${theme.inputBg} border ${theme.border} rounded-lg text-xs focus:outline-none focus:border-emerald-500`;
+  const inputCls = `w-full px-2.5 py-1.5 ${theme.inputBg} border ${theme.border} rounded-lg text-xs focus:outline-none focus:border-violet-500`;
 
   const setSection = (key, updater) =>
     setForm(f => ({ ...f, [key]: typeof updater === "function" ? updater(f[key]) : updater }));
@@ -3234,7 +3234,7 @@ function PaystubSheet({ open, onClose, transaction, initial, accounts, theme, da
             )}
             <motion.button whileTap={{ scale: 0.97 }} type="button"
               disabled={saving} onClick={save}
-              className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
+              className="flex-1 bg-violet-500 hover:bg-violet-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
               {saving ? "Saving…" : "Save"}
             </motion.button>
           </div>
@@ -3294,7 +3294,7 @@ function Toggle({ checked, onChange, disabled, darkMode }) {
       disabled={disabled}
       className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${
         disabled ? "opacity-50 cursor-not-allowed" : ""
-      } ${checked ? "bg-emerald-500" : darkMode ? "bg-slate-700" : "bg-slate-300"}`}>
+      } ${checked ? "bg-violet-500" : darkMode ? "bg-slate-700" : "bg-slate-300"}`}>
       <motion.div animate={{ x: checked ? 20 : 0 }} transition={{ type: "spring", damping: 25, stiffness: 500 }}
         className="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow-sm" />
     </button>
@@ -3374,7 +3374,7 @@ function PaystubSection({
         ))}
       </div>
       <button type="button" onClick={() => onAddRow(sectionKey)}
-        className="mt-1.5 text-[11px] font-semibold text-emerald-500 flex items-center gap-1">
+        className="mt-1.5 text-[11px] font-semibold text-violet-500 flex items-center gap-1">
         <Plus className="w-3 h-3" /> Add {isDeposit ? "deposit" : "line"}
       </button>
     </div>
@@ -3407,7 +3407,7 @@ function ScheduleSheet({ open, onClose, copyFrom, accounts, catList, theme, dark
   // Re-seed when the sheet opens (may be for a fresh entry OR a copy).
   useEffect(() => { if (open) setForm(initial()); /* eslint-disable-next-line */ }, [open, copyFrom?.id]);
 
-  const inputCls = `w-full px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+  const inputCls = `w-full px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -3455,7 +3455,7 @@ function ScheduleSheet({ open, onClose, copyFrom, accounts, catList, theme, dark
               onClick={() => setForm({ ...form, sign: o.id })}
               className={`flex-1 py-2 rounded-lg text-sm font-semibold transition ${
                 form.sign === o.id
-                  ? (darkMode ? "bg-slate-900 shadow text-emerald-400" : "bg-white shadow text-emerald-600")
+                  ? (darkMode ? "bg-slate-900 shadow text-violet-400" : "bg-white shadow text-violet-600")
                   : theme.textMuted
               }`}>
               {o.label}
@@ -3525,7 +3525,7 @@ function ScheduleSheet({ open, onClose, copyFrom, accounts, catList, theme, dark
             Cancel
           </button>
           <motion.button whileTap={{ scale: 0.97 }} type="submit" disabled={saving}
-            className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
+            className="flex-1 bg-violet-500 hover:bg-violet-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
             {saving ? "Scheduling…" : "Schedule"}
           </motion.button>
         </div>
@@ -3704,7 +3704,7 @@ function ActionAddMenu({ available, onPick, theme, darkMode }) {
   return (
     <>
       <button ref={btnRef} type="button" onClick={() => setOpen(o => !o)}
-        className="text-[11px] font-semibold text-emerald-500 flex items-center gap-1">
+        className="text-[11px] font-semibold text-violet-500 flex items-center gap-1">
         <Plus className="w-3 h-3" /> Add action
       </button>
       {open && pos && createPortal(
@@ -3727,7 +3727,7 @@ function ActionAddMenu({ available, onPick, theme, darkMode }) {
                   onClick={() => setActiveCat(cat.id)}
                   className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between gap-2 transition-colors ${
                     isActive
-                      ? (darkMode ? "bg-slate-800 text-emerald-400" : "bg-slate-100 text-emerald-600")
+                      ? (darkMode ? "bg-slate-800 text-violet-400" : "bg-slate-100 text-violet-600")
                       : theme.hover
                   }`}>
                   <div className="min-w-0">
@@ -3736,7 +3736,7 @@ function ActionAddMenu({ available, onPick, theme, darkMode }) {
                       {cat.kinds.length} action{cat.kinds.length !== 1 ? "s" : ""}
                     </div>
                   </div>
-                  <ChevronRight className={`w-3.5 h-3.5 flex-shrink-0 ${isActive ? "text-emerald-500" : "opacity-40"}`} />
+                  <ChevronRight className={`w-3.5 h-3.5 flex-shrink-0 ${isActive ? "text-violet-500" : "opacity-40"}`} />
                 </button>
               );
             })}
@@ -3772,7 +3772,7 @@ function ActionAddMenu({ available, onPick, theme, darkMode }) {
 // need. Unknown kinds render a raw JSON textarea as a safety net so a
 // future stage's action still works if the deploy is ahead of the client.
 function ActionParamsEditor({ kind, params, onPatch, catList = [], accounts = [], budgets = [], goals = [], currentTrigger, theme, darkMode }) {
-  const inputCls = `w-full px-2.5 py-1.5 ${theme.inputBg} border ${theme.border} rounded-lg text-xs focus:outline-none focus:border-emerald-500`;
+  const inputCls = `w-full px-2.5 py-1.5 ${theme.inputBg} border ${theme.border} rounded-lg text-xs focus:outline-none focus:border-violet-500`;
 
   // Trigger-mismatch hint — nudge the user if their rule's trigger
   // doesn't match this action's preferredTrigger. Doesn't block the
@@ -3877,7 +3877,7 @@ function ActionParamsEditor({ kind, params, onPatch, catList = [], accounts = []
           </div>
         ))}
         <button type="button" onClick={addSplit}
-          className="text-[11px] font-semibold text-emerald-500 flex items-center gap-1">
+          className="text-[11px] font-semibold text-violet-500 flex items-center gap-1">
           <Plus className="w-3 h-3" /> Add split
         </button>
         <p className={`text-[10px] ${theme.textSubtle}`}>
@@ -4417,7 +4417,7 @@ function IncomeTracker({ tracker, theme, darkMode, onConfigure, readOnly = false
       whileTap={readOnly ? undefined : { scale: 0.99 }}
       onClick={readOnly ? undefined : onConfigure}
       disabled={readOnly}
-      className={`w-full text-left relative rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-700 p-5 text-white shadow-sm shadow-emerald-500/30 overflow-hidden ${readOnly ? "cursor-default" : ""}`}>
+      className={`w-full text-left relative rounded-2xl bg-gradient-to-br from-violet-500 to-violet-700 p-5 text-white shadow-sm shadow-violet-500/30 overflow-hidden ${readOnly ? "cursor-default" : ""}`}>
       <div className="flex items-start justify-between">
         <div>
           <div className="text-[11px] font-semibold uppercase tracking-[0.14em] opacity-90 flex items-center gap-1.5">
@@ -4499,7 +4499,7 @@ function ZeroBudgetSummary({ zb, theme, darkMode }) {
           Zero-based budget
         </div>
         {balanced ? (
-          <div className="text-[11px] font-semibold text-emerald-500 flex items-center gap-1">
+          <div className="text-[11px] font-semibold text-violet-500 flex items-center gap-1">
             <Check className="w-3 h-3" /> Fully allocated
           </div>
         ) : remaining > 0 ? (
@@ -4522,14 +4522,14 @@ function ZeroBudgetSummary({ zb, theme, darkMode }) {
         <motion.div
           initial={{ width: 0 }} animate={{ width: `${incomePct / 2}%` }}
           transition={{ duration: 0.8, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
-          className="bg-emerald-500" />
+          className="bg-violet-500" />
       </div>
       <div className="flex items-center justify-between text-[11px] mt-2">
         <div className="flex items-center gap-1 text-rose-500 font-semibold">
           <span className="w-2 h-2 rounded-full bg-rose-500" /> Budgeted <span className="private-amount" tabIndex={0}>{fmt(allocated)}</span>
         </div>
-        <div className="flex items-center gap-1 text-emerald-500 font-semibold">
-          Income <span className="private-amount" tabIndex={0}>{fmt(income)}</span> <span className="w-2 h-2 rounded-full bg-emerald-500" />
+        <div className="flex items-center gap-1 text-violet-500 font-semibold">
+          Income <span className="private-amount" tabIndex={0}>{fmt(income)}</span> <span className="w-2 h-2 rounded-full bg-violet-500" />
         </div>
       </div>
     </div>
@@ -4639,16 +4639,16 @@ function BudgetHistoryDropdown({ theme, darkMode, history, open, onOpen, onClose
                       || (historyIndex === null && p.isCurrent);
                     return (
                       <button key={p.periodStart} onClick={() => onPick(p.isCurrent ? null : idx)}
-                        className={`w-full text-left px-3 py-2 ${theme.hover} flex items-center justify-between gap-2 ${isPicked ? "bg-emerald-500/10" : ""}`}>
+                        className={`w-full text-left px-3 py-2 ${theme.hover} flex items-center justify-between gap-2 ${isPicked ? "bg-violet-500/10" : ""}`}>
                         <div className="min-w-0">
-                          <div className={`text-sm font-medium ${isPicked ? "text-emerald-500" : ""}`}>
+                          <div className={`text-sm font-medium ${isPicked ? "text-violet-500" : ""}`}>
                             {p.isCurrent ? "Current" : fmtRange(p.periodStart, p.periodEnd)}
                           </div>
                           <div className={`text-[10px] ${theme.textSubtle}`}>
                             Income <span className="private-amount" tabIndex={0}>{fmt(p.income)}</span> · {p.budgets.length} budget{p.budgets.length !== 1 ? "s" : ""}
                           </div>
                         </div>
-                        {isPicked && <Check className="w-4 h-4 text-emerald-500 flex-shrink-0" />}
+                        {isPicked && <Check className="w-4 h-4 text-violet-500 flex-shrink-0" />}
                       </button>
                     );
                   })}
@@ -4747,7 +4747,7 @@ function BudgetCard({ b, theme, darkMode, onEdit, onDelete, reorderLocked,
           }
           {/* Show-transactions toggle */}
           <button {...stopDrag} onClick={onToggleExpand}
-            className={`flex items-center gap-1 text-[11px] font-medium ${theme.textSubtle} hover:text-emerald-500`}>
+            className={`flex items-center gap-1 text-[11px] font-medium ${theme.textSubtle} hover:text-violet-500`}>
             {expanded ? "Hide" : "Show"} transactions
             <ChevronRight className={`w-3 h-3 transition-transform ${expanded ? "rotate-90" : ""}`} />
           </button>
@@ -4948,7 +4948,7 @@ function LoansSection({ theme, darkMode, toast }) {
           </p>
         </div>
         <button type="button" onClick={() => { setEditing(null); setShowForm(true); }}
-          className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600 flex items-center gap-1">
+          className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-violet-500 text-white hover:bg-violet-600 flex items-center gap-1">
           <Plus className="w-3.5 h-3.5" /> Add loan
         </button>
       </div>
@@ -4976,11 +4976,11 @@ function LoansSection({ theme, darkMode, toast }) {
                 </div>
                 <div className={`flex items-center gap-1 p-0.5 rounded-full ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
                   <button onClick={() => setStrategy("avalanche")}
-                    className={`px-2.5 py-1 rounded-full text-[11px] font-semibold ${strategy === "avalanche" ? "bg-emerald-500 text-white" : theme.textMuted}`}>
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-semibold ${strategy === "avalanche" ? "bg-violet-500 text-white" : theme.textMuted}`}>
                     Avalanche
                   </button>
                   <button onClick={() => setStrategy("snowball")}
-                    className={`px-2.5 py-1 rounded-full text-[11px] font-semibold ${strategy === "snowball" ? "bg-emerald-500 text-white" : theme.textMuted}`}>
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-semibold ${strategy === "snowball" ? "bg-violet-500 text-white" : theme.textMuted}`}>
                     Snowball
                   </button>
                 </div>
@@ -5061,7 +5061,7 @@ function LoanCard({ loan, theme, darkMode, onEdit, onPayment, onRemove }) {
         </div>
         <input type="range" min="0" max={Math.max(500, Math.round(Number(loan.monthly_payment) * 2))} step="10"
           value={extra} onChange={e => setExtra(Number(e.target.value))}
-          className="w-full accent-emerald-500" />
+          className="w-full accent-violet-500" />
         <div className="grid grid-cols-2 gap-2 text-xs">
           <div>
             <div className={theme.textSubtle}>Payoff (current)</div>
@@ -5098,7 +5098,7 @@ function LoanCard({ loan, theme, darkMode, onEdit, onPayment, onRemove }) {
 
       <div className="flex gap-1.5 mt-3 flex-wrap">
         <button type="button" onClick={onPayment}
-          className="flex-1 min-w-[100px] py-1.5 rounded-lg text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600 flex items-center justify-center gap-1">
+          className="flex-1 min-w-[100px] py-1.5 rounded-lg text-xs font-semibold bg-violet-500 text-white hover:bg-violet-600 flex items-center justify-center gap-1">
           <Check className="w-3 h-3" /> Record payment
         </button>
         <button type="button" onClick={onEdit}
@@ -5117,7 +5117,7 @@ function LoanCard({ loan, theme, darkMode, onEdit, onPayment, onRemove }) {
 function LoanFormSheet({ open, onClose, editing, accounts, theme, darkMode, toast, onSaved }) {
   const [form, setForm] = useState(() => defaultLoanForm());
   const [saving, setSaving] = useState(false);
-  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
 
   useEffect(() => {
     if (!open) return;
@@ -5240,7 +5240,7 @@ function LoanFormSheet({ open, onClose, editing, accounts, theme, darkMode, toas
             Cancel
           </button>
           <button type="button" onClick={save} disabled={saving}
-            className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-60">
+            className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-60">
             {saving ? "Saving…" : editing ? "Save changes" : "Create loan"}
           </button>
         </div>
@@ -5346,7 +5346,7 @@ function BillsTab({ theme, darkMode, toast }) {
           <p className={`text-xs ${theme.textSubtle}`}>Recurring obligations — auto-matched from your bank when possible.</p>
         </div>
         <button type="button" onClick={() => { setEditing(null); setShowForm(true); }}
-          className="px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-500 text-white hover:bg-emerald-600 flex items-center gap-1.5">
+          className="px-4 py-2 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600 flex items-center gap-1.5">
           <Plus className="w-4 h-4" /> Add bill
         </button>
       </div>
@@ -5493,7 +5493,7 @@ function BillCard({ bill, accounts, theme, darkMode, todayIso,
       <div className="flex gap-1.5 flex-wrap">
         {!paid && !cycle.skipped && (
           <button type="button" onClick={onMarkPaid}
-            className="flex-1 min-w-[100px] py-1.5 rounded-lg text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600 flex items-center justify-center gap-1">
+            className="flex-1 min-w-[100px] py-1.5 rounded-lg text-xs font-semibold bg-violet-500 text-white hover:bg-violet-600 flex items-center justify-center gap-1">
             <Check className="w-3 h-3" /> Mark paid
           </button>
         )}
@@ -5525,7 +5525,7 @@ function BillCard({ bill, accounts, theme, darkMode, todayIso,
 function BillFormSheet({ open, onClose, editing, accounts, categories, theme, darkMode, toast, onSaved }) {
   const [form, setForm] = useState(() => defaultBillForm());
   const [saving, setSaving] = useState(false);
-  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
 
   useEffect(() => {
     if (!open) return;
@@ -5675,7 +5675,7 @@ function BillFormSheet({ open, onClose, editing, accounts, categories, theme, da
             Cancel
           </button>
           <button type="button" onClick={save} disabled={saving}
-            className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-60">
+            className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-60">
             {saving ? "Saving…" : editing ? "Save changes" : "Create bill"}
           </button>
         </div>
@@ -6029,7 +6029,7 @@ function BudgetsTab({ theme, darkMode, toast }) {
     } finally { setSavingTracker(false); }
   };
 
-  const inputCls = `w-full px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+  const inputCls = `w-full px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
 
   return (
     <div className="space-y-3">
@@ -6058,7 +6058,7 @@ function BudgetsTab({ theme, darkMode, toast }) {
               <>
                 {budgets.length} budget{budgets.length !== 1 ? "s" : ""}
                 {budgets.length > 1 && !reorderLocked && (
-                  <span className="ml-1.5 text-emerald-500 font-medium">· drag to reorder</span>
+                  <span className="ml-1.5 text-violet-500 font-medium">· drag to reorder</span>
                 )}
               </>
             )}
@@ -6075,8 +6075,8 @@ function BudgetsTab({ theme, darkMode, toast }) {
               className={`p-2 rounded-xl border ${theme.border} disabled:opacity-40 ${
                 reorderLocked || viewingHistory
                   ? `${theme.surface} ${theme.textSubtle}`
-                  : (darkMode ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/40"
-                              : "bg-emerald-50 text-emerald-600 border-emerald-200")
+                  : (darkMode ? "bg-violet-500/15 text-violet-400 border-violet-500/40"
+                              : "bg-violet-50 text-violet-600 border-violet-200")
               }`}>
               {(reorderLocked || viewingHistory)
                 ? <Lock className="w-4 h-4" />
@@ -6088,7 +6088,7 @@ function BudgetsTab({ theme, darkMode, toast }) {
             onClick={() => { resetForm(); setShowAdd(true); }}
             disabled={viewingHistory}
             title={viewingHistory ? "Disabled — viewing past period" : ""}
-            className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-1.5 shadow-sm shadow-emerald-500/30 disabled:opacity-40 disabled:cursor-not-allowed">
+            className="bg-violet-500 hover:bg-violet-600 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-1.5 shadow-sm shadow-violet-500/30 disabled:opacity-40 disabled:cursor-not-allowed">
             <Plus className="w-4 h-4" /> New Budget
           </motion.button>
         </div>
@@ -6176,7 +6176,7 @@ function BudgetsTab({ theme, darkMode, toast }) {
           </p>
           <motion.button whileTap={{ scale: 0.97 }}
             onClick={() => { resetForm(); setShowAdd(true); }}
-            className="bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm font-semibold">
+            className="bg-violet-500 text-white px-4 py-2 rounded-xl text-sm font-semibold">
             Create your first budget
           </motion.button>
         </div>
@@ -6230,7 +6230,7 @@ function BudgetsTab({ theme, darkMode, toast }) {
               </p>
               <motion.button whileTap={{ scale: 0.97 }}
                 onClick={() => { resetForm(); setShowAdd(true); }}
-                className="bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm font-semibold">
+                className="bg-violet-500 text-white px-4 py-2 rounded-xl text-sm font-semibold">
                 Create your first budget
               </motion.button>
             </div>
@@ -6291,7 +6291,7 @@ function BudgetsTab({ theme, darkMode, toast }) {
                     <button type="button" key={p.id} onClick={() => setTrackerSheet({ ...trackerSheet, period: p.id })}
                       className={`px-3 py-2 rounded-xl text-xs font-semibold text-left border transition ${
                         active
-                          ? (darkMode ? "border-emerald-500 bg-emerald-500/10 text-emerald-400" : "border-emerald-500 bg-emerald-50 text-emerald-700")
+                          ? (darkMode ? "border-violet-500 bg-violet-500/10 text-violet-400" : "border-violet-500 bg-violet-50 text-violet-700")
                           : `${theme.border} ${theme.textMuted}`
                       }`}>
                       <div>{p.label}</div>
@@ -6323,7 +6323,7 @@ function BudgetsTab({ theme, darkMode, toast }) {
                 Cancel
               </button>
               <motion.button whileTap={{ scale: 0.97 }} type="submit" disabled={savingTracker}
-                className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
+                className="flex-1 bg-violet-500 hover:bg-violet-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
                 {savingTracker ? "Saving…" : "Save"}
               </motion.button>
             </div>
@@ -6360,7 +6360,7 @@ function BudgetsTab({ theme, darkMode, toast }) {
               <div className={`flex p-1 rounded-xl ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
                 <button type="button" onClick={() => setForm({ ...form, kind: "category" })}
                   className={`flex-1 py-2 rounded-lg text-sm font-semibold transition ${
-                    !isCC ? (darkMode ? "bg-slate-900 shadow text-emerald-400" : "bg-white shadow text-emerald-600") : theme.textMuted
+                    !isCC ? (darkMode ? "bg-slate-900 shadow text-violet-400" : "bg-white shadow text-violet-600") : theme.textMuted
                   }`}>
                   Category
                 </button>
@@ -6435,10 +6435,10 @@ function BudgetsTab({ theme, darkMode, toast }) {
           </div>
 
           {/* Period info — all budgets now follow the Income tracker's cycle */}
-          <div className={`${darkMode ? "bg-emerald-500/10" : "bg-emerald-50"} rounded-xl px-3 py-2.5 flex items-start gap-2`}>
-            <Calendar className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" />
+          <div className={`${darkMode ? "bg-violet-500/10" : "bg-violet-50"} rounded-xl px-3 py-2.5 flex items-start gap-2`}>
+            <Calendar className="w-4 h-4 text-violet-500 flex-shrink-0 mt-0.5" />
             <div className="text-xs">
-              <div className="font-semibold text-emerald-700 dark:text-emerald-400">
+              <div className="font-semibold text-violet-700 dark:text-violet-400">
                 Resets {fmtCadence(trackers?.income?.period, trackers?.income?.periodDays)}
               </div>
               <div className={`${theme.textSubtle} mt-0.5`}>
@@ -6454,7 +6454,7 @@ function BudgetsTab({ theme, darkMode, toast }) {
               Cancel
             </button>
             <motion.button whileTap={{ scale: 0.97 }} type="submit" disabled={adding}
-              className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
+              className="flex-1 bg-violet-500 hover:bg-violet-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
               {adding ? "Saving…" : (isEditing ? "Save changes" : "Create budget")}
             </motion.button>
           </div>
@@ -6531,26 +6531,26 @@ function GoalsTab({ theme, darkMode, toast }) {
       <form onSubmit={submit} className={`${theme.surface} border ${theme.border} rounded-2xl p-4 flex flex-wrap gap-2`}>
         <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
           placeholder="Goal name" required
-          className={`flex-1 min-w-40 px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`} />
+          className={`flex-1 min-w-40 px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`} />
         <input type="number" value={form.target} onChange={e => setForm({ ...form, target: e.target.value })}
           placeholder="Target" required
-          className={`w-32 px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`} />
+          className={`w-32 px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`} />
         {!form.account_id && (
           <input type="number" value={form.saved} onChange={e => setForm({ ...form, saved: e.target.value })}
             placeholder="Saved"
-            className={`w-28 px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`} />
+            className={`w-28 px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`} />
         )}
         <select value={form.account_id}
           onChange={e => setForm({ ...form, account_id: e.target.value })}
           title="Link to a bank account (optional). If set, progress auto-updates from the account balance."
-          className={`min-w-44 px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`}>
+          className={`min-w-44 px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`}>
           <option value="">Manual (no linked account)</option>
           {accounts.map(a => (
             <option key={a.id} value={a.id}>Linked · {a.name}</option>
           ))}
         </select>
         <motion.button whileTap={{ scale: 0.97 }} type="submit"
-          className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold">Add</motion.button>
+          className="bg-violet-500 hover:bg-violet-600 text-white px-4 py-2 rounded-xl text-sm font-semibold">Add</motion.button>
       </form>
       <div className="grid md:grid-cols-2 gap-4">
         {goals.map((g, i) => {
@@ -6584,7 +6584,7 @@ function GoalsTab({ theme, darkMode, toast }) {
                       onClick={() => setContribFor({ goal: g, amount: "", mode: "add" })}
                       disabled={completed}
                       title={completed ? "Goal already reached" : "Add money"}
-                      className="bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold px-2.5 py-1.5 rounded-lg flex items-center gap-1 disabled:opacity-40">
+                      className="bg-violet-500 hover:bg-violet-600 text-white text-xs font-semibold px-2.5 py-1.5 rounded-lg flex items-center gap-1 disabled:opacity-40">
                       <Plus className="w-3 h-3" /> Add
                     </motion.button>
                   )}
@@ -6644,7 +6644,7 @@ function GoalsTab({ theme, darkMode, toast }) {
                   onClick={() => setContribFor({ ...contribFor, mode: m })}
                   className={`flex-1 py-2 rounded-lg text-sm font-semibold capitalize transition ${
                     contribFor.mode === m
-                      ? (darkMode ? "bg-slate-900 shadow text-emerald-400" : "bg-white shadow text-emerald-600")
+                      ? (darkMode ? "bg-slate-900 shadow text-violet-400" : "bg-white shadow text-violet-600")
                       : theme.textMuted
                   }`}>
                   {m}
@@ -6659,7 +6659,7 @@ function GoalsTab({ theme, darkMode, toast }) {
                 value={contribFor.amount}
                 onChange={e => setContribFor({ ...contribFor, amount: e.target.value })}
                 placeholder="0.00"
-                className={`w-full px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`} />
+                className={`w-full px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`} />
             </div>
             <div className="flex flex-wrap gap-2">
               {[25, 50, 100, 250, 500].map(amt => (
@@ -6679,7 +6679,7 @@ function GoalsTab({ theme, darkMode, toast }) {
                 className={`flex-1 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60 ${
                   contribFor.mode === "withdraw"
                     ? "bg-rose-500 hover:bg-rose-600"
-                    : "bg-emerald-500 hover:bg-emerald-600"
+                    : "bg-violet-500 hover:bg-violet-600"
                 }`}>
                 {contribFor.busy
                   ? "Working…"
@@ -6767,12 +6767,12 @@ function NotesTab({ theme, darkMode, toast }) {
       <form onSubmit={submit} className={`${theme.surface} border ${theme.border} rounded-2xl p-4 space-y-2`}>
         <input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })}
           placeholder="Title"
-          className={`w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`} />
+          className={`w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`} />
         <textarea value={form.content} onChange={e => setForm({ ...form, content: e.target.value })}
           placeholder="Content" rows={3}
-          className={`w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500 resize-none`} />
+          className={`w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500 resize-none`} />
         <motion.button whileTap={{ scale: 0.97 }} type="submit"
-          className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold">Save note</motion.button>
+          className="bg-violet-500 hover:bg-violet-600 text-white px-4 py-2 rounded-xl text-sm font-semibold">Save note</motion.button>
       </form>
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
         {notes.map(n => {
@@ -6970,7 +6970,7 @@ function AutomationsPanel({ theme, darkMode, toast }) {
             onClick={() => setSubpage(o.id)}
             className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition ${
               subpage === o.id
-                ? (darkMode ? "bg-slate-900 shadow text-emerald-400" : "bg-white shadow text-emerald-600")
+                ? (darkMode ? "bg-slate-900 shadow text-violet-400" : "bg-white shadow text-violet-600")
                 : theme.textMuted
             }`}>
             {o.label}
@@ -7000,7 +7000,7 @@ function AutomationsPanel({ theme, darkMode, toast }) {
                 )}
                 <motion.button whileTap={{ scale: 0.95 }}
                   onClick={() => setEditing("new")}
-                  className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-1.5 shadow-sm shadow-emerald-500/30">
+                  className="bg-violet-500 hover:bg-violet-600 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-1.5 shadow-sm shadow-violet-500/30">
                   <Plus className="w-4 h-4" /> New Rule
                 </motion.button>
               </div>
@@ -7022,7 +7022,7 @@ function AutomationsPanel({ theme, darkMode, toast }) {
                   <button onClick={() => toggleEnabled(r)}
                     title={r.enabled ? "Disable rule" : "Enable rule"}
                     className={`w-9 h-5 rounded-full flex items-center transition-colors flex-shrink-0 ${
-                      r.enabled ? "bg-emerald-500 justify-end" : (darkMode ? "bg-slate-700 justify-start" : "bg-slate-300 justify-start")
+                      r.enabled ? "bg-violet-500 justify-end" : (darkMode ? "bg-slate-700 justify-start" : "bg-slate-300 justify-start")
                     }`}>
                     <span className="w-4 h-4 rounded-full bg-white mx-0.5" />
                   </button>
@@ -7300,8 +7300,8 @@ function RuleBuilderSheet({ open, onClose, rule, vocab, catList = [], accounts =
   const [form, setForm] = useState(emptyRule);
   useEffect(() => { if (open) setForm(rule ? { ...rule } : emptyRule()); }, [open, rule?.id]);
 
-  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
-  const smallCls = `px-2 py-1.5 ${theme.inputBg} border ${theme.border} rounded-lg text-xs focus:outline-none focus:border-emerald-500`;
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
+  const smallCls = `px-2 py-1.5 ${theme.inputBg} border ${theme.border} rounded-lg text-xs focus:outline-none focus:border-violet-500`;
 
   const addCondition = () => setForm(f => ({
     ...f, conditions: [...(f.conditions || []), { field: "merchant", op: "contains", value: "" }],
@@ -7368,7 +7368,7 @@ function RuleBuilderSheet({ open, onClose, rule, vocab, catList = [], accounts =
           <div className="flex items-center justify-between mb-1.5">
             <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider`}>Conditions</label>
             <button type="button" onClick={addCondition}
-              className="text-[11px] font-semibold text-emerald-500 flex items-center gap-1">
+              className="text-[11px] font-semibold text-violet-500 flex items-center gap-1">
               <Plus className="w-3 h-3" /> Add condition
             </button>
           </div>
@@ -7466,7 +7466,7 @@ function RuleBuilderSheet({ open, onClose, rule, vocab, catList = [], accounts =
             Cancel
           </button>
           <motion.button whileTap={{ scale: 0.97 }} type="submit"
-            className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-semibold">
+            className="flex-1 bg-violet-500 hover:bg-violet-600 text-white py-2.5 rounded-xl text-sm font-semibold">
             {rule?.id ? "Save" : "Create"}
           </motion.button>
         </div>
@@ -7660,7 +7660,7 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
     finally { setCleanupBusy(false); }
   };
 
-  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
   const Stat = ({ label, value }) => (
     <div className={`px-3 py-2 rounded-lg ${darkMode ? "bg-slate-800/60" : "bg-slate-50"} flex items-center justify-between gap-2`}>
       <span className={`text-xs ${theme.textSubtle}`}>{label}</span>
@@ -7748,7 +7748,7 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
                   {u.picture ? (
                     <img src={u.picture} alt="" className="w-9 h-9 rounded-full flex-shrink-0" />
                   ) : (
-                    <div className="w-9 h-9 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center text-white font-semibold text-sm flex-shrink-0">
+                    <div className="w-9 h-9 rounded-full bg-gradient-to-br from-violet-400 to-violet-600 flex items-center justify-center text-white font-semibold text-sm flex-shrink-0">
                       {(u.name || u.email)[0].toUpperCase()}
                     </div>
                   )}
@@ -7773,9 +7773,9 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
                       onChange={(e) => stageRoleChange(u, e.target.value)}
                       className={`text-xs px-2 py-1 rounded-full font-medium border ${
                         roleChanges[u.id] !== undefined
-                          ? (darkMode ? "border-emerald-500 bg-emerald-500/10" : "border-emerald-500 bg-emerald-50")
+                          ? (darkMode ? "border-violet-500 bg-violet-500/10" : "border-violet-500 bg-violet-50")
                           : `${theme.border} ${theme.surface}`
-                      } focus:outline-none focus:border-emerald-500`}>
+                      } focus:outline-none focus:border-violet-500`}>
                       <option value="user">Member</option>
                       <option value="admin">Admin</option>
                     </select>
@@ -7795,7 +7795,7 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
                         } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
                       }}
                       title={`Send test email to ${u.email}`}>
-                      <Mail className={`w-4 h-4 ${theme.textSubtle} hover:text-emerald-500 transition-colors`} />
+                      <Mail className={`w-4 h-4 ${theme.textSubtle} hover:text-violet-500 transition-colors`} />
                     </button>
                   )}
                   {canDelete(u) && (
@@ -7974,7 +7974,7 @@ function MobileBanksSection({ theme, darkMode, toast }) {
   };
 
   const manualAccounts = accounts.filter(a => !a.plaidItemId);
-  const inputCls = `w-full px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+  const inputCls = `w-full px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
 
   return (
     <div className={`${theme.surface} border ${theme.border} rounded-2xl p-5 space-y-4`}>
@@ -7996,8 +7996,8 @@ function MobileBanksSection({ theme, darkMode, toast }) {
             {items.map(item => (
               <div key={item.id} className="flex items-center justify-between px-3 py-2.5">
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="w-8 h-8 rounded-full bg-emerald-100 dark:bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
-                    <Building2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                  <div className="w-8 h-8 rounded-full bg-violet-100 dark:bg-violet-500/20 flex items-center justify-center flex-shrink-0">
+                    <Building2 className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
                   </div>
                   <div className="min-w-0">
                     <div className="font-medium text-sm truncate private-name" tabIndex={0}>{item.institutionName || "Bank"}</div>
@@ -8020,7 +8020,7 @@ function MobileBanksSection({ theme, darkMode, toast }) {
         <div className="flex items-center justify-between mb-2">
           <div className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider`}>Manual Accounts</div>
           <button onClick={() => setShowAdd(true)}
-            className="text-xs font-semibold text-emerald-500 flex items-center gap-1">
+            className="text-xs font-semibold text-violet-500 flex items-center gap-1">
             <Plus className="w-3.5 h-3.5" /> Add
           </button>
         </div>
@@ -8081,7 +8081,7 @@ function MobileBanksSection({ theme, darkMode, toast }) {
               Cancel
             </button>
             <motion.button whileTap={{ scale: 0.97 }} type="submit" disabled={adding}
-              className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
+              className="flex-1 bg-violet-500 hover:bg-violet-600 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60">
               {adding ? "Adding…" : "Add account"}
             </motion.button>
           </div>
@@ -8118,13 +8118,13 @@ function SaveBar({ dirty, saving, onSave, theme, darkMode, label = "You have uns
             className="sticky top-0 z-30 -mx-1 px-1">
             <div className={`flex items-center justify-between gap-3 px-4 py-3 rounded-2xl border shadow-lg ${
               darkMode
-                ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-50 backdrop-blur"
-                : "bg-emerald-50 border-emerald-200 text-emerald-900 backdrop-blur"
+                ? "bg-violet-500/15 border-violet-500/40 text-violet-50 backdrop-blur"
+                : "bg-violet-50 border-violet-200 text-violet-900 backdrop-blur"
             }`}>
               <div className="text-sm font-medium">{label}</div>
               <motion.button whileTap={{ scale: 0.95 }} type="button"
                 onClick={onSave} disabled={saving}
-                className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-semibold disabled:opacity-60">
+                className="bg-violet-500 hover:bg-violet-600 text-white px-4 py-2 rounded-xl text-sm font-semibold disabled:opacity-60">
                 {saving ? "Saving…" : "Save changes"}
               </motion.button>
             </div>
@@ -8140,7 +8140,7 @@ function SaveBar({ dirty, saving, onSave, theme, darkMode, label = "You have uns
             exit={{ opacity: 0, x: 40 }}
             whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.96 }}
             transition={{ duration: 0.18 }}
-            className="fixed right-0 top-24 z-40 pl-3 pr-4 py-2 rounded-l-xl bg-emerald-500 text-white text-xs font-semibold shadow-lg shadow-emerald-500/30 flex items-center gap-2"
+            className="fixed right-0 top-24 z-40 pl-3 pr-4 py-2 rounded-l-xl bg-violet-500 text-white text-xs font-semibold shadow-lg shadow-violet-500/30 flex items-center gap-2"
             aria-label="Scroll to save bar">
             <ArrowUpRight className="w-3.5 h-3.5 -rotate-90" />
             Save Changes?
@@ -8229,8 +8229,8 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
   // defined inline here, but the module-scope NotifRow needs it too, so
   // it had to move out.
 
-  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
-  const numCls   = `w-28 px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500 text-right`;
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
+  const numCls   = `w-28 px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500 text-right`;
   // Notifications all live under the email switch — when email is off OR the
   // server-side EMAIL_CONFIG is disabled, everything below is greyed out.
   const emailOn = form.notification_email && user.email_enabled;
@@ -8299,7 +8299,7 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
           {user.picture ? (
             <img src={user.picture} alt="" className="w-12 h-12 rounded-full" />
           ) : (
-            <div className="w-12 h-12 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center text-white font-semibold">
+            <div className="w-12 h-12 rounded-full bg-gradient-to-br from-violet-400 to-violet-600 flex items-center justify-center text-white font-semibold">
               {(user.name || user.email || "?")[0].toUpperCase()}
             </div>
           )}
@@ -8622,10 +8622,10 @@ function Shell({ user, onLogout, refreshUser }) {
             <div className="flex items-center gap-1">
               {mainTabs.map(t => (
                 <button key={t.id} onClick={() => navigate(t.id)}
-                  className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition ${tab === t.id ? (darkMode ? "text-emerald-400" : "text-emerald-700") : `${theme.textMuted} ${theme.hover}`}`}>
+                  className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition ${tab === t.id ? (darkMode ? "text-violet-400" : "text-violet-700") : `${theme.textMuted} ${theme.hover}`}`}>
                   {tab === t.id && (
                     <motion.div layoutId="desktopTabBg"
-                      className={`absolute inset-0 rounded-lg ${darkMode ? "bg-emerald-500/15" : "bg-emerald-50"}`}
+                      className={`absolute inset-0 rounded-lg ${darkMode ? "bg-violet-500/15" : "bg-violet-50"}`}
                       transition={{ type: "spring", damping: 25, stiffness: 300 }} />
                   )}
                   <t.icon className="w-4 h-4 relative" />
@@ -8757,14 +8757,14 @@ function Shell({ user, onLogout, refreshUser }) {
                 className="flex-1 flex flex-col items-center justify-center gap-1 pt-2 pb-1.5 relative">
                 {active && (
                   <motion.div layoutId="mobileTabDot"
-                    className="absolute top-0 w-10 h-[3px] bg-emerald-500 rounded-full"
+                    className="absolute top-0 w-10 h-[3px] bg-violet-500 rounded-full"
                     transition={{ type: "spring", damping: 30, stiffness: 400 }} />
                 )}
                 <motion.div animate={{ y: active ? -1 : 0, scale: active ? 1.08 : 1 }}
                   transition={{ type: "spring", damping: 20, stiffness: 300 }}>
-                  <t.icon className={`w-[26px] h-[26px] ${active ? "text-emerald-500" : theme.textSubtle}`} strokeWidth={active ? 2.4 : 1.9} />
+                  <t.icon className={`w-[26px] h-[26px] ${active ? "text-violet-500" : theme.textSubtle}`} strokeWidth={active ? 2.4 : 1.9} />
                 </motion.div>
-                <span className={`text-[10px] font-semibold tracking-wide ${active ? "text-emerald-500" : theme.textSubtle}`}>{t.label}</span>
+                <span className={`text-[10px] font-semibold tracking-wide ${active ? "text-violet-500" : theme.textSubtle}`}>{t.label}</span>
               </motion.button>
             );
           })}
@@ -8782,7 +8782,7 @@ export default function App() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1.2, ease: "linear" }}
-          className="w-8 h-8 rounded-full border-2 border-emerald-200 border-t-emerald-500" />
+          className="w-8 h-8 rounded-full border-2 border-violet-200 border-t-violet-500" />
       </div>
     );
   }
