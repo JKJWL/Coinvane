@@ -822,6 +822,55 @@ const NET_PERIODS = [
   { id: "1y",  label: "1Y"  },
 ];
 
+// Same set the NetWorth chip row uses, shared by Cashflow + Spending-
+// by-Category KPI cards so all three period selectors behave identically.
+const KPI_PERIODS = NET_PERIODS;
+
+// Convert a period id to a { from, to } pair in YYYY-MM-DD LOCAL format.
+// `all` returns {} — no date filter, backend picks the default. All other
+// ids compute from today's local midnight so DST transitions don't shift
+// the boundary by an hour.
+function kpiRangeToDates(range) {
+  if (!range || range === "all") return {};
+  const now = new Date();
+  const to = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  let from = null;
+  if (range === "mtd") {
+    from = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+  } else if (range === "ytd") {
+    from = `${now.getFullYear()}-01-01`;
+  } else if (range === "1m" || range === "3m" || range === "1y") {
+    const months = { "1m": 1, "3m": 3, "1y": 12 }[range];
+    const d = new Date(now);
+    d.setMonth(d.getMonth() - months);
+    from = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  return from ? { from, to } : {};
+}
+
+// Chip pill row shared by the KPI cards. `expanded` swaps to a slightly
+// larger tap target when the card is rendered inside the fullscreen modal.
+function KpiPeriodChips({ range, setRange, theme, darkMode, expanded }) {
+  const size = expanded ? "px-3 py-1.5 text-xs" : "px-2.5 py-1 text-[11px]";
+  return (
+    <div className={`flex items-center gap-1 p-1 rounded-full overflow-x-auto no-scrollbar ${
+      darkMode ? "bg-slate-800" : "bg-slate-100"
+    }`}>
+      {KPI_PERIODS.map(p => {
+        const active = range === p.id;
+        return (
+          <button key={p.id} onClick={() => setRange(p.id)}
+            className={`${size} rounded-full font-semibold whitespace-nowrap transition ${
+              active ? "bg-emerald-500 text-white" : theme.textMuted
+            }`}>
+            {p.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function NetWorthChart({ theme, darkMode, variant = "hero" }) {
   // variant "hero"  → mobile-style gradient card
   // variant "card"  → desktop surface card
@@ -1096,6 +1145,209 @@ function MobileInsights({ cashflow, budgets, theme, darkMode }) {
   );
 }
 
+// ─── Cashflow card ────────────────────────────────────────────────────────────
+// Desktop-only KPI (mobile has its own MobileSpendingPulse). Owns its
+// period-chip state and re-fetches on chip change. When `expanded` is
+// true, the chart body swells to fill the fullscreen modal.
+function CashflowCard({ theme, darkMode, expanded, onExpand }) {
+  const [range, setRange] = useState("1y");
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    api.getCashflow(kpiRangeToDates(range))
+      .then(r => { if (alive) { setRows(Array.isArray(r) ? r : []); setLoading(false); } })
+      .catch(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [range]);
+  const data = rows.map(c => ({
+    month: (c.month || "").slice(5) || c.month,
+    income: Number(c.income), spending: Number(c.spending),
+  }));
+  const tipStyle = {
+    borderRadius: "12px",
+    border: `1px solid ${theme.tooltipBorder}`,
+    backgroundColor: theme.tooltipBg,
+    color: darkMode ? "#f1f5f9" : "#0f172a",
+  };
+  const chartH = expanded ? "h-[62vh]" : "h-52";
+  return (
+    <div className={`${theme.surface} rounded-2xl border ${theme.border} p-5`}>
+      <div className="flex items-start justify-between gap-3 mb-4 flex-wrap">
+        <div>
+          <h3 className="font-semibold">Cashflow</h3>
+          <p className={`text-xs ${theme.textSubtle}`}>Income vs spending</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <KpiPeriodChips range={range} setRange={setRange} theme={theme} darkMode={darkMode} expanded={expanded} />
+          {!expanded && onExpand && (
+            <button type="button" onClick={onExpand}
+              title="Expand"
+              className={`hidden lg:inline-flex p-1.5 rounded-lg border ${theme.border} ${theme.hover}`}>
+              <ChevronRight className="w-3.5 h-3.5 -rotate-45" />
+            </button>
+          )}
+        </div>
+      </div>
+      {data.length > 0 ? (
+        <div className={`${chartH} private-chart`} tabIndex={0}>
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={data}>
+              <defs>
+                <linearGradient id={`gInc-${expanded ? "big" : "small"}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#10b981" stopOpacity={0.3} />
+                  <stop offset="100%" stopColor="#10b981" stopOpacity={0} />
+                </linearGradient>
+                <linearGradient id={`gSpd-${expanded ? "big" : "small"}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#f43f5e" stopOpacity={0.3} />
+                  <stop offset="100%" stopColor="#f43f5e" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <XAxis dataKey="month" tick={{ fontSize: 11 }} stroke={theme.chartAxis} />
+              <YAxis tick={{ fontSize: 11 }} stroke={theme.chartAxis} tickFormatter={fmtShort} />
+              <Tooltip contentStyle={tipStyle} formatter={v => fmt(v)} />
+              <Area type="monotone" dataKey="income"   stroke="#10b981" fill={`url(#gInc-${expanded ? "big" : "small"})`} strokeWidth={2} isAnimationActive={!loading} />
+              <Area type="monotone" dataKey="spending" stroke="#f43f5e" fill={`url(#gSpd-${expanded ? "big" : "small"})`} strokeWidth={2} isAnimationActive={!loading} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      ) : (
+        <div className={`${chartH} flex items-center justify-center text-sm ${theme.textSubtle}`}>
+          {loading ? "Loading…" : "No cashflow data in this range"}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Spending-by-category card ────────────────────────────────────────────────
+// Desktop-only, period + sort chip row. Sort options: "largest" (default,
+// biggest categories first) and "smallest" for hunt-the-outlier use.
+const CAT_KPI_COLORS = ["#10b981","#f59e0b","#8b5cf6","#3b82f6","#ec4899","#64748b","#14b8a6","#f97316"];
+function SpendingByCategoryCard({ theme, darkMode, expanded, onExpand }) {
+  const [range, setRange] = useState("1m");
+  const [sortDir, setSortDir] = useState("largest");
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    api.getByCategory(kpiRangeToDates(range))
+      .then(r => { if (alive) { setRows(Array.isArray(r) ? r : []); setLoading(false); } })
+      .catch(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [range]);
+  const tipStyle = {
+    borderRadius: "12px",
+    border: `1px solid ${theme.tooltipBorder}`,
+    backgroundColor: theme.tooltipBg,
+    color: darkMode ? "#f1f5f9" : "#0f172a",
+  };
+  const sorted = useMemo(() => {
+    const arr = [...rows].map((r, i) => ({
+      name: r.category, value: Number(r.total),
+    }));
+    arr.sort((a, b) => sortDir === "largest" ? b.value - a.value : a.value - b.value);
+    return arr.map((r, i) => ({ ...r, color: CAT_KPI_COLORS[i % CAT_KPI_COLORS.length] }));
+  }, [rows, sortDir]);
+  const pieData = sorted.slice(0, expanded ? 10 : 6);
+  const listData = sorted.slice(0, expanded ? 12 : 4);
+  const chartH = expanded ? "h-[52vh]" : "h-36";
+  return (
+    <div className={`${theme.surface} rounded-2xl border ${theme.border} p-5`}>
+      <div className="flex items-start justify-between gap-3 mb-3 flex-wrap">
+        <h3 className="font-semibold">Spending by category</h3>
+        <div className="flex items-center gap-2">
+          <KpiPeriodChips range={range} setRange={setRange} theme={theme} darkMode={darkMode} expanded={expanded} />
+          {!expanded && onExpand && (
+            <button type="button" onClick={onExpand}
+              title="Expand"
+              className={`hidden lg:inline-flex p-1.5 rounded-lg border ${theme.border} ${theme.hover}`}>
+              <ChevronRight className="w-3.5 h-3.5 -rotate-45" />
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="flex items-center justify-between mb-2 gap-2">
+        <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider`}>
+          {sortDir === "largest" ? "Largest first" : "Smallest first"}
+        </div>
+        <div className={`flex items-center gap-1 p-0.5 rounded-full ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+          <button onClick={() => setSortDir("largest")}
+            className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${sortDir === "largest" ? "bg-emerald-500 text-white" : theme.textMuted}`}>
+            Largest
+          </button>
+          <button onClick={() => setSortDir("smallest")}
+            className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${sortDir === "smallest" ? "bg-emerald-500 text-white" : theme.textMuted}`}>
+            Smallest
+          </button>
+        </div>
+      </div>
+      {pieData.length > 0 ? (
+        <>
+          <div className={`${chartH} private-chart`} tabIndex={0}>
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%"
+                     innerRadius={expanded ? 90 : 35} outerRadius={expanded ? 180 : 62} paddingAngle={2}
+                     isAnimationActive={!loading}>
+                  {pieData.map((c, i) => <Cell key={i} fill={c.color} />)}
+                </Pie>
+                <Tooltip contentStyle={tipStyle} formatter={v => fmt(v)} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="space-y-2 mt-3">
+            {listData.map(c => (
+              <div key={c.name} className="flex items-center justify-between text-xs">
+                <span className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: c.color }} />
+                  <span className={theme.textMuted}>{c.name}</span>
+                </span>
+                <span className="font-semibold private-amount" tabIndex={0}>{fmt(c.value)}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : (
+        <div className={`${chartH} flex items-center justify-center text-sm ${theme.textSubtle}`}>
+          {loading ? "Loading…" : "No spending in this range"}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── KPI fullscreen modal ─────────────────────────────────────────────────────
+// Desktop-only. Wraps a card component in a centered overlay so the chart
+// fills most of the viewport. Escape / backdrop click closes.
+function KpiFullscreenModal({ kind, onClose, theme, darkMode }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  if (!kind) return null;
+  return createPortal(
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-6"
+      onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <div className="relative w-full max-w-5xl max-h-[90vh] overflow-y-auto"
+        onClick={e => e.stopPropagation()}>
+        <button type="button" onClick={onClose}
+          className={`absolute -top-3 -right-3 z-10 w-8 h-8 rounded-full ${theme.surface} border ${theme.border} flex items-center justify-center shadow-lg`}>
+          <X className="w-4 h-4" />
+        </button>
+        {kind === "cashflow" && <CashflowCard theme={theme} darkMode={darkMode} expanded />}
+        {kind === "spending" && <SpendingByCategoryCard theme={theme} darkMode={darkMode} expanded />}
+        {kind === "networth" && <NetWorthChart theme={theme} darkMode={darkMode} variant="card" />}
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 // ─── Overview Tab ─────────────────────────────────────────────────────────────
 function OverviewTab({ theme, darkMode, onNavigate }) {
   const { summary, cashflow, byCategory, transactions, budgets } = useData();
@@ -1104,15 +1356,9 @@ function OverviewTab({ theme, darkMode, onNavigate }) {
   const cred = Number(summary?.credit     || 0);
   const inv  = Number(summary?.investment || 0);
 
-  const cf = cashflow.map(c => ({
-    month: (c.month || "").slice(5) || c.month,
-    income: Number(c.income), spending: Number(c.spending),
-  }));
-  const COLORS = ["#10b981","#f59e0b","#8b5cf6","#3b82f6","#ec4899","#64748b"];
-  const catData = byCategory.slice(0, 6).map((c, i) => ({
-    name: c.category, value: Number(c.total), color: COLORS[i] || "#94a3b8",
-  }));
-  const tipStyle = { borderRadius: "12px", border: `1px solid ${theme.tooltipBorder}`, backgroundColor: theme.tooltipBg, color: darkMode ? "#f1f5f9" : "#0f172a" };
+  // Desktop KPI expand — "cashflow" | "spending" | "networth" | null.
+  // Mobile falls through to inline behaviour (no modal).
+  const [expandedKpi, setExpandedKpi] = useState(null);
 
   return (
     <motion.div initial="hidden" animate="visible" variants={{ visible: { transition: { staggerChildren: 0.06 } } }} className="space-y-4 lg:space-y-6">
@@ -1122,9 +1368,18 @@ function OverviewTab({ theme, darkMode, onNavigate }) {
         <NetWorthChart theme={theme} darkMode={darkMode} variant="hero" />
       </motion.div>
 
-      {/* Net Worth chart — desktop (card with period selector) */}
-      <div className="hidden lg:block">
-        <NetWorthChart theme={theme} darkMode={darkMode} variant="card" />
+      {/* Net Worth chart — desktop (card with period selector).
+          Wrapped in a button so tap-anywhere on the card body opens the
+          fullscreen modal. The card's own chip clicks stopPropagation so
+          they don't also trigger expand. */}
+      <div className="hidden lg:block relative group">
+        <div onClick={(e) => {
+          // Ignore clicks that came from the period chip row.
+          if (e.target.closest("button")) return;
+          setExpandedKpi("networth");
+        }} className="cursor-pointer">
+          <NetWorthChart theme={theme} darkMode={darkMode} variant="card" />
+        </div>
       </div>
 
       {/* KPI cards */}
@@ -1145,75 +1400,33 @@ function OverviewTab({ theme, darkMode, onNavigate }) {
         <MobileInsights cashflow={cashflow} budgets={budgets} theme={theme} darkMode={darkMode} />
       </motion.div>
 
-      {/* Charts — desktop only (mobile gets Spending Pulse instead) */}
+      {/* Charts — desktop only (mobile gets Spending Pulse instead).
+          Both cards own their period-chip state and re-fetch on chip
+          change; tap anywhere outside the chips or expand button to
+          open the fullscreen modal. */}
       <div className="hidden lg:grid lg:grid-cols-3 gap-4">
         <motion.div variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0 } }}
-          className={`lg:col-span-2 ${theme.surface} rounded-2xl border ${theme.border} p-5`}>
-          <div className="mb-4">
-            <h3 className="font-semibold">Cashflow</h3>
-            <p className={`text-xs ${theme.textSubtle}`}>Last 12 months</p>
+          className="lg:col-span-2">
+          <div onClick={(e) => {
+            if (e.target.closest("button")) return;
+            setExpandedKpi("cashflow");
+          }} className="cursor-pointer">
+            <CashflowCard theme={theme} darkMode={darkMode} onExpand={() => setExpandedKpi("cashflow")} />
           </div>
-          {cf.length > 0 ? (
-            <div className="h-52 private-chart" tabIndex={0}>
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={cf}>
-                  <defs>
-                    <linearGradient id="gInc" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#10b981" stopOpacity={0.3} />
-                      <stop offset="100%" stopColor="#10b981" stopOpacity={0} />
-                    </linearGradient>
-                    <linearGradient id="gSpd" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#f43f5e" stopOpacity={0.3} />
-                      <stop offset="100%" stopColor="#f43f5e" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <XAxis dataKey="month" tick={{ fontSize: 11 }} stroke={theme.chartAxis} />
-                  <YAxis tick={{ fontSize: 11 }} stroke={theme.chartAxis} tickFormatter={fmtShort} />
-                  <Tooltip contentStyle={tipStyle} formatter={v => fmt(v)} />
-                  <Area type="monotone" dataKey="income"   stroke="#10b981" fill="url(#gInc)" strokeWidth={2} />
-                  <Area type="monotone" dataKey="spending" stroke="#f43f5e" fill="url(#gSpd)" strokeWidth={2} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          ) : (
-            <div className={`h-52 flex items-center justify-center text-sm ${theme.textSubtle}`}>
-              Connect a bank to see cashflow data
-            </div>
-          )}
         </motion.div>
 
-        <motion.div variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0 } }}
-          className={`${theme.surface} rounded-2xl border ${theme.border} p-5`}>
-          <h3 className="font-semibold mb-4">Spending by category</h3>
-          {catData.length > 0 ? (
-            <>
-              <div className="h-36 private-chart" tabIndex={0}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie data={catData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={35} outerRadius={62} paddingAngle={2}>
-                      {catData.map((c, i) => <Cell key={i} fill={c.color} />)}
-                    </Pie>
-                    <Tooltip contentStyle={tipStyle} formatter={v => fmt(v)} />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="space-y-2 mt-3">
-                {catData.slice(0, 4).map(c => (
-                  <div key={c.name} className="flex items-center justify-between text-xs">
-                    <span className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: c.color }} />
-                      <span className={theme.textMuted}>{c.name}</span>
-                    </span>
-                    <span className="font-semibold private-amount" tabIndex={0}>{fmt(c.value)}</span>
-                  </div>
-                ))}
-              </div>
-            </>
-          ) : (
-            <div className={`flex items-center justify-center h-52 text-sm ${theme.textSubtle}`}>No spending data yet</div>
-          )}
+        <motion.div variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0 } }}>
+          <div onClick={(e) => {
+            if (e.target.closest("button")) return;
+            setExpandedKpi("spending");
+          }} className="cursor-pointer">
+            <SpendingByCategoryCard theme={theme} darkMode={darkMode} onExpand={() => setExpandedKpi("spending")} />
+          </div>
         </motion.div>
       </div>
+
+      <KpiFullscreenModal kind={expandedKpi} onClose={() => setExpandedKpi(null)}
+        theme={theme} darkMode={darkMode} />
 
       {/* Quick access */}
       <motion.div variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0 } }}>

@@ -121,7 +121,10 @@ export const api = {
     const q = new URLSearchParams(params).toString();
     return request("GET", `/transactions/by-category${q ? "?" + q : ""}`);
   },
-  getCashflow: () => request("GET", "/transactions/cashflow"),
+  getCashflow: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return request("GET", `/transactions/cashflow${q ? "?" + q : ""}`);
+  },
 
   // budgets / goals / notes / categories
   getBudgets: () => request("GET", "/budgets"),

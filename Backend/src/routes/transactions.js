@@ -613,6 +613,18 @@ export default async function (app) {
     // credit accounts as their own world (see budgets.js for the same rule).
     // Internal transfers are also excluded — moving money between your own
     // accounts is not income or spending.
+    //
+    // Optional `from` / `to` (YYYY-MM-DD) let the dashboard KPI's period
+    // chip drive the range. Default remains the last 12 months so
+    // callers with no params keep the old behaviour.
+    const { from, to } = req.query || {};
+    const params = [req.user.id];
+    let dateClause = "";
+    if (from) { dateClause += " AND t.date >= ?"; params.push(from); }
+    if (to)   { dateClause += " AND t.date <= ?"; params.push(to);   }
+    if (!from && !to) {
+      dateClause += " AND t.date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)";
+    }
     return query(
       `SELECT DATE_FORMAT(t.date, '%Y-%m') AS month,
               SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END) AS income,
@@ -620,12 +632,12 @@ export default async function (app) {
        FROM transactions t
        LEFT JOIN accounts a ON a.id = t.account_id
        WHERE t.user_id = ?
-         AND t.date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
          AND (a.type IS NULL OR a.type <> 'credit')
          AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
          AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
+         ${dateClause}
        GROUP BY month ORDER BY month`,
-      [req.user.id]
+      params
     );
   });
 
