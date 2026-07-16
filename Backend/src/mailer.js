@@ -77,7 +77,7 @@ export async function sendMail(payload = {}) {
   }
 
   const t = getTransporter();
-  const from = process.env.SMTP_FROM || "Ledger <noreply@ledger.local>";
+  const from = process.env.SMTP_FROM || "Coinvane <noreply@coinvane.local>";
   message.from = message.from || from;
   if (!t) {
     console.log(`[mail:dev] To: ${message.to} | Subject: ${message.subject}\n${message.text || message.html}`);
@@ -111,7 +111,7 @@ export async function sendMail(payload = {}) {
  * support HTML or for accessibility readers).
  */
 export function renderNotificationDigest({ userName, notifications, disclaimer }) {
-  const appUrl = process.env.APP_URL || "https://ledger.local";
+  const appUrl = process.env.APP_URL || "https://coinvane.local";
   const palette = {
     red:     { dot: "#ef4444", bg: "#fef2f2", text: "#b91c1c" },
     rose:    { dot: "#f43f5e", bg: "#fff1f2", text: "#be123c" },
@@ -146,16 +146,16 @@ export function renderNotificationDigest({ userName, notifications, disclaimer }
   //  - tagged "[TEST]" in the subject so it's obvious in the inbox
   const subjectPrefix = disclaimer ? "[TEST] " : "";
   return {
-    subject: `${subjectPrefix}Ledger — ${heading}`,
+    subject: `${subjectPrefix}Coinvane — ${heading}`,
     text: [
       ...(disclaimer ? [`*** ${disclaimer} ***`, ""] : []),
       `Hi ${userName || "there"},`,
       "",
-      `You have ${heading} from Ledger:`,
+      `You have ${heading} from Coinvane:`,
       "",
       ...notifications.map(n => `• ${n.title}${n.body ? "\n  " + n.body : ""}`),
       "",
-      `Open Ledger: ${appUrl}`,
+      `Open Coinvane: ${appUrl}`,
       "",
       "— You're receiving this because email notifications are enabled.",
       "Turn off in Settings → Profile → Email Notifs.",
@@ -171,7 +171,7 @@ export function renderNotificationDigest({ userName, notifications, disclaimer }
           <table cellpadding="0" cellspacing="0" border="0">
             <tr>
               <td style="background:#ffffff;border-radius:8px;width:36px;height:36px;text-align:center;vertical-align:middle;font-size:20px;font-weight:700;color:#059669">$</td>
-              <td style="padding-left:12px;font-size:18px;font-weight:700;letter-spacing:-0.02em">Ledger</td>
+              <td style="padding-left:12px;font-size:18px;font-weight:700;letter-spacing:-0.02em">Coinvane</td>
             </tr>
           </table>
         </td></tr>
@@ -188,7 +188,7 @@ export function renderNotificationDigest({ userName, notifications, disclaimer }
           <table cellpadding="0" cellspacing="0" border="0" width="100%">${items}</table>
 
           <div style="margin-top:24px">
-            <a href="${appUrl}" style="display:inline-block;background:#10b981;color:#ffffff;text-decoration:none;font-weight:600;font-size:14px;padding:11px 22px;border-radius:10px">Open Ledger →</a>
+            <a href="${appUrl}" style="display:inline-block;background:#10b981;color:#ffffff;text-decoration:none;font-weight:600;font-size:14px;padding:11px 22px;border-radius:10px">Open Coinvane →</a>
           </div>
         </td></tr>
 

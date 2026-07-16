@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 const API_URL = import.meta.env.VITE_API_URL || "/api";
 
-let authToken = localStorage.getItem("ledger_token");
+let authToken = localStorage.getItem("coinvane_token");
 
 export function setToken(t) {
   authToken = t;
-  if (t) localStorage.setItem("ledger_token", t);
-  else localStorage.removeItem("ledger_token");
+  if (t) localStorage.setItem("coinvane_token", t);
+  else localStorage.removeItem("coinvane_token");
 }
 
 export function getToken() { return authToken; }
@@ -205,17 +205,17 @@ export const api = {
   clearMerchantRules: () => request("DELETE", "/transactions/merchant-rules"),
 
   // CSV / PDF — non-JSON download endpoints
-  exportTransactionsCSV: () => downloadAuthed("/transactions/export.csv", "ledger-transactions.csv"),
+  exportTransactionsCSV: () => downloadAuthed("/transactions/export.csv", "coinvane-transactions.csv"),
   importTransactionsCSV: (csv) => request("POST", "/transactions/import.csv", { csv }),
-  exportFullPDF: () => downloadAuthed("/export/full.pdf", "ledger-export.pdf"),
+  exportFullPDF: () => downloadAuthed("/export/full.pdf", "coinvane-export.pdf"),
   exportMonthlyPDF: (month) =>
     downloadAuthed(`/export/monthly.pdf${month ? "?month=" + encodeURIComponent(month) : ""}`,
-                   `ledger-monthly-${month || "current"}.pdf`),
+                   `coinvane-monthly-${month || "current"}.pdf`),
   exportCategoryYoyPDF: (year) =>
     downloadAuthed(`/export/category-yoy.pdf${year ? "?year=" + encodeURIComponent(year) : ""}`,
-                   `ledger-yoy-${year || "current"}.pdf`),
-  exportBudgetsPDF: () => downloadAuthed("/export/budgets.pdf", "ledger-budgets.pdf"),
-  exportBillsLoansPDF: () => downloadAuthed("/export/bills-loans.pdf", "ledger-bills-loans.pdf"),
+                   `coinvane-yoy-${year || "current"}.pdf`),
+  exportBudgetsPDF: () => downloadAuthed("/export/budgets.pdf", "coinvane-budgets.pdf"),
+  exportBillsLoansPDF: () => downloadAuthed("/export/bills-loans.pdf", "coinvane-bills-loans.pdf"),
 
   // admin
   adminInfo: () => request("GET", "/admin/info"),

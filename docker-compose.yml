@@ -2,7 +2,7 @@
 services:
   mariadb:
     image: mariadb:11
-    container_name: ledger-db
+    container_name: coinvane-db
     restart: unless-stopped
     environment:
       MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
@@ -21,7 +21,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: ledger-redis
+    container_name: coinvane-redis
     restart: unless-stopped
     volumes:
       - redis_data:/data
@@ -33,7 +33,7 @@ services:
 
   backend:
     build: ./Backend
-    container_name: ledger-api
+    container_name: coinvane-api
     restart: unless-stopped
     depends_on:
       mariadb: { condition: service_healthy }
@@ -78,7 +78,7 @@ services:
 
   worker:
     build: ./Backend
-    container_name: ledger-worker
+    container_name: coinvane-worker
     restart: unless-stopped
     depends_on:
       mariadb: { condition: service_healthy }
@@ -94,7 +94,7 @@ services:
       args:
         VITE_API_URL: /api
         VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID}
-    container_name: ledger-web
+    container_name: coinvane-web
     restart: unless-stopped
     depends_on:
       - backend

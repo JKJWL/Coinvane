@@ -1,10 +1,10 @@
-# Ledger
+# Coinvane
 
 > Self-hosted personal finance · React PWA · Plaid · Google SSO · zero-knowledge
 > at-rest encryption · Docker Compose deploy
 >
 > Copyright © 2026 Jack Jewell and contributors ·
-> Source: <https://github.com/JKJWL/Ledger> ·
+> Source: <https://github.com/JKJWL/Coinvane> ·
 > License: **AGPL v3** (see [LICENSE](LICENSE), third-party acknowledgements
 > in [NOTICE](NOTICE)) ·
 > Security policy: [SECURITY.md](SECURITY.md)
@@ -15,7 +15,7 @@ mobile PWA you can install on your phone. AGPL, no telemetry, no ads.
 
 ### A note on the license
 
-Ledger is licensed under the **GNU Affero General Public License v3.0**.
+Coinvane is licensed under the **GNU Affero General Public License v3.0**.
 That means:
 
 - ✅ **Personal / household use**: do whatever you want with it. Run it,
@@ -137,8 +137,8 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 ### 1. Clone and bootstrap
 
 ```bash
-git clone https://github.com/JKJWL/Ledger.git ledger
-cd ledger
+git clone https://github.com/JKJWL/Coinvane.git coinvane
+cd coinvane
 ./bootstrap.sh
 ```
 
@@ -179,7 +179,7 @@ This guide assumes Ubuntu 24.04 LTS. Adapt as needed for other distros.
 
 ### 1. Server prep
 
-Pick a non-root username — anything **other than** `ledger`, `admin`, `ubuntu`,
+Pick a non-root username — anything **other than** `coinvane`, `admin`, `ubuntu`,
 or any other word someone could guess from the project name or distro
 defaults. We'll refer to it as `<your-user>` throughout the rest of this
 guide; substitute your actual choice. (Yes, your SSH key auth defeats brute
@@ -256,7 +256,7 @@ sudo apt update && sudo apt install -y caddy
 
 Configure `sudo nano /etc/caddy/Caddyfile`:
 ```
-ledger.your-domain.com {
+coinvane.your-domain.com {
     encode gzip
     reverse_proxy 127.0.0.1:8080
     tls {
@@ -285,8 +285,8 @@ Substitute `<your-user>` with whatever username you created in step 1, and
 
 ```bash
 cd ~                # your-user's home directory
-git clone https://github.com/JKJWL/Ledger.git ledger
-cd ledger
+git clone https://github.com/JKJWL/Coinvane.git coinvane
+cd coinvane
 ./bootstrap.sh      # prompts for domain, Google ID, Plaid keys, etc.
 docker compose build
 docker compose up -d
@@ -301,29 +301,29 @@ The example below assumes you keep backups under your user's home directory.
 Substitute `<your-user>` (and the project path if you cloned somewhere else).
 
 ```bash
-sudo nano /etc/cron.daily/ledger-backup
+sudo nano /etc/cron.daily/coinvane-backup
 ```
 
 ```bash
 #!/bin/bash
 set -e
 # Adjust these two paths to match your install.
-APP_DIR=/home/<your-user>/ledger
+APP_DIR=/home/<your-user>/coinvane
 BACKUP_DIR=/home/<your-user>/backups
 KEY_FILE=/home/<your-user>/.backup-key
 
 mkdir -p "$BACKUP_DIR"
 TS=$(date +%Y%m%d-%H%M%S)
 source "$APP_DIR/.env"
-docker exec ledger-db mysqldump -uroot -p"$DB_ROOT_PASSWORD" --all-databases \
+docker exec coinvane-db mysqldump -uroot -p"$DB_ROOT_PASSWORD" --all-databases \
   | gzip \
   | openssl enc -aes-256-cbc -salt -pbkdf2 -pass file:"$KEY_FILE" \
-  > "$BACKUP_DIR/ledger-$TS.sql.gz.enc"
-find "$BACKUP_DIR" -name "ledger-*.sql.gz.enc" -mtime +14 -delete
+  > "$BACKUP_DIR/coinvane-$TS.sql.gz.enc"
+find "$BACKUP_DIR" -name "coinvane-*.sql.gz.enc" -mtime +14 -delete
 ```
 
 ```bash
-sudo chmod +x /etc/cron.daily/ledger-backup
+sudo chmod +x /etc/cron.daily/coinvane-backup
 openssl rand -hex 32 | sudo tee /home/<your-user>/.backup-key
 sudo chmod 400 /home/<your-user>/.backup-key
 ```
@@ -333,28 +333,28 @@ etc.). Periodically rsync the backup directory to another host or to S3. To
 restore:
 ```bash
 openssl enc -d -aes-256-cbc -pbkdf2 -pass file:.backup-key \
-  -in ledger-YYYYMMDD-HHMMSS.sql.gz.enc | gunzip | mysql -uroot -p
+  -in coinvane-YYYYMMDD-HHMMSS.sql.gz.enc | gunzip | mysql -uroot -p
 ```
 
 ---
 
 ## Google Cloud OAuth setup
 
-1. **Create a project**: https://console.cloud.google.com → "Select a project" → "New Project" → name it `Ledger`.
+1. **Create a project**: https://console.cloud.google.com → "Select a project" → "New Project" → name it `Coinvane`.
 
 2. **Configure consent screen**: APIs & Services → OAuth consent screen
    - User type: **External** (Internal only if you have Workspace)
-   - App name: `Ledger`
+   - App name: `Coinvane`
    - User support email, developer contact: your email
    - Skip scopes (OpenID/email/profile included by default)
    - Add your Gmail under **Test users** (so you can sign in before publishing)
 
 3. **Create OAuth Client ID**: APIs & Services → Credentials → Create Credentials → OAuth client ID
    - Application type: **Web application**
-   - Name: `Ledger Web`
+   - Name: `Coinvane Web`
    - **Authorized JavaScript origins**:
      - `http://localhost:8080` (for local dev)
-     - `https://ledger.your-domain.com` (for production)
+     - `https://coinvane.your-domain.com` (for production)
    - Authorized redirect URIs: leave empty (we use the ID-token flow, no redirect)
    - Click Create → copy the **Client ID** (looks like `123-abc.apps.googleusercontent.com`)
 
@@ -384,7 +384,7 @@ openssl enc -d -aes-256-cbc -pbkdf2 -pass file:.backup-key \
 
 4. **For OAuth banks** (Chase, US Bank, most credit unions): add your production redirect URI under Team Settings → API → Allowed redirect URIs. Must match `PLAID_REDIRECT_URI` in `.env` character-for-character (including trailing slash).
 
-5. **Webhooks** (optional, for auto-sync push): set `PLAID_WEBHOOK_URL=https://ledger.your-domain.com/api/plaid/webhook` in `.env`. The endpoint is public but signature-verified by Plaid — safe to expose.
+5. **Webhooks** (optional, for auto-sync push): set `PLAID_WEBHOOK_URL=https://coinvane.your-domain.com/api/plaid/webhook` in `.env`. The endpoint is public but signature-verified by Plaid — safe to expose.
 
 ### Which Plaid products
 
@@ -455,7 +455,7 @@ deploy. Short version:
 Standard upgrade flow after `git pull`:
 
 ```bash
-cd ~/ledger
+cd ~/coinvane
 git pull
 docker compose build --no-cache backend frontend
 docker compose up -d
@@ -507,7 +507,7 @@ Then rebuild without cache: `docker compose build --no-cache frontend`.
 In browser DevTools console: `import.meta.env.VITE_GOOGLE_CLIENT_ID` should
 return the full ID.
 
-### "Plaid doesn't support connections between [bank] and Ledger"
+### "Plaid doesn't support connections between [bank] and Coinvane"
 
 The institution doesn't support every product you're requesting. This app uses
 `optional_products: ["investments"]` so most banks should work. If you see this
@@ -552,7 +552,7 @@ come from Plaid sync.
 ## Project structure
 
 ```
-ledger/
+coinvane/
 ├── Backend/
 │   ├── src/
 │   │   ├── server.js              # Fastify entry, security middleware
@@ -624,7 +624,7 @@ ledger/
 | `PLAID_CLIENT_ID` / `PLAID_SECRET` / `PLAID_ENV` | Yes | Plaid keys; env is `sandbox` or `production`               |
 | `PLAID_REDIRECT_URI`      | Production-only | OAuth return URL, must match Plaid dashboard exactly         |
 | `PLAID_WEBHOOK_URL`       | Optional | Auto-sync push endpoint; verified by signature                       |
-| `APP_URL` / `CORS_ORIGIN` | Yes      | Your full HTTPS URL; CORS won't start without it in production. `APP_URL` is also used as the "Open Ledger" link target in notification emails. |
+| `APP_URL` / `CORS_ORIGIN` | Yes      | Your full HTTPS URL; CORS won't start without it in production. `APP_URL` is also used as the "Open Coinvane" link target in notification emails. |
 | `SIGNUP_MODE`             | Optional | `open` (default) — any allowlisted Google account can sign up. `closed` — no new users; existing users may still sign in. Use `closed` after your household roster is finalised to harden the deployment. |
 | `SYNC_INTERVAL_MINUTES`   | Optional | Initial polling cadence for Plaid; default 60. Owners can override this live from the Admin panel (the DB value wins). Webhook-driven syncs fire regardless. |
 | `EMAIL_CONFIG`            | Optional | `disabled` (default) or `enabled`. Master kill-switch for outbound email. UI greys out email-notification settings when disabled. |
@@ -639,7 +639,7 @@ generate one with strong randoms.
 
 This is a single-tenant personal-finance app, not a SaaS — the assumption is
 that each person runs their own copy. PRs and issues are welcome at
-<https://github.com/JKJWL/Ledger>, but the project is intentionally scoped
+<https://github.com/JKJWL/Coinvane>, but the project is intentionally scoped
 small: drive-by feature requests that don't fit a one-person/one-household use
 case may be politely declined.
 

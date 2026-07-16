@@ -60,13 +60,13 @@ export default async function (app) {
 
     reply
       .header("Content-Type", "application/pdf")
-      .header("Content-Disposition", `attachment; filename="ledger-export.pdf"`);
+      .header("Content-Disposition", `attachment; filename="coinvane-export.pdf"`);
 
     const doc = new PDFDocument({ size: "LETTER", margin: 50 });
     reply.send(doc);
 
     // ── Cover ────────────────────────────────────────────────────
-    doc.fontSize(22).fillColor("#059669").text("Ledger", { continued: false });
+    doc.fontSize(22).fillColor("#059669").text("Coinvane", { continued: false });
     doc.fontSize(10).fillColor("#64748b").text("Full data export", { continued: false });
     doc.moveDown(1.5);
     doc.fontSize(11).fillColor("#0f172a")
@@ -200,7 +200,7 @@ export default async function (app) {
     const fmt = (n) => "$" + Number(n || 0).toFixed(2);
     reply
       .header("Content-Type", "application/pdf")
-      .header("Content-Disposition", `attachment; filename="ledger-monthly-${monthParam}.pdf"`);
+      .header("Content-Disposition", `attachment; filename="coinvane-monthly-${monthParam}.pdf"`);
     const doc = new PDFDocument({ size: "LETTER", margin: 50 });
     reply.send(doc);
 
@@ -269,7 +269,7 @@ export default async function (app) {
     const fmt = (n) => "$" + Number(n || 0).toFixed(2);
     reply
       .header("Content-Type", "application/pdf")
-      .header("Content-Disposition", `attachment; filename="ledger-yoy-${thisYear}.pdf"`);
+      .header("Content-Disposition", `attachment; filename="coinvane-yoy-${thisYear}.pdf"`);
     const doc = new PDFDocument({ size: "LETTER", margin: 50 });
     reply.send(doc);
 
@@ -315,7 +315,7 @@ export default async function (app) {
     const fmt = (n) => "$" + Number(n || 0).toFixed(2);
     reply
       .header("Content-Type", "application/pdf")
-      .header("Content-Disposition", `attachment; filename="ledger-budgets.pdf"`);
+      .header("Content-Disposition", `attachment; filename="coinvane-budgets.pdf"`);
     const doc = new PDFDocument({ size: "LETTER", margin: 50 });
     reply.send(doc);
 
@@ -361,7 +361,7 @@ export default async function (app) {
     const fmt = (n) => "$" + Number(n || 0).toFixed(2);
     reply
       .header("Content-Type", "application/pdf")
-      .header("Content-Disposition", `attachment; filename="ledger-bills-loans.pdf"`);
+      .header("Content-Disposition", `attachment; filename="coinvane-bills-loans.pdf"`);
     const doc = new PDFDocument({ size: "LETTER", margin: 50 });
     reply.send(doc);
 

@@ -1,4 +1,4 @@
-Ledger
+Coinvane
 Copyright (C) 2026 Jack Jewell and contributors
 
 This product is licensed under the GNU Affero General Public License v3.0.
@@ -6,7 +6,7 @@ See the LICENSE file for the full license text.
 
 ═══════════════════════════════════════════════════════════════════════════
 This file documents third-party software bundled or directly depended upon
-by Ledger. It is informational; the authoritative license terms for each
+by Coinvane. It is informational; the authoritative license terms for each
 component live with that component upstream.
 
 For a NOTICE file, the convention is to acknowledge significant first-tier
@@ -61,7 +61,7 @@ under `node_modules/`.
   MariaDB 11              GPL-2.0  https://mariadb.org/
   Redis 7                 BSD-3-Clause  https://redis.io/
                           (Redis switched to dual SSPL/RSAL for newer
-                           versions; Ledger pins the `redis:7-alpine`
+                           versions; Coinvane pins the `redis:7-alpine`
                            image which is the last BSD-licensed release.)
   nginx                   BSD-2-Clause  https://nginx.org/
   Docker                  Apache-2.0  https://docker.com/
@@ -86,6 +86,6 @@ This NOTICE is provided in addition to the LICENSE file. It does not
 modify the terms of the GNU Affero General Public License v3.0, which
 remain the authoritative license terms for the code in this repository.
 
-If you redistribute Ledger (modified or unmodified), please retain this
+If you redistribute Coinvane (modified or unmodified), please retain this
 NOTICE file alongside the LICENSE file.
 ═══════════════════════════════════════════════════════════════════════════

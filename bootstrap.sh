@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # ─────────────────────────────────────────────────────────────────────
-#  Ledger — first-time .env generator
+#  Coinvane — first-time .env generator
 #  Generates all secrets, prompts for the few values only you can know,
 #  writes .env with secure perms (600).
 #
@@ -28,7 +28,7 @@ ENCRYPTION_KEY=$(openssl rand -hex 32)   # 32 bytes = 64 hex chars
 
 echo
 echo "→ Need a few values you must provide:"
-read -rp "  Domain (e.g. ledger.example.com — without https://): " DOMAIN
+read -rp "  Domain (e.g. coinvane.example.com — without https://): " DOMAIN
 read -rp "  Your Gmail address (only this email will be allowed in): " ALLOWED_EMAIL
 read -rp "  Google OAuth Client ID (xxxxx.apps.googleusercontent.com): " GOOGLE_CLIENT_ID
 read -rp "  Plaid Client ID: " PLAID_CLIENT_ID
@@ -53,8 +53,8 @@ APP_URL=https://${DOMAIN}
 CORS_ORIGIN=https://${DOMAIN}
 
 # ─── Database ────────────────────────────────────────────────────
-DB_NAME=ledger
-DB_USER=ledger
+DB_NAME=coinvane
+DB_USER=coinvane
 DB_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
 DB_PASSWORD=${DB_PASSWORD}
 
@@ -95,7 +95,7 @@ SMTP_HOST=
 SMTP_PORT=587
 SMTP_USER=
 SMTP_PASS=
-SMTP_FROM=Ledger <noreply@${DOMAIN}>
+SMTP_FROM=Coinvane <noreply@${DOMAIN}>
 EOF
 
 chmod 600 "$ENV_FILE"

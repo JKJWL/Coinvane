@@ -394,7 +394,7 @@ const SCHEMA = [
   //   - seasonal_bump action ADDS to it if the current period's month
   //     matches
   //   - move_budget_slack action shifts it between two budgets
-  // Kept simple on purpose: no per-period ledger of what changed, no
+  // Kept simple on purpose: no per-period audit trail of what changed, no
   // audit table beyond automation_history. If a rule stops firing, the
   // credit just... freezes at its last value until another rule touches
   // it or the user edits the budget.

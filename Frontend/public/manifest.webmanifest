@@ -1,6 +1,6 @@
 {
-  "name": "Ledger",
-  "short_name": "Ledger",
+  "name": "Coinvane",
+  "short_name": "Coinvane",
   "description": "Self-hosted personal finance",
   "start_url": "/",
   "scope": "/",

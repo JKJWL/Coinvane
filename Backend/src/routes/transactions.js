@@ -792,7 +792,7 @@ export default async function (app) {
     }
     reply
       .header("Content-Type", "text/csv; charset=utf-8")
-      .header("Content-Disposition", `attachment; filename="ledger-transactions.csv"`);
+      .header("Content-Disposition", `attachment; filename="coinvane-transactions.csv"`);
     return lines.join("\n");
   });
 

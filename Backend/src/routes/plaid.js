@@ -18,7 +18,7 @@ export default async function (app) {
 
     const config = {
       user: { client_user_id: String(req.user.id) },
-      client_name: "Ledger",
+      client_name: "Coinvane",
       products,
       optional_products,
       country_codes: ["US"],

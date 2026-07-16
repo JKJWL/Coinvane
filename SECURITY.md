@@ -1,6 +1,6 @@
 # Security Policy
 
-Ledger is a self-hosted personal-finance app maintained by a single
+Coinvane is a self-hosted personal-finance app maintained by a single
 person. It handles sensitive data (bank credentials via Plaid, transaction
 history, encrypted notes), so I take vulnerability reports seriously and
 will act on them quickly. This document explains what's in scope, how to
@@ -24,7 +24,7 @@ exec backend npm run migrate` runs the full upgrade.
 these private channels:
 
 1. **GitHub Security Advisory (preferred)** — go to the
-   [Security tab](https://github.com/JKJWL/Ledger/security/advisories/new)
+   [Security tab](https://github.com/JKJWL/Coinvane/security/advisories/new)
    and click *Report a vulnerability*. This creates a private advisory
    that only the maintainer can see. GitHub will notify me automatically.
 
@@ -105,7 +105,7 @@ is sound. See the production deployment section of the
 
 ## No warranty
 
-Ledger is licensed under the **GNU Affero General Public License v3.0**
+Coinvane is licensed under the **GNU Affero General Public License v3.0**
 (see [LICENSE](LICENSE)). Per the standard AGPL disclaimer:
 
 > THIS PROGRAM IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EITHER

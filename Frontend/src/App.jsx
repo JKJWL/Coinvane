@@ -656,7 +656,7 @@ function AuthScreen({ onAuth }) {
             <DollarSign className="w-6 h-6 text-white" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Ledger</h1>
+            <h1 className="text-2xl font-bold text-slate-900">Coinvane</h1>
             <p className="text-sm text-slate-500">Self-hosted personal finance</p>
           </div>
         </div>
@@ -3025,11 +3025,11 @@ function DetailRow({ label, value, theme }) {
 // Row shapes per section:
 //   Earnings + Taxes: { name, category, amount }
 //     — earnings come FROM the employer; taxes go OUT to a tax authority.
-//     Neither routes to a Ledger account.
+//     Neither routes to a Coinvane account.
 //   Pre-Tax + Post-Tax deductions: { name, category, accountId?, amount }
 //     — many deductions ARE the paycheck being split into another account
 //     (401k, HSA, Roth, ESPP, savings sweep). accountId is optional; when
-//     set, the amount is destined for that Ledger account and the user
+//     set, the amount is destined for that Coinvane account and the user
 //     can see the split reflected across their book. Matches Quicken's
 //     bracketed "[Account name]" rows in those sections.
 //   Deposits: { accountId, memo, amount }
@@ -4805,11 +4805,11 @@ function BudgetCard({ b, theme, darkMode, onEdit, onDelete, reorderLocked,
 // Replaces the old single "Export full report" button. Click to open a
 // menu, pick which report to build. Closes on outside click or escape.
 const PDF_REPORTS = [
-  { id: "full",       label: "Full report",                filename: "ledger-export.pdf",       download: (api) => api.exportFullPDF() },
-  { id: "monthly",    label: "Monthly summary",            filename: "ledger-monthly.pdf",      download: (api) => api.exportMonthlyPDF() },
-  { id: "yoy",        label: "Year-over-year categories",  filename: "ledger-yoy.pdf",          download: (api) => api.exportCategoryYoyPDF() },
-  { id: "budgets",    label: "Budget performance",         filename: "ledger-budgets.pdf",      download: (api) => api.exportBudgetsPDF() },
-  { id: "billsloans", label: "Bills & loans summary",      filename: "ledger-bills-loans.pdf",  download: (api) => api.exportBillsLoansPDF() },
+  { id: "full",       label: "Full report",                filename: "coinvane-export.pdf",       download: (api) => api.exportFullPDF() },
+  { id: "monthly",    label: "Monthly summary",            filename: "coinvane-monthly.pdf",      download: (api) => api.exportMonthlyPDF() },
+  { id: "yoy",        label: "Year-over-year categories",  filename: "coinvane-yoy.pdf",          download: (api) => api.exportCategoryYoyPDF() },
+  { id: "budgets",    label: "Budget performance",         filename: "coinvane-budgets.pdf",      download: (api) => api.exportBudgetsPDF() },
+  { id: "billsloans", label: "Bills & loans summary",      filename: "coinvane-bills-loans.pdf",  download: (api) => api.exportBillsLoansPDF() },
 ];
 function PdfExportDropdown({ exportingPdf, setExportingPdf, theme, darkMode, toast }) {
   const [open, setOpen] = useState(false);
@@ -6984,7 +6984,7 @@ function AutomationsPanel({ theme, darkMode, toast }) {
             <p className={`text-sm ${theme.textSubtle}`}>
               {rules.length} rule{rules.length !== 1 ? "s" : ""}
               {!desktop && rules.length === 0 && (
-                <span className="ml-1">· open Ledger on desktop to author rules</span>
+                <span className="ml-1">· open Coinvane on desktop to author rules</span>
               )}
             </p>
             {desktop && (
@@ -8617,7 +8617,7 @@ function Shell({ user, onLogout, refreshUser }) {
               <div className="w-8 h-8 rounded-lg bg-emerald-500 flex items-center justify-center">
                 <DollarSign className="w-5 h-5 text-white" />
               </div>
-              <span className="font-bold text-lg">Ledger</span>
+              <span className="font-bold text-lg">Coinvane</span>
             </button>
             <div className="flex items-center gap-1">
               {mainTabs.map(t => (
@@ -8658,7 +8658,7 @@ function Shell({ user, onLogout, refreshUser }) {
               <div className="w-7 h-7 rounded-lg bg-emerald-500 flex items-center justify-center shadow-sm shadow-emerald-500/40">
                 <DollarSign className="w-4 h-4 text-white" />
               </div>
-              <span className="font-bold text-sm">Ledger</span>
+              <span className="font-bold text-sm">Coinvane</span>
             </button>
             <div className="flex items-center gap-0.5">
               <IconButton theme={theme} onClick={() => navigate("investments")}>
