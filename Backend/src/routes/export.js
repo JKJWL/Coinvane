@@ -66,7 +66,7 @@ export default async function (app) {
     reply.send(doc);
 
     // ── Cover ────────────────────────────────────────────────────
-    doc.fontSize(22).fillColor("#059669").text("Coinvane", { continued: false });
+    doc.fontSize(22).fillColor("#7c3aed").text("Coinvane", { continued: false });
     doc.fontSize(10).fillColor("#64748b").text("Full data export", { continued: false });
     doc.moveDown(1.5);
     doc.fontSize(11).fillColor("#0f172a")
@@ -204,7 +204,7 @@ export default async function (app) {
     const doc = new PDFDocument({ size: "LETTER", margin: 50 });
     reply.send(doc);
 
-    doc.fontSize(22).fillColor("#059669").text("Monthly Summary");
+    doc.fontSize(22).fillColor("#7c3aed").text("Monthly Summary");
     doc.fontSize(11).fillColor("#64748b").text(monthParam);
     doc.moveDown(1);
 
@@ -273,7 +273,7 @@ export default async function (app) {
     const doc = new PDFDocument({ size: "LETTER", margin: 50 });
     reply.send(doc);
 
-    doc.fontSize(22).fillColor("#059669").text("Year-over-Year");
+    doc.fontSize(22).fillColor("#7c3aed").text("Year-over-Year");
     doc.fontSize(11).fillColor("#64748b").text(`${lastYear} vs ${thisYear}`);
     doc.moveDown(1);
     doc.fontSize(9).fillColor("#0f172a");
@@ -319,7 +319,7 @@ export default async function (app) {
     const doc = new PDFDocument({ size: "LETTER", margin: 50 });
     reply.send(doc);
 
-    doc.fontSize(22).fillColor("#059669").text("Budget Performance");
+    doc.fontSize(22).fillColor("#7c3aed").text("Budget Performance");
     doc.fontSize(11).fillColor("#64748b").text(`Month-to-date · ${monthStart.slice(0, 7)}`);
     doc.moveDown(1);
     doc.fontSize(9).fillColor("#0f172a");
@@ -365,7 +365,7 @@ export default async function (app) {
     const doc = new PDFDocument({ size: "LETTER", margin: 50 });
     reply.send(doc);
 
-    doc.fontSize(22).fillColor("#059669").text("Bills & Loans");
+    doc.fontSize(22).fillColor("#7c3aed").text("Bills & Loans");
     doc.fontSize(11).fillColor("#64748b").text("Recurring obligations + debt payoff snapshot");
     doc.moveDown(1);
 

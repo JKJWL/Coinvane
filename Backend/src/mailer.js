@@ -167,10 +167,10 @@ export function renderNotificationDigest({ userName, notifications, disclaimer }
     <tr><td align="center">
       <table cellpadding="0" cellspacing="0" border="0" width="560" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(15,23,42,.05)">
         <!-- Header band -->
-        <tr><td style="background:linear-gradient(135deg,#34d399 0%,#059669 100%);padding:24px 28px;color:#ffffff">
+        <tr><td style="background:linear-gradient(135deg,#c4b5fd 0%,#8b5cf6 100%);padding:24px 28px;color:#ffffff">
           <table cellpadding="0" cellspacing="0" border="0">
             <tr>
-              <td style="background:#ffffff;border-radius:8px;width:36px;height:36px;text-align:center;vertical-align:middle;font-size:20px;font-weight:700;color:#059669">$</td>
+              <td style="background:#ffffff;border-radius:8px;width:36px;height:36px;text-align:center;vertical-align:middle;font-size:20px;font-weight:700;color:#7c3aed">$</td>
               <td style="padding-left:12px;font-size:18px;font-weight:700;letter-spacing:-0.02em">Coinvane</td>
             </tr>
           </table>
@@ -188,7 +188,7 @@ export function renderNotificationDigest({ userName, notifications, disclaimer }
           <table cellpadding="0" cellspacing="0" border="0" width="100%">${items}</table>
 
           <div style="margin-top:24px">
-            <a href="${appUrl}" style="display:inline-block;background:#10b981;color:#ffffff;text-decoration:none;font-weight:600;font-size:14px;padding:11px 22px;border-radius:10px">Open Coinvane →</a>
+            <a href="${appUrl}" style="display:inline-block;background:#8b5cf6;color:#ffffff;text-decoration:none;font-weight:600;font-size:14px;padding:11px 22px;border-radius:10px">Open Coinvane →</a>
           </div>
         </td></tr>
 

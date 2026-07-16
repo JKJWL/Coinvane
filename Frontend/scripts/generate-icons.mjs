@@ -43,7 +43,7 @@ async function renderPng(svgBuffer, size, outPath, { inset = 0 } = {}) {
     return;
   }
   // Maskable: render the glyph at (1 - 2*inset) of the canvas, on the
-  // background color from the SVG's gradient (we sample the emerald
+  // background color from the SVG's gradient (we sample the violet
   // mid-tone so the safe area looks coherent if Android crops to a
   // circle). Per W3C maskable spec, the inner 80% must contain the
   // logo; outer 20% is safe-area padding the platform may clip.
@@ -56,7 +56,7 @@ async function renderPng(svgBuffer, size, outPath, { inset = 0 } = {}) {
   await sharp({
     create: {
       width: size, height: size, channels: 4,
-      background: { r: 0x10, g: 0xb9, b: 0x81, alpha: 1 }, // emerald-500
+      background: { r: 0x8b, g: 0x5c, b: 0xf6, alpha: 1 }, // violet-500
     },
   })
     .composite([{ input: glyph, top: inset_px, left: inset_px }])

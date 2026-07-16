@@ -652,7 +652,7 @@ function AuthScreen({ onAuth }) {
         className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8"
       >
         <div className="flex items-center gap-3 mb-8">
-          <div className="w-11 h-11 rounded-xl bg-emerald-500 flex items-center justify-center shadow-sm shadow-emerald-500/40">
+          <div className="w-11 h-11 rounded-xl bg-violet-500 flex items-center justify-center shadow-sm shadow-violet-500/40">
             <DollarSign className="w-6 h-6 text-white" />
           </div>
           <div>
@@ -8614,7 +8614,7 @@ function Shell({ user, onLogout, refreshUser }) {
         <div className="px-6 py-3 flex items-center justify-between max-w-screen-2xl mx-auto">
           <div className="flex items-center gap-8">
             <button onClick={() => navigate("dashboard")} className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-emerald-500 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-lg bg-violet-500 flex items-center justify-center">
                 <DollarSign className="w-5 h-5 text-white" />
               </div>
               <span className="font-bold text-lg">Coinvane</span>
@@ -8655,7 +8655,7 @@ function Shell({ user, onLogout, refreshUser }) {
         <div className="safe-pt" style={{ paddingTop: "max(env(safe-area-inset-top), 12px)" }}>
           <div className="px-4 h-14 flex items-center justify-between">
             <button onClick={() => navigate("dashboard")} className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-lg bg-emerald-500 flex items-center justify-center shadow-sm shadow-emerald-500/40">
+              <div className="w-7 h-7 rounded-lg bg-violet-500 flex items-center justify-center shadow-sm shadow-violet-500/40">
                 <DollarSign className="w-4 h-4 text-white" />
               </div>
               <span className="font-bold text-sm">Coinvane</span>
