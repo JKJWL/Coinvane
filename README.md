@@ -57,6 +57,9 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 - **Transactions** — date-grouped activity feed with filter by account / category, sort options, tap-to-edit.
 - **Cash / Credit split** — the Transactions tab has a Cash⇄Credit pill at the top. Defaults to Cash on every visit. Credit-card transactions never bleed into your income, cashflow, by-category, or budget totals; they're tallied only by the credit-usage tracker.
 - **Per-merchant rules** — recategorise a transaction and choose "all future from this merchant"; the rule is saved per-user and applied to every subsequent sync.
+- **Manual classification override** — flip an already-posted transaction between Income / Expense / Transfer when Plaid gets it wrong, without deleting and re-entering.
+- **Split transactions** — carve one transaction into multiple category slices (e.g. a Costco run split across Groceries / Household / Fuel). Child rows inherit the merchant + date; the parent becomes a container.
+- **Receipt attachments** — attach one image (PNG or JPG, ≤5MB) per transaction from the detail sheet, view or reprint later. Uploads are rate-limited (3 per transaction per 5 min, 50 per user per 30 min); a new upload replaces the old file to conserve disk. A pink image marker appears next to any transaction that has a receipt, and the transaction list has a **Has receipt** sort that groups them at the top.
 - **CSV import / export** — full transaction roundtrip from the Settings → Data section. CSV columns: `date, merchant, category, amount, account, note, pending`. On import, accounts are matched by name; unknown names fall back to manual rows.
 
 ### Budgets
@@ -71,15 +74,25 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 - **Zero-based-budget summary** — dual-color bar at the bottom showing income vs allocated, with "X left to budget" indicator.
 - **Themed confirmations** — destructive actions (delete budget, etc.) prompt with an in-app modal, not the native browser dialog.
 
-### Goals
+### Goals & loans
 - **Savings goals** with target / progress
 - **Contribute** button + quick-add chips for deposits or withdrawals (negative amounts clamp at $0)
 - **Link to a bank account** — when linked, the goal's saved amount is the linked account's live balance, no manual contributions needed (and they're explicitly refused server-side to keep the source of truth single)
+- **Loan tracker** — a second section under Goals for mortgages, auto loans, student loans, credit-card balances you're paying down. Principal, rate, term, minimum + optional extra payment. Interactive amortization with an extra-payment slider that recomputes payoff date and total interest live. Choose a **snowball** (smallest balance first) or **avalanche** (highest rate first) strategy across all your loans; the app highlights which one to attack next.
 - **Themed delete confirmation** instead of the native browser dialog
 
-### Net worth
+### Bills
+- **Recurring bill templates** — set a merchant, expected amount, cadence (weekly / bi-weekly / semi-monthly / monthly / yearly / every N days), and due day. Bills open a new cycle automatically and roll forward.
+- **Auto-match on Plaid sync** — every incoming transaction is checked against your bill templates by merchant substring + amount band (±40%); a match auto-fills the current cycle as **paid** without you clicking anything.
+- **Manual fallback** — mark paid / unpaid / skip on any cycle, edit variance, adjust the expected amount when your electric bill jumps for the summer.
+- **Rolling 3-cycle nudge** — if your actual paid amount drifts from the template three cycles in a row, the UI suggests updating the template so future forecasts are accurate.
+- **Variance tracking** — see how far each cycle came in over or under expected.
+
+### Net worth & cashflow
 - **Net Worth chart** with ALL / MTD / YTD / 1M / 3M / 1Y toggle (defaults to ALL — mobile gradient hero + desktop full chart)
 - **Spending pulse** — compact monthly category breakdown card
+- **Cashflow forecast** — dashed extension on the monthly cashflow chart projecting the next few months from recurring income + bill templates. Toggle it on/off with the Sparkles button (preference persists across devices); overlay a one-off adjustment (e.g. "expecting a $1,200 refund next month") without creating a real transaction.
+- **Desktop KPI fullscreen** — click any of the three KPI cards (Cashflow / Spending by Category / Net Worth) on desktop to center-fullscreen it. Spending by Category card has its own filters + sort options matching the Net Worth chart.
 
 ### Investments
 - **Holdings, gains/losses** — brokerage syncing via Plaid
@@ -106,7 +119,12 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 - **Mobile PWA** — install to iPhone home screen, full-screen, frosted iOS-style nav, Dynamic Island safe
 - **Multi-device** — dark mode, theme, and every per-user setting follow you across devices
 - **Google SSO** — no passwords stored; locked to an email allowlist so only you can sign in
-- **Full PDF export** — Settings → Data → *Export full report (PDF)*. Server-side rendered (no headless browser) cover + summary + accounts + budgets + goals + last 500 transactions + decrypted notes
+- **PDF report dropdown** — Settings → Data → *Export report (PDF)* opens a menu with 5 branded reports, all server-side rendered (no headless browser):
+  1. **Full report** — cover + summary + accounts + budgets + goals + last 500 transactions + decrypted notes
+  2. **Monthly** — single-month income / expense / cashflow / category breakdown
+  3. **Category YoY** — year-over-year per-category comparison
+  4. **Budgets** — every budget + spend history for the current and past periods
+  5. **Bills & Loans** — recurring bill cycles + loan amortization progress
 
 ---
 
@@ -114,7 +132,7 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 
 | Layer       | Tech                                                   |
 | ----------- | ------------------------------------------------------ |
-| Backend     | Node.js 20, Fastify 5, MariaDB 11, BullMQ + Redis, Plaid SDK v27, Nodemailer 8 |
+| Backend     | Node.js 20, Fastify 5, MariaDB 11, BullMQ + Redis, Plaid SDK v27, Nodemailer 8, `@fastify/multipart` for receipt uploads |
 | Frontend    | React 18, Vite 6, Tailwind 3, Framer Motion 11, Recharts 2 |
 | Server-side rendering | pdfkit (PDF export), papaparse (CSV import), geoip-lite (offline IP→location for audit log) |
 | Auth        | Google Sign-In (ID-token verification, no client secret needed) |
@@ -415,7 +433,7 @@ This app is designed to be exposed to the public internet safely.
 
 - **Email allowlist** — only Google accounts on the list can sign in; anyone else gets 403 regardless of whether Google would otherwise let them through. Live-editable from the Admin panel (DB-backed in `app_settings.allowed_emails`); falls back to the `ALLOWED_EMAILS` env on fresh deploys.
 - **Three-tier role model** — Owner / Admin / Member. Owner is exclusive per instance and the only role that can edit cross-cutting config (sync interval, allowlist, role promotions, sample emails). Admins are scoped to two destructive actions (delete members, clear notifications), both audit-logged as major.
-- **Rate limiting** — 200 req/min global, 10 req/min on `/api/auth/google`, 60 req/min on every admin route, 300 req/min on the public `/api/plaid/webhook`.
+- **Rate limiting** — 200 req/min global, 10 req/min on `/api/auth/google`, 60 req/min on every admin route, 300 req/min on the public `/api/plaid/webhook`, plus explicit per-route caps on the filesystem-touching receipt endpoints (60/120/60 req/min for upload / view / delete).
 - **Helmet** — HSTS, X-Frame-Options DENY, strict Referrer-Policy, no `X-Powered-By`.
 - **Strict CORS** — refuses to start in production if `CORS_ORIGIN` isn't set.
 - **JWT 30-day expiration** — sessions auto-expire; sign back in with one Google click. Role changes require a re-login to take effect (JWTs aren't auto-refreshed).
@@ -423,7 +441,7 @@ This app is designed to be exposed to the public internet safely.
 - **Prepared statements** — every DB query uses parameterized `?` placeholders; no string concatenation, no SQL injection surface.
 - **Error masking** — production 5xx responses return a generic message; stack traces stay in logs.
 - **Tiered audit log** — every sign-in (success and failure) recorded with IP, user-agent, and offline GeoIP location. Routine entries prune at 48 h; major entries (role changes, user deletes, settings edits, bulk notification wipes) survive 7 days.
-- **Body limit** — 512 KB on JSON, 5 MB on the CSV import route only.
+- **Body limit** — 512 KB on JSON, 5 MB on the CSV import route + receipt-upload route only. Receipt uploads are additionally mime-whitelisted to PNG/JPG at the route handler.
 - **CSP** — nginx serves a strict Content-Security-Policy locking script sources
   to self, Google, and Plaid.
 - **No client-side caching** — every response (HTML, JS, CSS, API, images) is
@@ -478,6 +496,15 @@ A few notes:
   re-downloads the (small) JS bundle, so a hard refresh after deploy is
   unnecessary in practice. Your session in `localStorage` survives across
   reloads, deploys, and container rebuilds; you stay signed in.
+- **Renaming your checkout directory changes Docker's volume prefix.** Docker
+  Compose names volumes `<foldername>_<volume>` — so if your git clone lives
+  in `~/coinvane/` your volumes are `coinvane_mariadb_data` etc., but if you
+  cloned into `~/ledger/` back before the rename they'd be `ledger_*`.
+  Renaming the folder makes the app come up with an empty database because
+  the new prefix "finds no volumes." Either keep the folder name stable,
+  set `COMPOSE_PROJECT_NAME=ledger` in `.env` to pin the old prefix, or
+  manually rename the volumes with `docker volume create` + `docker run
+  rsync` before switching.
 - **Restart just the worker** if you change `SYNC_INTERVAL_MINUTES` via env, or
   if you've updated the in-app sync-interval value from the Admin panel. The
   worker sweeps and re-registers BullMQ schedules at startup, so a
@@ -602,7 +629,7 @@ coinvane/
 │   ├── tailwind.config.js
 │   ├── vite.config.js
 │   └── package.json
-├── docker-compose.yml          # 5 services: mariadb, redis, backend, worker, frontend
+├── docker-compose.yml          # 5 services + 3 named volumes (mariadb_data, redis_data, attachments_data)
 ├── bootstrap.sh                # First-time .env generator
 ├── .env.example                # Template — actual .env is git-ignored
 └── README.md
