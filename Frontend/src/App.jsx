@@ -4801,6 +4801,464 @@ function BudgetCard({ b, theme, darkMode, onEdit, onDelete, reorderLocked,
   );
 }
 
+// ─── PDF Export Dropdown ─────────────────────────────────────────────────────
+// Replaces the old single "Export full report" button. Click to open a
+// menu, pick which report to build. Closes on outside click or escape.
+const PDF_REPORTS = [
+  { id: "full",       label: "Full report",                filename: "ledger-export.pdf",       download: (api) => api.exportFullPDF() },
+  { id: "monthly",    label: "Monthly summary",            filename: "ledger-monthly.pdf",      download: (api) => api.exportMonthlyPDF() },
+  { id: "yoy",        label: "Year-over-year categories",  filename: "ledger-yoy.pdf",          download: (api) => api.exportCategoryYoyPDF() },
+  { id: "budgets",    label: "Budget performance",         filename: "ledger-budgets.pdf",      download: (api) => api.exportBudgetsPDF() },
+  { id: "billsloans", label: "Bills & loans summary",      filename: "ledger-bills-loans.pdf",  download: (api) => api.exportBillsLoansPDF() },
+];
+function PdfExportDropdown({ exportingPdf, setExportingPdf, theme, darkMode, toast }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("mousedown", onClick);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onClick);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  const runReport = async (r) => {
+    setOpen(false);
+    setExportingPdf(true);
+    try { await r.download(api); toast?.(`${r.label} downloaded`, "success"); }
+    catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    finally { setExportingPdf(false); }
+  };
+  return (
+    <div className="relative" ref={ref}>
+      <motion.button whileTap={{ scale: 0.97 }} type="button" disabled={exportingPdf}
+        onClick={() => setOpen(v => !v)}
+        className={`text-sm font-medium ${theme.surface} border ${theme.border} px-3 py-2 rounded-xl disabled:opacity-60 flex items-center gap-1`}>
+        {exportingPdf ? "Building…" : "Export report (PDF)"}
+        <ChevronDown className="w-3.5 h-3.5" />
+      </motion.button>
+      {open && (
+        <div className={`absolute right-0 top-full mt-1 z-30 min-w-56 ${theme.surface} border ${theme.border} rounded-xl shadow-lg overflow-hidden`}>
+          {PDF_REPORTS.map(r => (
+            <button key={r.id} type="button" onClick={() => runReport(r)}
+              className={`w-full text-left px-3 py-2 text-sm ${theme.hover} transition-colors`}>
+              {r.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Loans Section (under GoalsTab) ──────────────────────────────────────────
+// Sits below the Goals list. Each loan card shows balance, APR, monthly
+// payment, and lets the user run an amortization projection with an
+// optional extra-payment slider. Amortization math runs client-side.
+const LOAN_TYPES = [
+  { id: "mortgage",    label: "Mortgage" },
+  { id: "auto",        label: "Auto loan" },
+  { id: "student",     label: "Student loan" },
+  { id: "personal",    label: "Personal" },
+  { id: "credit_card", label: "Credit card" },
+  { id: "other",       label: "Other" },
+];
+
+// Given balance, APR, and monthly payment, iterate month-by-month until
+// paid off. Returns { months, totalInterest, months_over_term }.
+// Caps at 720 (60 years) so a bad payment number can't infinite-loop.
+function projectPayoff(balance, apr, monthlyPayment, extra = 0) {
+  const r = Number(apr) / 12 / 100;
+  const pay = Number(monthlyPayment) + Number(extra);
+  if (pay <= 0) return { months: Infinity, totalInterest: Infinity, principalPaid: 0 };
+  let bal = Number(balance);
+  let months = 0;
+  let totalInterest = 0;
+  const startBal = bal;
+  while (bal > 0 && months < 720) {
+    const interest = bal * r;
+    // If the payment doesn't even cover the interest, we'll never pay off.
+    if (pay <= interest + 0.01) return { months: Infinity, totalInterest: Infinity, principalPaid: 0 };
+    totalInterest += interest;
+    bal = bal + interest - pay;
+    months++;
+    if (bal < 0.01) bal = 0;
+  }
+  return { months, totalInterest, principalPaid: startBal };
+}
+
+function LoansSection({ theme, darkMode, toast }) {
+  const { accounts } = useData();
+  const [loans, setLoans] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [strategy, setStrategy] = useState("avalanche"); // "avalanche" | "snowball"
+
+  const load = useCallback(async () => {
+    try { setLoans(await api.listLoans()); }
+    catch { toast?.("Failed to load loans", "error"); }
+    finally { setLoading(false); }
+  }, [toast]);
+  useEffect(() => { load(); }, [load]);
+
+  const activeLoans = loans;
+  const totalBalance = activeLoans.reduce((s, l) => s + Number(l.current_balance), 0);
+  const totalMonthly = activeLoans.reduce((s, l) => s + Number(l.monthly_payment), 0);
+
+  // Snowball = smallest balance first. Avalanche = highest APR first.
+  const orderedLoans = useMemo(() => {
+    const sorted = [...activeLoans];
+    if (strategy === "avalanche") sorted.sort((a, b) => Number(b.apr) - Number(a.apr));
+    else sorted.sort((a, b) => Number(a.current_balance) - Number(b.current_balance));
+    return sorted;
+  }, [activeLoans, strategy]);
+
+  const removeLoan = async (loan) => {
+    if (!window.confirm(`Archive loan "${loan.name}"? Its record will be kept.`)) return;
+    try {
+      await api.deleteLoan(loan.id);
+      toast?.("Loan archived", "success");
+      load();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+
+  const recordPayment = async (loan) => {
+    const amt = window.prompt(`Record a payment for ${loan.name}. Amount:`, String(loan.monthly_payment));
+    if (!amt) return;
+    const n = Number(amt);
+    if (!(n > 0)) return toast?.("Enter a positive amount", "error");
+    try {
+      await api.recordLoanPayment(loan.id, n);
+      toast?.("Payment recorded", "success");
+      load();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="font-semibold">Debts &amp; loans</h3>
+          <p className={`text-xs ${theme.textSubtle}`}>
+            Track balance, APR, and payoff projections.
+          </p>
+        </div>
+        <button type="button" onClick={() => { setEditing(null); setShowForm(true); }}
+          className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600 flex items-center gap-1">
+          <Plus className="w-3.5 h-3.5" /> Add loan
+        </button>
+      </div>
+
+      {loading ? (
+        <div className={`text-sm ${theme.textSubtle}`}>Loading…</div>
+      ) : activeLoans.length === 0 ? (
+        <div className={`${theme.surface} rounded-2xl border ${theme.border} p-6 text-center`}>
+          <TrendingDown className={`w-6 h-6 mx-auto ${theme.textSubtle} mb-1`} />
+          <p className={`text-xs ${theme.textSubtle}`}>
+            No loans tracked yet.
+          </p>
+        </div>
+      ) : (
+        <>
+          {activeLoans.length >= 2 && (
+            <div className={`${theme.surface} rounded-2xl border ${theme.border} p-4`}>
+              <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                <div>
+                  <div className="text-sm font-semibold">Payoff strategy</div>
+                  <div className={`text-xs ${theme.textSubtle}`}>
+                    Total balance: <span className="private-amount" tabIndex={0}>{fmt(totalBalance)}</span> ·
+                    Total monthly minimums: <span className="private-amount" tabIndex={0}>{fmt(totalMonthly)}</span>
+                  </div>
+                </div>
+                <div className={`flex items-center gap-1 p-0.5 rounded-full ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+                  <button onClick={() => setStrategy("avalanche")}
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-semibold ${strategy === "avalanche" ? "bg-emerald-500 text-white" : theme.textMuted}`}>
+                    Avalanche
+                  </button>
+                  <button onClick={() => setStrategy("snowball")}
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-semibold ${strategy === "snowball" ? "bg-emerald-500 text-white" : theme.textMuted}`}>
+                    Snowball
+                  </button>
+                </div>
+              </div>
+              <p className={`text-[11px] ${theme.textSubtle}`}>
+                {strategy === "avalanche"
+                  ? "Highest APR first — mathematically saves the most interest."
+                  : "Smallest balance first — clears loans faster for morale wins."}
+              </p>
+            </div>
+          )}
+          <div className="space-y-2">
+            {orderedLoans.map(loan => (
+              <LoanCard key={loan.id} loan={loan} theme={theme} darkMode={darkMode}
+                onEdit={() => { setEditing(loan); setShowForm(true); }}
+                onPayment={() => recordPayment(loan)}
+                onRemove={() => removeLoan(loan)} />
+            ))}
+          </div>
+        </>
+      )}
+
+      <LoanFormSheet
+        open={showForm}
+        onClose={() => { setShowForm(false); setEditing(null); }}
+        editing={editing}
+        accounts={accounts}
+        theme={theme}
+        darkMode={darkMode}
+        toast={toast}
+        onSaved={() => { setShowForm(false); setEditing(null); load(); }}
+      />
+    </div>
+  );
+}
+
+function LoanCard({ loan, theme, darkMode, onEdit, onPayment, onRemove }) {
+  const [extra, setExtra] = useState(0);
+  const base = projectPayoff(loan.current_balance, loan.apr, loan.monthly_payment, 0);
+  const withExtra = projectPayoff(loan.current_balance, loan.apr, loan.monthly_payment, extra);
+  const paidOffPct = Number(loan.principal) > 0
+    ? Math.round(((Number(loan.principal) - Number(loan.current_balance)) / Number(loan.principal)) * 100)
+    : 0;
+  const fmtMonths = (m) => {
+    if (!Number.isFinite(m)) return "never (payment too low)";
+    const y = Math.floor(m / 12); const r = m % 12;
+    if (y === 0) return `${r} mo`;
+    if (r === 0) return `${y} yr`;
+    return `${y} yr ${r} mo`;
+  };
+  return (
+    <div className={`${theme.surface} rounded-2xl border ${theme.border} p-4`}>
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <div className="flex-1 min-w-0">
+          <div className="font-semibold text-sm">{loan.name}</div>
+          <div className={`text-xs ${theme.textSubtle} mt-0.5`}>
+            {(LOAN_TYPES.find(t => t.id === loan.loan_type) || {}).label || "Other"} ·
+            {" "}{Number(loan.apr).toFixed(2)}% APR ·
+            {" "}<span className="private-amount" tabIndex={0}>{fmt(Number(loan.monthly_payment))}</span>/mo
+          </div>
+        </div>
+        <div className="text-right flex-shrink-0">
+          <div className="text-sm font-bold private-amount" tabIndex={0}>{fmt(Number(loan.current_balance))}</div>
+          <div className={`text-[10px] ${theme.textSubtle}`}>
+            of <span className="private-amount" tabIndex={0}>{fmt(Number(loan.principal))}</span>
+          </div>
+        </div>
+      </div>
+      <ProgressBar value={paidOffPct} color="bg-emerald-500" darkMode={darkMode} />
+      <div className={`text-[11px] ${theme.textSubtle} mt-1 mb-3`}>{paidOffPct}% paid off</div>
+
+      <div className={`rounded-xl border ${theme.border} p-3 space-y-2`}>
+        <div className="flex items-center justify-between text-xs">
+          <div className={theme.textSubtle}>Extra payment</div>
+          <div className="private-amount font-semibold" tabIndex={0}>
+            +{fmt(extra)}/mo
+          </div>
+        </div>
+        <input type="range" min="0" max={Math.max(500, Math.round(Number(loan.monthly_payment) * 2))} step="10"
+          value={extra} onChange={e => setExtra(Number(e.target.value))}
+          className="w-full accent-emerald-500" />
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <div>
+            <div className={theme.textSubtle}>Payoff (current)</div>
+            <div className="font-semibold">{fmtMonths(base.months)}</div>
+            <div className={theme.textSubtle}>
+              Interest: <span className="private-amount" tabIndex={0}>
+                {Number.isFinite(base.totalInterest) ? fmt(base.totalInterest) : "—"}
+              </span>
+            </div>
+          </div>
+          <div>
+            <div className={theme.textSubtle}>With extra</div>
+            <div className={`font-semibold ${extra > 0 ? "text-emerald-500" : ""}`}>
+              {fmtMonths(withExtra.months)}
+            </div>
+            <div className={theme.textSubtle}>
+              Interest: <span className="private-amount" tabIndex={0}>
+                {Number.isFinite(withExtra.totalInterest) ? fmt(withExtra.totalInterest) : "—"}
+              </span>
+            </div>
+          </div>
+        </div>
+        {Number.isFinite(base.totalInterest) && Number.isFinite(withExtra.totalInterest) && extra > 0 && (
+          <div className={`text-[11px] ${theme.textSubtle} pt-1 border-t ${theme.border}`}>
+            Saves <span className="private-amount font-semibold text-emerald-500" tabIndex={0}>
+              {fmt(base.totalInterest - withExtra.totalInterest)}
+            </span> in interest and{" "}
+            <span className="font-semibold text-emerald-500">
+              {base.months - withExtra.months} month{base.months - withExtra.months === 1 ? "" : "s"}
+            </span> off the term.
+          </div>
+        )}
+      </div>
+
+      <div className="flex gap-1.5 mt-3 flex-wrap">
+        <button type="button" onClick={onPayment}
+          className="flex-1 min-w-[100px] py-1.5 rounded-lg text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600 flex items-center justify-center gap-1">
+          <Check className="w-3 h-3" /> Record payment
+        </button>
+        <button type="button" onClick={onEdit}
+          className={`py-1.5 px-3 rounded-lg text-xs font-semibold border ${theme.border} ${theme.hover} flex items-center gap-1`}>
+          <Pencil className="w-3 h-3" /> Edit
+        </button>
+        <button type="button" onClick={onRemove}
+          className={`py-1.5 px-2 rounded-lg text-xs font-semibold border ${theme.border} text-rose-500 hover:bg-rose-500/10`}>
+          <Trash2 className="w-3 h-3" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function LoanFormSheet({ open, onClose, editing, accounts, theme, darkMode, toast, onSaved }) {
+  const [form, setForm] = useState(() => defaultLoanForm());
+  const [saving, setSaving] = useState(false);
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+
+  useEffect(() => {
+    if (!open) return;
+    if (editing) {
+      setForm({
+        name: editing.name || "",
+        loan_type: editing.loan_type || "other",
+        principal: String(editing.principal ?? ""),
+        current_balance: String(editing.current_balance ?? ""),
+        apr: String(editing.apr ?? ""),
+        term_months: String(editing.term_months ?? ""),
+        monthly_payment: String(editing.monthly_payment ?? ""),
+        start_date: editing.start_date?.slice(0, 10) || new Date().toISOString().slice(0, 10),
+        linked_account_id: editing.linked_account_id || "",
+        notes: editing.notes || "",
+      });
+    } else {
+      setForm(defaultLoanForm());
+    }
+  }, [open, editing]);
+
+  const save = async () => {
+    if (!form.name.trim() || !form.principal || !form.current_balance) {
+      toast?.("Name, principal, and current balance are required", "error");
+      return;
+    }
+    setSaving(true);
+    try {
+      const payload = {
+        ...form,
+        principal: Number(form.principal),
+        current_balance: Number(form.current_balance),
+        apr: Number(form.apr) || 0,
+        term_months: Number(form.term_months) || 0,
+        monthly_payment: Number(form.monthly_payment) || 0,
+        linked_account_id: form.linked_account_id || null,
+      };
+      if (editing) {
+        await api.updateLoan(editing.id, payload);
+        toast?.("Loan updated", "success");
+      } else {
+        await api.createLoan(payload);
+        toast?.("Loan created", "success");
+      }
+      onSaved();
+    } catch (e) {
+      toast?.("Failed: " + (e.message || ""), "error");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <Sheet open={open} onClose={onClose} title={editing ? "Edit loan" : "Add loan"} theme={theme}>
+      <div className="space-y-3">
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Name</label>
+          <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
+            placeholder="e.g. Mortgage, Car loan" className={inputCls} />
+        </div>
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Type</label>
+          <select value={form.loan_type} onChange={e => setForm({ ...form, loan_type: e.target.value })} className={inputCls}>
+            {LOAN_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+          </select>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Original principal</label>
+            <input type="number" step="0.01" value={form.principal}
+              onChange={e => setForm({ ...form, principal: e.target.value })}
+              className={inputCls} />
+          </div>
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Current balance</label>
+            <input type="number" step="0.01" value={form.current_balance}
+              onChange={e => setForm({ ...form, current_balance: e.target.value })}
+              className={inputCls} />
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-3">
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>APR %</label>
+            <input type="number" step="0.01" value={form.apr}
+              onChange={e => setForm({ ...form, apr: e.target.value })}
+              className={inputCls} />
+          </div>
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Term (months)</label>
+            <input type="number" value={form.term_months}
+              onChange={e => setForm({ ...form, term_months: e.target.value })}
+              className={inputCls} />
+          </div>
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Monthly pmt</label>
+            <input type="number" step="0.01" value={form.monthly_payment}
+              onChange={e => setForm({ ...form, monthly_payment: e.target.value })}
+              className={inputCls} />
+          </div>
+        </div>
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Start date</label>
+          <input type="date" value={form.start_date}
+            onChange={e => setForm({ ...form, start_date: e.target.value })}
+            className={inputCls} />
+        </div>
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Linked account (optional)</label>
+          <select value={form.linked_account_id} onChange={e => setForm({ ...form, linked_account_id: e.target.value })} className={inputCls}>
+            <option value="">Not linked</option>
+            {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Notes</label>
+          <textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })}
+            rows={2} className={inputCls} />
+        </div>
+        <div className="flex gap-2 pt-2">
+          <button type="button" onClick={onClose}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.textSubtle}`}>
+            Cancel
+          </button>
+          <button type="button" onClick={save} disabled={saving}
+            className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-60">
+            {saving ? "Saving…" : editing ? "Save changes" : "Create loan"}
+          </button>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+function defaultLoanForm() {
+  return {
+    name: "", loan_type: "other",
+    principal: "", current_balance: "",
+    apr: "", term_months: "", monthly_payment: "",
+    start_date: new Date().toISOString().slice(0, 10),
+    linked_account_id: "", notes: "",
+  };
+}
+
 // ─── Bills Tab ────────────────────────────────────────────────────────────────
 // Recurring outgoing obligations. Distinct from scheduled transactions:
 // each bill is a template that regenerates a "cycle" every period, and
@@ -6242,6 +6700,11 @@ function GoalsTab({ theme, darkMode, toast }) {
         message={toDelete && `"${toDelete.name}" will be removed. ${toDelete.accountId ? "The linked bank account is unaffected." : "Your saved progress will be lost."}`}
         confirmLabel="Delete goal"
       />
+
+      {/* Debts & loans section — sits under Goals per user spec. */}
+      <div className="pt-4">
+        <LoansSection theme={theme} darkMode={darkMode} toast={toast} />
+      </div>
     </div>
   );
 }
@@ -8010,17 +8473,9 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
           </motion.button>
           <input ref={fileInputRef} type="file" accept=".csv,text/csv" className="hidden"
             onChange={e => { handleCsvFile(e.target.files?.[0]); e.target.value = ""; }} />
-          <motion.button whileTap={{ scale: 0.97 }} type="button"
-            disabled={exportingPdf}
-            onClick={async () => {
-              setExportingPdf(true);
-              try { await api.exportFullPDF(); toast?.("PDF downloaded", "success"); }
-              catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
-              finally { setExportingPdf(false); }
-            }}
-            className={`text-sm font-medium ${theme.surface} border ${theme.border} px-3 py-2 rounded-xl disabled:opacity-60`}>
-            {exportingPdf ? "Building…" : "Export full report (PDF)"}
-          </motion.button>
+          <PdfExportDropdown
+            exportingPdf={exportingPdf} setExportingPdf={setExportingPdf}
+            theme={theme} darkMode={darkMode} toast={toast} />
         </div>
         <div className={`text-xs ${theme.textSubtle}`}>
           CSV columns: date, merchant, category, amount, account, note, pending.

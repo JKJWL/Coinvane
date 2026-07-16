@@ -105,6 +105,14 @@ export const api = {
   },
   deleteAttachment: (id) => request("DELETE", `/transactions/${id}/attachment`),
 
+  // ── Loans (debt-payoff tracking) ────────────────────────────────
+  listLoans:  () => request("GET", "/loans"),
+  createLoan: (data) => request("POST", "/loans", data),
+  updateLoan: (id, data) => request("PATCH", `/loans/${id}`, data),
+  deleteLoan: (id) => request("DELETE", `/loans/${id}`),
+  recordLoanPayment: (id, amount) =>
+    request("POST", `/loans/${id}/payment`, { amount }),
+
   // ── Bills (recurring outgoing obligations) ─────────────────────
   listBills: (historyCount = 0) =>
     request("GET", `/bills${historyCount ? "?historyCount=" + historyCount : ""}`),
@@ -200,6 +208,14 @@ export const api = {
   exportTransactionsCSV: () => downloadAuthed("/transactions/export.csv", "ledger-transactions.csv"),
   importTransactionsCSV: (csv) => request("POST", "/transactions/import.csv", { csv }),
   exportFullPDF: () => downloadAuthed("/export/full.pdf", "ledger-export.pdf"),
+  exportMonthlyPDF: (month) =>
+    downloadAuthed(`/export/monthly.pdf${month ? "?month=" + encodeURIComponent(month) : ""}`,
+                   `ledger-monthly-${month || "current"}.pdf`),
+  exportCategoryYoyPDF: (year) =>
+    downloadAuthed(`/export/category-yoy.pdf${year ? "?year=" + encodeURIComponent(year) : ""}`,
+                   `ledger-yoy-${year || "current"}.pdf`),
+  exportBudgetsPDF: () => downloadAuthed("/export/budgets.pdf", "ledger-budgets.pdf"),
+  exportBillsLoansPDF: () => downloadAuthed("/export/bills-loans.pdf", "ledger-bills-loans.pdf"),
 
   // admin
   adminInfo: () => request("GET", "/admin/info"),

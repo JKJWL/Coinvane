@@ -484,6 +484,31 @@ const SCHEMA = [
   // toggle just PATCHes /auth/me with this field.
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS show_cashflow_forecast BOOLEAN DEFAULT TRUE`,
 
+  // ── Loans (debt-payoff tracking) ─────────────────────────────────
+  // Sits alongside goals conceptually (the Goals tab hosts a second
+  // section for these). current_balance is authoritative for payoff
+  // math and is manually updated by the user OR auto-decremented on
+  // Plaid loan-account balance changes when linked_account_id is set.
+  `CREATE TABLE IF NOT EXISTS loans (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    loan_type VARCHAR(24) DEFAULT 'other',
+    principal DECIMAL(14,2) NOT NULL,
+    current_balance DECIMAL(14,2) NOT NULL,
+    apr DECIMAL(6,3) NOT NULL DEFAULT 0,
+    term_months INT NOT NULL DEFAULT 0,
+    monthly_payment DECIMAL(14,2) NOT NULL DEFAULT 0,
+    start_date DATE NOT NULL,
+    linked_account_id INT NULL,
+    notes VARCHAR(500) NULL,
+    archived_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user_active (user_id, archived_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
   `CREATE TABLE IF NOT EXISTS bill_cycles (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
