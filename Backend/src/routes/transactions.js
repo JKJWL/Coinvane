@@ -381,7 +381,13 @@ export default async function (app) {
   //   - per-user: 50 uploads / 30 min
   //   - split children can't have their own receipt
   //   - replace-on-reupload: old file unlinked, DB row overwritten
-  app.post("/:id/attachment", async (req, reply) => {
+  // Per-route rate limit declared for CodeQL js/missing-rate-limiting.
+  // The in-code windowing above (3/txn/5min + 50/user/30min) is the real
+  // guard; this is a per-IP belt-and-suspenders that also makes the
+  // static analyser happy.
+  app.post("/:id/attachment", {
+    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
     const row = await queryOne(
       `SELECT id, note, attachment_path FROM transactions
        WHERE id = ? AND user_id = ?`,
@@ -471,7 +477,11 @@ export default async function (app) {
 
   // Serve the raw image inline. Auth-gated (preHandler above), path never
   // sent as-is to the filesystem — always looked up from the DB row.
-  app.get("/:id/attachment", async (req, reply) => {
+  // Per-route rate limit for CodeQL js/missing-rate-limiting. Users may
+  // reload / expand the same receipt many times in a session, so 120/min.
+  app.get("/:id/attachment", {
+    config: { rateLimit: { max: 120, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
     const row = await queryOne(
       `SELECT attachment_path, attachment_mimetype, attachment_size, merchant
        FROM transactions WHERE id = ? AND user_id = ?`,
@@ -489,7 +499,9 @@ export default async function (app) {
       .send(data);
   });
 
-  app.delete("/:id/attachment", async (req, reply) => {
+  app.delete("/:id/attachment", {
+    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
     const row = await queryOne(
       `SELECT attachment_path FROM transactions WHERE id = ? AND user_id = ?`,
       [req.params.id, req.user.id]
@@ -560,7 +572,9 @@ export default async function (app) {
     return queryOne("SELECT * FROM transactions WHERE id = ?", [req.params.id]);
   });
 
-  app.delete("/:id", async (req) => {
+  app.delete("/:id", {
+    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+  }, async (req) => {
     // Reverse the balance impact before deleting. Scheduled rows never
     // touched the manual-account balance on creation (see POST /scheduled),
     // so we skip the reversal for them — otherwise deleting a scheduled
