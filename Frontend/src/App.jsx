@@ -5142,6 +5142,70 @@ const LOAN_TYPES = [
   { id: "other",       label: "Other" },
 ];
 
+// Simulate paying off a portfolio of debts under a chosen strategy with
+// an optional monthly extra applied to whichever debt is "next" per
+// strategy. Snowball rolls each cleared debt's minimum into the next
+// target so the pool of "extra" grows over time — that's what makes the
+// method work. Cap at 720 months to guard against bad inputs.
+//   strategy = "avalanche"  → target = highest APR
+//   strategy = "snowball"   → target = smallest balance
+// Returns { months, totalInterest, feasible }. feasible=false means at
+// least one debt's minimum doesn't cover its interest.
+function simulateDebts(loans, strategy, monthlyExtra) {
+  const debts = loans
+    .map(l => ({
+      id: l.id, name: l.name,
+      balance: Number(l.current_balance),
+      apr: Number(l.apr),
+      min: Number(l.monthly_payment),
+    }))
+    .filter(d => d.balance > 0.005 && d.min > 0);
+  if (debts.length === 0) {
+    return { months: 0, totalInterest: 0, feasible: true };
+  }
+  let months = 0;
+  let totalInterest = 0;
+  const pickTarget = (active) => {
+    if (strategy === "avalanche") {
+      return active.reduce((a, b) => a.apr >= b.apr ? a : b);
+    }
+    return active.reduce((a, b) => a.balance <= b.balance ? a : b);
+  };
+  while (debts.some(d => d.balance > 0.005) && months < 720) {
+    // Rolled-in snowball extra = minimums of already-cleared debts.
+    const cleared = debts.filter(d => d.balance <= 0.005);
+    const active  = debts.filter(d => d.balance > 0.005);
+    let extra = Number(monthlyExtra) + cleared.reduce((s, d) => s + d.min, 0);
+    const target = pickTarget(active);
+    let anyProgress = false;
+    for (const d of active) {
+      const rate = d.apr / 12 / 100;
+      const interest = d.balance * rate;
+      totalInterest += interest;
+      let pay = d.min;
+      if (d === target) pay += extra;
+      if (pay < interest + 0.005) {
+        // Min doesn't cover interest — bail out as infeasible.
+        return { months: Infinity, totalInterest: Infinity, feasible: false };
+      }
+      const newBal = d.balance + interest - pay;
+      if (newBal <= 0.005) {
+        extra = Math.max(0, -newBal);
+        d.balance = 0;
+      } else {
+        d.balance = newBal;
+      }
+      anyProgress = true;
+    }
+    if (!anyProgress) break;
+    months++;
+  }
+  if (months >= 720 && debts.some(d => d.balance > 0.005)) {
+    return { months: Infinity, totalInterest: Infinity, feasible: false };
+  }
+  return { months, totalInterest, feasible: true };
+}
+
 // Given balance, APR, and monthly payment, iterate month-by-month until
 // paid off. Returns { months, totalInterest, months_over_term }.
 // Caps at 720 (60 years) so a bad payment number can't infinite-loop.
@@ -5240,32 +5304,9 @@ function LoansSection({ theme, darkMode, toast }) {
       ) : (
         <>
           {activeLoans.length >= 2 && (
-            <div className={`${theme.surface} rounded-2xl border ${theme.border} p-4`}>
-              <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-                <div>
-                  <div className="text-sm font-semibold">Payoff strategy</div>
-                  <div className={`text-xs ${theme.textSubtle}`}>
-                    Total balance: <span className="private-amount" tabIndex={0}>{fmt(totalBalance)}</span> ·
-                    Total monthly minimums: <span className="private-amount" tabIndex={0}>{fmt(totalMonthly)}</span>
-                  </div>
-                </div>
-                <div className={`flex items-center gap-1 p-0.5 rounded-full ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
-                  <button onClick={() => setStrategy("avalanche")}
-                    className={`px-2.5 py-1 rounded-full text-[11px] font-semibold ${strategy === "avalanche" ? "bg-violet-500 text-white" : theme.textMuted}`}>
-                    Avalanche
-                  </button>
-                  <button onClick={() => setStrategy("snowball")}
-                    className={`px-2.5 py-1 rounded-full text-[11px] font-semibold ${strategy === "snowball" ? "bg-violet-500 text-white" : theme.textMuted}`}>
-                    Snowball
-                  </button>
-                </div>
-              </div>
-              <p className={`text-[11px] ${theme.textSubtle}`}>
-                {strategy === "avalanche"
-                  ? "Highest APR first — mathematically saves the most interest."
-                  : "Smallest balance first — clears loans faster for morale wins."}
-              </p>
-            </div>
+            <DebtSimulator loans={activeLoans} strategy={strategy} setStrategy={setStrategy}
+              totalBalance={totalBalance} totalMonthly={totalMonthly}
+              theme={theme} darkMode={darkMode} />
           )}
           <div className="space-y-2">
             {orderedLoans.map(loan => (
@@ -5292,6 +5333,118 @@ function LoansSection({ theme, darkMode, toast }) {
   );
 }
 
+// ─── DebtSimulator (unified payoff planner across all loans) ─────────────
+// Shown at the top of LoansSection when the user has 2+ debts. Combines
+// every loan into one "throw $X/mo extra at the pile" model. Cascades
+// each cleared debt's minimum onto the current target debt (that's the
+// snowball/avalanche effect). Renders headline "months saved / interest
+// saved" vs. baseline (extra = 0).
+function DebtSimulator({ loans, strategy, setStrategy, totalBalance, totalMonthly, theme, darkMode }) {
+  const [extra, setExtra] = useState(0);
+  const baseline = useMemo(() => simulateDebts(loans, strategy, 0), [loans, strategy]);
+  const withExtra = useMemo(() => simulateDebts(loans, strategy, extra), [loans, strategy, extra]);
+  const target = useMemo(() => {
+    if (loans.length === 0) return null;
+    if (strategy === "avalanche") {
+      return loans.reduce((a, b) => Number(a.apr) >= Number(b.apr) ? a : b);
+    }
+    return loans.reduce((a, b) => Number(a.current_balance) <= Number(b.current_balance) ? a : b);
+  }, [loans, strategy]);
+  const fmtMonths = (m) => {
+    if (!Number.isFinite(m)) return "never";
+    const y = Math.floor(m / 12); const r = m % 12;
+    if (y === 0) return `${r} mo`;
+    if (r === 0) return `${y} yr`;
+    return `${y} yr ${r} mo`;
+  };
+  const interestSaved = Number.isFinite(baseline.totalInterest) && Number.isFinite(withExtra.totalInterest)
+    ? Math.max(0, baseline.totalInterest - withExtra.totalInterest) : 0;
+  const monthsSaved = Number.isFinite(baseline.months) && Number.isFinite(withExtra.months)
+    ? Math.max(0, baseline.months - withExtra.months) : 0;
+  const maxExtra = Math.max(500, Math.round(totalMonthly * 2));
+
+  return (
+    <div className={`${theme.surface} rounded-2xl border ${theme.border} p-4 space-y-3`}>
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <div className="text-sm font-semibold">Debt payoff simulator</div>
+          <div className={`text-xs ${theme.textSubtle}`}>
+            Balance: <span className="private-amount" tabIndex={0}>{fmt(totalBalance)}</span> ·
+            Minimums: <span className="private-amount" tabIndex={0}>{fmt(totalMonthly)}</span>/mo
+          </div>
+        </div>
+        <div className={`flex items-center gap-1 p-0.5 rounded-full ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+          <button onClick={() => setStrategy("avalanche")}
+            className={`px-2.5 py-1 rounded-full text-[11px] font-semibold ${strategy === "avalanche" ? "bg-violet-500 text-white" : theme.textMuted}`}>
+            Avalanche
+          </button>
+          <button onClick={() => setStrategy("snowball")}
+            className={`px-2.5 py-1 rounded-full text-[11px] font-semibold ${strategy === "snowball" ? "bg-violet-500 text-white" : theme.textMuted}`}>
+            Snowball
+          </button>
+        </div>
+      </div>
+
+      <div className={`rounded-xl border ${theme.border} p-3`}>
+        <div className="flex items-center justify-between text-xs mb-1.5">
+          <span className={theme.textSubtle}>Extra $ / month across all debts</span>
+          <span className="private-amount font-semibold" tabIndex={0}>+{fmt(extra)}</span>
+        </div>
+        <input type="range" min="0" max={maxExtra} step="10"
+          value={extra} onChange={e => setExtra(Number(e.target.value))}
+          className="w-full accent-violet-500" />
+        <div className={`text-[11px] ${theme.textSubtle} mt-1`}>
+          {strategy === "avalanche"
+            ? "Throw the extra at the highest-APR debt. As each debt clears, its minimum rolls into the next target."
+            : "Throw the extra at the smallest-balance debt. As each debt clears, its minimum rolls into the next target."}
+          {target && (
+            <> Target: <span className="font-semibold text-violet-500">{target.name}</span>.</>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 text-xs">
+        <div className={`rounded-xl border ${theme.border} p-3`}>
+          <div className={theme.textSubtle}>Baseline (min only)</div>
+          <div className="font-semibold text-sm">{fmtMonths(baseline.months)}</div>
+          <div className={theme.textSubtle}>
+            Interest: <span className="private-amount" tabIndex={0}>
+              {Number.isFinite(baseline.totalInterest) ? fmt(baseline.totalInterest) : "—"}
+            </span>
+          </div>
+        </div>
+        <div className={`rounded-xl border ${theme.border} p-3`}>
+          <div className={theme.textSubtle}>With extra + rollover</div>
+          <div className={`font-semibold text-sm ${extra > 0 && withExtra.feasible ? "text-emerald-500" : ""}`}>
+            {fmtMonths(withExtra.months)}
+          </div>
+          <div className={theme.textSubtle}>
+            Interest: <span className="private-amount" tabIndex={0}>
+              {Number.isFinite(withExtra.totalInterest) ? fmt(withExtra.totalInterest) : "—"}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {extra > 0 && withExtra.feasible && (interestSaved > 0 || monthsSaved > 0) && (
+        <div className={`text-xs ${theme.textSubtle} pt-1 border-t ${theme.border}`}>
+          Saves <span className="private-amount font-semibold text-emerald-500" tabIndex={0}>
+            {fmt(interestSaved)}
+          </span> in interest and{" "}
+          <span className="font-semibold text-emerald-500">
+            {monthsSaved} month{monthsSaved === 1 ? "" : "s"}
+          </span> off total payoff.
+        </div>
+      )}
+      {(!baseline.feasible || !withExtra.feasible) && (
+        <div className="text-xs text-rose-500">
+          At least one debt's minimum doesn't cover its monthly interest — payoff isn't reachable at the current inputs.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LoanCard({ loan, theme, darkMode, onEdit, onPayment, onRemove }) {
   const [extra, setExtra] = useState(0);
   const base = projectPayoff(loan.current_balance, loan.apr, loan.monthly_payment, 0);
@@ -5299,6 +5452,14 @@ function LoanCard({ loan, theme, darkMode, onEdit, onPayment, onRemove }) {
   const paidOffPct = Number(loan.principal) > 0
     ? Math.round(((Number(loan.principal) - Number(loan.current_balance)) / Number(loan.principal)) * 100)
     : 0;
+  // PITI = P&I + tax + insurance + PMI + other. Zero when nothing set.
+  const eTax   = Number(loan.escrow_tax || 0);
+  const eIns   = Number(loan.escrow_insurance || 0);
+  const ePmi   = Number(loan.escrow_pmi || 0);
+  const eOther = Number(loan.escrow_other || 0);
+  const escrowTotal = eTax + eIns + ePmi + eOther;
+  const piti = Number(loan.monthly_payment) + escrowTotal;
+  const hasEscrow = escrowTotal > 0;
   const fmtMonths = (m) => {
     if (!Number.isFinite(m)) return "never (payment too low)";
     const y = Math.floor(m / 12); const r = m % 12;
@@ -5326,6 +5487,37 @@ function LoanCard({ loan, theme, darkMode, onEdit, onPayment, onRemove }) {
       </div>
       <ProgressBar value={paidOffPct} color="bg-emerald-500" darkMode={darkMode} />
       <div className={`text-[11px] ${theme.textSubtle} mt-1 mb-3`}>{paidOffPct}% paid off</div>
+
+      {/* PITI breakdown — only rendered when the user has entered any
+          escrow amounts. Segments render in proportion to $ amount so the
+          visual maps 1:1 to the label totals. */}
+      {hasEscrow && (
+        <div className={`rounded-xl border ${theme.border} p-3 mb-3`}>
+          <div className="flex items-center justify-between text-xs mb-1.5">
+            <span className={theme.textSubtle}>Full monthly (PITI)</span>
+            <span className="font-semibold private-amount" tabIndex={0}>{fmt(piti)}/mo</span>
+          </div>
+          <div className={`h-2 rounded-full overflow-hidden flex ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+            {[
+              { v: Number(loan.monthly_payment), c: "#8b5cf6", label: "P&I" },
+              { v: eTax,   c: "#f59e0b", label: "Tax" },
+              { v: eIns,   c: "#0ea5e9", label: "Insurance" },
+              { v: ePmi,   c: "#f43f5e", label: "PMI" },
+              { v: eOther, c: "#64748b", label: "Other" },
+            ].filter(s => s.v > 0).map((s, i) => (
+              <div key={i} title={`${s.label}: ${fmt(s.v)}/mo`}
+                style={{ width: `${(s.v / piti) * 100}%`, background: s.c }} />
+            ))}
+          </div>
+          <div className={`mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] ${theme.textSubtle}`}>
+            <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-violet-500" /> P&amp;I <span className="private-amount ml-auto" tabIndex={0}>{fmt(Number(loan.monthly_payment))}</span></div>
+            {eTax > 0   && <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500" /> Tax <span className="private-amount ml-auto" tabIndex={0}>{fmt(eTax)}</span></div>}
+            {eIns > 0   && <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-sky-500" /> Ins <span className="private-amount ml-auto" tabIndex={0}>{fmt(eIns)}</span></div>}
+            {ePmi > 0   && <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-rose-500" /> PMI <span className="private-amount ml-auto" tabIndex={0}>{fmt(ePmi)}</span></div>}
+            {eOther > 0 && <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-slate-500" /> Other <span className="private-amount ml-auto" tabIndex={0}>{fmt(eOther)}</span></div>}
+          </div>
+        </div>
+      )}
 
       <div className={`rounded-xl border ${theme.border} p-3 space-y-2`}>
         <div className="flex items-center justify-between text-xs">
@@ -5408,6 +5600,10 @@ function LoanFormSheet({ open, onClose, editing, accounts, theme, darkMode, toas
         start_date: editing.start_date?.slice(0, 10) || new Date().toISOString().slice(0, 10),
         linked_account_id: editing.linked_account_id || "",
         notes: editing.notes || "",
+        escrow_tax: String(editing.escrow_tax ?? ""),
+        escrow_insurance: String(editing.escrow_insurance ?? ""),
+        escrow_pmi: String(editing.escrow_pmi ?? ""),
+        escrow_other: String(editing.escrow_other ?? ""),
       });
     } else {
       setForm(defaultLoanForm());
@@ -5429,6 +5625,10 @@ function LoanFormSheet({ open, onClose, editing, accounts, theme, darkMode, toas
         term_months: Number(form.term_months) || 0,
         monthly_payment: Number(form.monthly_payment) || 0,
         linked_account_id: form.linked_account_id || null,
+        escrow_tax:       Number(form.escrow_tax) || 0,
+        escrow_insurance: Number(form.escrow_insurance) || 0,
+        escrow_pmi:       Number(form.escrow_pmi) || 0,
+        escrow_other:     Number(form.escrow_other) || 0,
       };
       if (editing) {
         await api.updateLoan(editing.id, payload);
@@ -5509,6 +5709,41 @@ function LoanFormSheet({ open, onClose, editing, accounts, theme, darkMode, toas
           <textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })}
             rows={2} className={inputCls} />
         </div>
+
+        {/* Escrow breakdown — mortgage-specific but not gated so the user
+            can still track PMI on non-conventional loans if they want to. */}
+        <details className={`rounded-2xl border ${theme.border}`} open={form.loan_type === "mortgage"}>
+          <summary className={`px-3 py-2 text-xs font-semibold ${theme.textSubtle} cursor-pointer select-none`}>
+            Escrow breakdown (monthly, on top of P&amp;I)
+          </summary>
+          <div className="grid grid-cols-2 gap-3 p-3">
+            <div>
+              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Property tax</label>
+              <input type="number" step="0.01" value={form.escrow_tax}
+                onChange={e => setForm({ ...form, escrow_tax: e.target.value })}
+                placeholder="0.00" className={inputCls} />
+            </div>
+            <div>
+              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Homeowners insurance</label>
+              <input type="number" step="0.01" value={form.escrow_insurance}
+                onChange={e => setForm({ ...form, escrow_insurance: e.target.value })}
+                placeholder="0.00" className={inputCls} />
+            </div>
+            <div>
+              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>PMI</label>
+              <input type="number" step="0.01" value={form.escrow_pmi}
+                onChange={e => setForm({ ...form, escrow_pmi: e.target.value })}
+                placeholder="0.00" className={inputCls} />
+            </div>
+            <div>
+              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Other (HOA, etc.)</label>
+              <input type="number" step="0.01" value={form.escrow_other}
+                onChange={e => setForm({ ...form, escrow_other: e.target.value })}
+                placeholder="0.00" className={inputCls} />
+            </div>
+          </div>
+        </details>
+
         <div className="flex gap-2 pt-2">
           <button type="button" onClick={onClose}
             className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.textSubtle}`}>
@@ -5531,6 +5766,7 @@ function defaultLoanForm() {
     apr: "", term_months: "", monthly_payment: "",
     start_date: new Date().toISOString().slice(0, 10),
     linked_account_id: "", notes: "",
+    escrow_tax: "", escrow_insurance: "", escrow_pmi: "", escrow_other: "",
   };
 }
 

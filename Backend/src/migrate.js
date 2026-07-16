@@ -555,6 +555,15 @@ const SCHEMA = [
   `ALTER TABLE categories ADD COLUMN IF NOT EXISTS tax_schedule VARCHAR(2) NULL`,
   `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_deductible TINYINT DEFAULT 0`,
 
+  // ── Escrow breakdown on loans (Stage 2: mortgage PITI) ────────────
+  // Monthly amounts. Sum of these + principal/interest = total PITI.
+  // monthly_payment continues to represent P&I only so amortization math
+  // stays clean; the UI stacks these on top for display.
+  `ALTER TABLE loans ADD COLUMN IF NOT EXISTS escrow_tax DECIMAL(14,2) DEFAULT 0`,
+  `ALTER TABLE loans ADD COLUMN IF NOT EXISTS escrow_insurance DECIMAL(14,2) DEFAULT 0`,
+  `ALTER TABLE loans ADD COLUMN IF NOT EXISTS escrow_pmi DECIMAL(14,2) DEFAULT 0`,
+  `ALTER TABLE loans ADD COLUMN IF NOT EXISTS escrow_other DECIMAL(14,2) DEFAULT 0`,
+
   `CREATE TABLE IF NOT EXISTS bill_cycles (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,

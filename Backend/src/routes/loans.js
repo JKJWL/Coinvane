@@ -7,11 +7,15 @@ function sanitize(row) {
   if (!row) return null;
   return {
     ...row,
-    principal:        Number(row.principal),
-    current_balance:  Number(row.current_balance),
-    apr:              Number(row.apr),
-    term_months:      Number(row.term_months),
-    monthly_payment:  Number(row.monthly_payment),
+    principal:         Number(row.principal),
+    current_balance:   Number(row.current_balance),
+    apr:               Number(row.apr),
+    term_months:       Number(row.term_months),
+    monthly_payment:   Number(row.monthly_payment),
+    escrow_tax:        Number(row.escrow_tax || 0),
+    escrow_insurance:  Number(row.escrow_insurance || 0),
+    escrow_pmi:        Number(row.escrow_pmi || 0),
+    escrow_other:      Number(row.escrow_other || 0),
     archived: !!row.archived_at,
   };
 }
@@ -35,6 +39,7 @@ export default async function (app) {
     const {
       name, loan_type, principal, current_balance, apr, term_months,
       monthly_payment, start_date, linked_account_id, notes,
+      escrow_tax, escrow_insurance, escrow_pmi, escrow_other,
     } = req.body || {};
     if (!name || principal == null || current_balance == null || !start_date) {
       return reply.code(400).send({
@@ -45,8 +50,9 @@ export default async function (app) {
     const r = await query(
       `INSERT INTO loans
          (user_id, name, loan_type, principal, current_balance, apr,
-          term_months, monthly_payment, start_date, linked_account_id, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          term_months, monthly_payment, start_date, linked_account_id, notes,
+          escrow_tax, escrow_insurance, escrow_pmi, escrow_other)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         req.user.id,
         String(name).slice(0, 128),
@@ -59,6 +65,10 @@ export default async function (app) {
         start_date,
         linked_account_id || null,
         notes ? String(notes).slice(0, 500) : null,
+        Math.max(0, Number(escrow_tax) || 0),
+        Math.max(0, Number(escrow_insurance) || 0),
+        Math.max(0, Number(escrow_pmi) || 0),
+        Math.max(0, Number(escrow_other) || 0),
       ]
     );
     return sanitize(await queryOne("SELECT * FROM loans WHERE id = ?", [r.insertId]));
@@ -72,6 +82,9 @@ export default async function (app) {
     if (!owned) return reply.code(404).send({ error: "not found" });
     const b = req.body || {};
     const kind = b.loan_type && LOAN_TYPES.has(b.loan_type) ? b.loan_type : null;
+    // Escrow: undefined means "don't touch"; a number means "set to that
+    // (clamped >= 0)".
+    const escrowVal = (v) => v === undefined ? null : Math.max(0, Number(v) || 0);
     await query(
       `UPDATE loans SET
          name = COALESCE(?, name),
@@ -83,7 +96,11 @@ export default async function (app) {
          monthly_payment = COALESCE(?, monthly_payment),
          start_date = COALESCE(?, start_date),
          linked_account_id = COALESCE(?, linked_account_id),
-         notes = COALESCE(?, notes)
+         notes = COALESCE(?, notes),
+         escrow_tax = COALESCE(?, escrow_tax),
+         escrow_insurance = COALESCE(?, escrow_insurance),
+         escrow_pmi = COALESCE(?, escrow_pmi),
+         escrow_other = COALESCE(?, escrow_other)
        WHERE id = ? AND user_id = ?`,
       [
         b.name ?? null, kind,
@@ -91,6 +108,8 @@ export default async function (app) {
         b.apr ?? null, b.term_months ?? null,
         b.monthly_payment ?? null, b.start_date ?? null,
         b.linked_account_id ?? null, b.notes ?? null,
+        escrowVal(b.escrow_tax), escrowVal(b.escrow_insurance),
+        escrowVal(b.escrow_pmi), escrowVal(b.escrow_other),
         req.params.id, req.user.id,
       ]
     );
