@@ -509,6 +509,52 @@ const SCHEMA = [
     INDEX idx_user_active (user_id, archived_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
+  // ── Reconciliation flow (Stage 1: parity with Quicken statement match) ──
+  // One row per finished statement pass on a single account. While a
+  // reconciliation is in-progress (status='draft'), the user ticks
+  // transactions off; when the "difference" between the account's
+  // cleared-total and the statement's ending balance hits zero, the user
+  // finalizes and status flips to 'locked'. Locked reconciliations are
+  // immutable and their transactions are frozen at reconciliation_id.
+  // Transactions can only belong to ONE finalized reconciliation per
+  // account — enforced at the app layer (checked on toggle).
+  `CREATE TABLE IF NOT EXISTS reconciliations (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    account_id INT NOT NULL,
+    statement_date DATE NOT NULL,
+    statement_ending_balance DECIMAL(14,2) NOT NULL,
+    starting_balance DECIMAL(14,2) NOT NULL DEFAULT 0,
+    cleared_total DECIMAL(14,2) NOT NULL DEFAULT 0,
+    txn_count INT NOT NULL DEFAULT 0,
+    status ENUM('draft','locked') NOT NULL DEFAULT 'draft',
+    locked_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+    INDEX idx_user_account (user_id, account_id, statement_date)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Cleared bit on the transaction. reconciliation_id points at the locked
+  // pass that captured this txn (NULL while it's ticked in a draft — only
+  // gets stamped on finalize).
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS cleared TINYINT DEFAULT 0`,
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS reconciliation_id INT NULL`,
+
+  // ── Tax tagging (Stage 1: parity with Quicken tax schedules) ──────
+  // tax_schedule on categories = 'A' | 'B' | 'C' | 'D' | 'E' | NULL
+  //   A = itemized deductions (mortgage int, SALT, charity, medical)
+  //   B = interest & dividends income
+  //   C = business income/expense
+  //   D = capital gains
+  //   E = rental / royalty
+  // is_deductible on individual transactions overrides the category default
+  // when the user manually flags one (e.g. a business meal on a personal
+  // card). The tax-summary endpoint uses:
+  //   effective_deductible = t.is_deductible OR c.tax_schedule IS NOT NULL
+  `ALTER TABLE categories ADD COLUMN IF NOT EXISTS tax_schedule VARCHAR(2) NULL`,
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_deductible TINYINT DEFAULT 0`,
+
   `CREATE TABLE IF NOT EXISTS bill_cycles (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,

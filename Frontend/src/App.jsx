@@ -1657,6 +1657,244 @@ function OverviewTab({ theme, darkMode, onNavigate }) {
   );
 }
 
+// ─── Tax categories panel (Settings > Data) ───────────────────────────────────
+// Compact per-category IRS Schedule mapper. Any category with a schedule
+// set will have its transactions rolled into the year-end tax PDF for that
+// schedule. Individual transactions can be flagged deductible separately
+// via the detail sheet (they roll to Schedule A when no category schedule).
+const TAX_SCHEDULES = [
+  { code: "",  label: "— none —"  },
+  { code: "A", label: "A · Itemized deductions" },
+  { code: "B", label: "B · Interest & dividends" },
+  { code: "C", label: "C · Business" },
+  { code: "D", label: "D · Capital gains" },
+  { code: "E", label: "E · Rental / royalty" },
+];
+function TaxCategoriesPanel({ theme, darkMode, toast }) {
+  const [cats, setCats] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [savingId, setSavingId] = useState(null);
+
+  const load = useCallback(async () => {
+    try { setCats(await api.getCategories()); }
+    catch { toast?.("Failed to load categories", "error"); }
+    finally { setLoading(false); }
+  }, [toast]);
+  useEffect(() => { load(); }, [load]);
+
+  const setSchedule = async (cat, code) => {
+    setSavingId(cat.id);
+    try {
+      await api.updateCategory(cat.id, { tax_schedule: code || null });
+      setCats(prev => prev.map(c => c.id === cat.id ? { ...c, taxSchedule: code || null } : c));
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    finally { setSavingId(null); }
+  };
+
+  return (
+    <div className={`${theme.surface} border ${theme.border} rounded-2xl p-5 space-y-3`}>
+      <div className="flex items-center justify-between">
+        <h3 className="font-semibold">Tax categories</h3>
+        <a href="#" onClick={e => { e.preventDefault(); api.exportTaxSummaryPDF(); }}
+          className={`text-xs ${theme.textSubtle} hover:text-violet-500`}>
+          Download year-to-date tax PDF
+        </a>
+      </div>
+      <p className={`text-xs ${theme.textSubtle}`}>
+        Map a category to an IRS Schedule so every transaction with that category rolls into the
+        year-end tax summary. You can still override individual transactions from their detail sheet
+        (they roll into Schedule A when their category has no schedule set).
+      </p>
+      {loading ? (
+        <div className={`text-xs ${theme.textSubtle}`}>Loading…</div>
+      ) : (
+        <div className={`rounded-2xl border ${theme.border} max-h-72 overflow-y-auto divide-y ${theme.divide}`}>
+          {cats.map(c => (
+            <div key={c.id} className="flex items-center gap-3 px-3 py-2">
+              <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: c.color }} />
+              <div className="flex-1 text-sm font-medium truncate">{c.name}</div>
+              <select value={c.taxSchedule || ""} disabled={savingId === c.id}
+                onChange={e => setSchedule(c, e.target.value)}
+                className={`text-xs px-2 py-1 rounded-lg ${theme.inputBg} border ${theme.border} focus:outline-none focus:border-violet-500`}>
+                {TAX_SCHEDULES.map(s => (
+                  <option key={s.code} value={s.code}>{s.label}</option>
+                ))}
+              </select>
+            </div>
+          ))}
+          {cats.length === 0 && (
+            <div className={`p-4 text-xs ${theme.textSubtle} text-center`}>
+              No categories yet.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Reconciliation Sheet ─────────────────────────────────────────────────────
+// Quicken-style statement match. Two-phase flow:
+//   1. User enters statement date + ending balance → we open a draft
+//   2. User ticks off transactions until "difference" hits zero, then finalizes
+// Finalized reconciliations are immutable and stamp reconciliation_id on
+// every cleared transaction so a future reconciliation can't re-tick them.
+function ReconcileSheet({ open, onClose, account, theme, darkMode, toast, onFinalize }) {
+  const [phase, setPhase] = useState("start"); // "start" | "draft" | "locked"
+  const [statementDate, setStatementDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [endingBalance, setEndingBalance] = useState("");
+  const [rec, setRec] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
+
+  // Reset on open/close
+  useEffect(() => {
+    if (!open) {
+      setPhase("start"); setRec(null);
+      setEndingBalance(""); setStatementDate(new Date().toISOString().slice(0, 10));
+    }
+  }, [open]);
+
+  const loadDraft = useCallback(async (id) => {
+    try { const data = await api.getReconciliation(id); setRec(data); }
+    catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  }, [toast]);
+
+  const startPass = async (e) => {
+    e.preventDefault();
+    if (!account?.id) return;
+    const bal = Number(endingBalance);
+    if (!Number.isFinite(bal)) { toast?.("Enter a valid ending balance", "error"); return; }
+    setSaving(true);
+    try {
+      const { id } = await api.startReconciliation({
+        account_id: account.id,
+        statement_date: statementDate,
+        statement_ending_balance: bal,
+      });
+      await loadDraft(id);
+      setPhase("draft");
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    finally { setSaving(false); }
+  };
+
+  const toggleTxn = async (txn) => {
+    if (!rec) return;
+    try {
+      await api.toggleReconciliationTxn(rec.id, txn.id, !txn.cleared);
+      await loadDraft(rec.id);
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+
+  const finalize = async () => {
+    if (!rec) return;
+    setFinalizing(true);
+    try {
+      await api.finalizeReconciliation(rec.id);
+      toast?.("Reconciled and locked", "success");
+      setPhase("locked");
+      onFinalize?.();
+      onClose();
+    } catch (e) {
+      toast?.(e.message || "Not balanced yet", "error");
+    } finally { setFinalizing(false); }
+  };
+
+  const cancelDraft = async () => {
+    if (!rec) { onClose(); return; }
+    if (!window.confirm("Discard this reconciliation? Any cleared checkmarks will be cleared.")) return;
+    try { await api.deleteReconciliation(rec.id); }
+    catch (e) { toast?.("Failed to discard: " + (e.message || ""), "error"); }
+    onClose();
+  };
+
+  const inputCls = `w-full px-3 py-2.5 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
+  const diffZero = rec && Math.abs(Number(rec.difference)) < 0.005;
+
+  return (
+    <Sheet open={open} onClose={onClose} title={account ? `Reconcile — ${account.name}` : "Reconcile"} theme={theme}>
+      {phase === "start" && (
+        <form onSubmit={startPass} className="space-y-3">
+          <p className={`text-xs ${theme.textSubtle}`}>
+            Enter the ending balance from your latest bank / card statement, then tick
+            off each transaction that appears on the statement. When the difference
+            hits zero, finalize to lock the pass.
+          </p>
+          <div>
+            <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Statement date</label>
+            <input type="date" value={statementDate}
+              onChange={e => setStatementDate(e.target.value)} className={inputCls} required />
+          </div>
+          <div>
+            <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Ending balance on statement</label>
+            <input type="number" step="0.01" inputMode="decimal" value={endingBalance}
+              onChange={e => setEndingBalance(e.target.value)} placeholder="0.00" className={inputCls} required />
+          </div>
+          <button type="submit" disabled={saving}
+            className="w-full py-2.5 rounded-xl bg-violet-500 text-white font-semibold text-sm disabled:opacity-60">
+            {saving ? "Starting…" : "Start reconciliation"}
+          </button>
+        </form>
+      )}
+
+      {phase === "draft" && rec && (
+        <div className="space-y-3">
+          <div className={`rounded-2xl border ${theme.border} p-3 grid grid-cols-3 gap-2 text-center`}>
+            <div>
+              <div className={`text-[10px] ${theme.textSubtle} uppercase tracking-wider`}>Statement</div>
+              <div className="text-sm font-semibold">{fmt(rec.statementEndingBalance)}</div>
+            </div>
+            <div>
+              <div className={`text-[10px] ${theme.textSubtle} uppercase tracking-wider`}>Cleared</div>
+              <div className="text-sm font-semibold">{fmt(Number(rec.startingBalance) + Number(rec.clearedTotal))}</div>
+            </div>
+            <div>
+              <div className={`text-[10px] ${theme.textSubtle} uppercase tracking-wider`}>Difference</div>
+              <div className={`text-sm font-bold ${diffZero ? "text-emerald-500" : "text-rose-500"}`}>
+                {rec.difference >= 0 ? "+" : "−"}{fmt(Math.abs(rec.difference))}
+              </div>
+            </div>
+          </div>
+
+          <div className={`rounded-2xl border ${theme.border} max-h-96 overflow-y-auto divide-y ${theme.divide}`}>
+            {rec.transactions.length === 0 && (
+              <div className={`p-6 text-center text-xs ${theme.textSubtle}`}>
+                No unreconciled transactions on or before {rec.statementDate}.
+              </div>
+            )}
+            {rec.transactions.map(t => (
+              <button key={t.id} type="button" onClick={() => toggleTxn(t)}
+                className={`w-full flex items-center gap-3 p-3 text-left ${theme.hover} transition-colors`}>
+                <div className={`w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center ${t.cleared ? "bg-violet-500 border-violet-500" : theme.border}`}>
+                  {t.cleared && <Check className="w-3.5 h-3.5 text-white" />}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium truncate">{t.merchant}</div>
+                  <div className={`text-[11px] ${theme.textSubtle}`}>{String(t.date).slice(0, 10)} · {t.category}{t.pending ? " · Pending" : ""}</div>
+                </div>
+                <div className={`text-sm font-semibold ${Number(t.amount) >= 0 ? "text-emerald-500" : ""}`}>
+                  {Number(t.amount) >= 0 ? "+" : "−"}{fmt(Math.abs(Number(t.amount)))}
+                </div>
+              </button>
+            ))}
+          </div>
+
+          <div className="flex gap-2">
+            <button type="button" onClick={cancelDraft}
+              className={`flex-1 py-2.5 rounded-xl border ${theme.border} text-sm font-medium ${theme.textSubtle} hover:text-rose-500`}>
+              Discard
+            </button>
+            <button type="button" onClick={finalize} disabled={!diffZero || finalizing}
+              className="flex-1 py-2.5 rounded-xl bg-violet-500 text-white text-sm font-semibold disabled:opacity-40">
+              {finalizing ? "Locking…" : diffZero ? "Finalize" : "Not balanced"}
+            </button>
+          </div>
+        </div>
+      )}
+    </Sheet>
+  );
+}
+
 // ─── Accounts Tab ─────────────────────────────────────────────────────────────
 function AccountsTab({ theme, darkMode, toast }) {
   const { accounts, refreshAll } = useData();
@@ -1666,6 +1904,7 @@ function AccountsTab({ theme, darkMode, toast }) {
   const [showAdd, setShowAdd] = useState(false);
   const [addForm, setAddForm] = useState({ name: "", type: "cash", subtype: "", balance: "", institution: "" });
   const [adding, setAdding] = useState(false);
+  const [reconAccount, setReconAccount] = useState(null);
 
   const loadItems = useCallback(async () => {
     try { setItems(await api.listPlaidItems()); } catch {}
@@ -1816,12 +2055,20 @@ function AccountsTab({ theme, darkMode, toast }) {
                     Synced {new Date(a.lastSyncAt).toLocaleString()}
                   </div>
                 ) : <div />}
-                {!a.plaidItemId && (
-                  <button onClick={() => removeAccount(a)}
-                    className={`text-xs ${theme.textSubtle} hover:text-rose-500 transition-colors`}>
-                    Delete
-                  </button>
-                )}
+                <div className="flex items-center gap-3">
+                  {(a.type === "cash" || a.type === "credit") && (
+                    <button onClick={() => setReconAccount(a)}
+                      className={`text-xs ${theme.textSubtle} hover:text-violet-500 transition-colors`}>
+                      Reconcile
+                    </button>
+                  )}
+                  {!a.plaidItemId && (
+                    <button onClick={() => removeAccount(a)}
+                      className={`text-xs ${theme.textSubtle} hover:text-rose-500 transition-colors`}>
+                      Delete
+                    </button>
+                  )}
+                </div>
               </div>
             </motion.div>
           );
@@ -1887,6 +2134,10 @@ function AccountsTab({ theme, darkMode, toast }) {
           </div>
         </form>
       </Sheet>
+
+      <ReconcileSheet open={!!reconAccount} onClose={() => setReconAccount(null)}
+        account={reconAccount} theme={theme} darkMode={darkMode} toast={toast}
+        onFinalize={refreshAll} />
     </div>
   );
 }
@@ -2920,6 +3171,29 @@ function TransactionsTab({ theme, darkMode, toast }) {
                   </div>
                 );
               })()}
+
+              {/* Deductible toggle — flags an individual transaction for
+                  Schedule A even if its category has no tax schedule set.
+                  Reads/writes the isDeductible boolean on the row. */}
+              {!detail.isScheduled && (
+                <div className={`rounded-2xl border ${theme.border} p-4 flex items-center justify-between gap-3`}>
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold">Tax deductible</div>
+                    <div className={`text-[11px] ${theme.textSubtle}`}>
+                      Include this transaction in the year-end tax summary PDF.
+                    </div>
+                  </div>
+                  <Toggle checked={!!detail.isDeductible} darkMode={darkMode}
+                    onChange={async (v) => {
+                      try {
+                        await api.updateTransaction(detail.id, { is_deductible: v });
+                        setDetail({ ...detail, isDeductible: v });
+                        toast?.(v ? "Marked deductible" : "Removed deductible", "success");
+                        refreshAll();
+                      } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+                    }} />
+                </div>
+              )}
 
               {detail.plaidItemId && (
                 <p className={`text-xs ${theme.textSubtle} text-center`}>
@@ -4810,6 +5084,7 @@ const PDF_REPORTS = [
   { id: "yoy",        label: "Year-over-year categories",  filename: "coinvane-yoy.pdf",          download: (api) => api.exportCategoryYoyPDF() },
   { id: "budgets",    label: "Budget performance",         filename: "coinvane-budgets.pdf",      download: (api) => api.exportBudgetsPDF() },
   { id: "billsloans", label: "Bills & loans summary",      filename: "coinvane-bills-loans.pdf",  download: (api) => api.exportBillsLoansPDF() },
+  { id: "tax",        label: "Tax summary (year-end)",     filename: "coinvane-tax-summary.pdf",  download: (api) => api.exportTaxSummaryPDF() },
 ];
 function PdfExportDropdown({ exportingPdf, setExportingPdf, theme, darkMode, toast }) {
   const [open, setOpen] = useState(false);
@@ -8482,6 +8757,9 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
           On import, the account column is matched to your existing accounts by name; unknown names import as manual rows.
         </div>
       </div>
+
+      {/* ── Tax categories ── */}
+      <TaxCategoriesPanel theme={theme} darkMode={darkMode} toast={toast} />
 
       {/* ── Danger zone ── */}
       <div className={`${theme.surface} border ${darkMode ? "border-rose-500/30" : "border-rose-200"} rounded-2xl p-5 space-y-3`}>

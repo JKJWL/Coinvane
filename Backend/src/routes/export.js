@@ -337,6 +337,110 @@ export default async function (app) {
     return reply;
   });
 
+  // ── Tax summary PDF (year-end IRS Schedule rollup) ───────────────
+  //   Groups deductible-flagged transactions + tax-scheduled category
+  //   transactions into IRS Schedule buckets (A/B/C/D/E) and renders a
+  //   filing-companion summary. Not filing-grade — this is meant to be
+  //   handed to a CPA or dropped alongside your 1040 as reference.
+  app.get("/tax-summary.pdf", async (req, reply) => {
+    const PDFDocument = (await import("pdfkit")).default;
+    const year = Number(req.query?.year) || new Date().getFullYear();
+    const rows = await query(
+      `SELECT
+         COALESCE(c.tax_schedule, IF(t.is_deductible = 1, 'A', NULL)) AS schedule,
+         t.category, t.date, t.merchant, t.amount
+       FROM transactions t
+       LEFT JOIN categories c
+         ON c.user_id = t.user_id AND c.name = t.category
+       WHERE t.user_id = ?
+         AND YEAR(t.date) = ?
+         AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+         AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
+         AND (c.tax_schedule IS NOT NULL OR t.is_deductible = 1)
+       ORDER BY schedule, t.category, t.date`,
+      [req.user.id, year]
+    );
+    const schedules = { A: [], B: [], C: [], D: [], E: [] };
+    const totals = { A: 0, B: 0, C: 0, D: 0, E: 0 };
+    for (const r of rows) {
+      if (!schedules[r.schedule]) continue;
+      schedules[r.schedule].push(r);
+      totals[r.schedule] += Number(r.amount);
+    }
+    const scheduleTitles = {
+      A: "Schedule A — Itemized Deductions",
+      B: "Schedule B — Interest & Dividends",
+      C: "Schedule C — Business Profit / Loss",
+      D: "Schedule D — Capital Gains",
+      E: "Schedule E — Rental / Royalty",
+    };
+
+    const fmt = (n) => "$" + Number(n || 0).toFixed(2);
+    reply
+      .header("Content-Type", "application/pdf")
+      .header("Content-Disposition", `attachment; filename="coinvane-tax-summary-${year}.pdf"`);
+    const doc = new PDFDocument({ size: "LETTER", margin: 50 });
+    reply.send(doc);
+
+    doc.fontSize(22).fillColor("#7c3aed").text("Tax Summary");
+    doc.fontSize(11).fillColor("#64748b").text(`Tax year ${year}`);
+    doc.moveDown(0.5);
+    doc.fontSize(9).fillColor("#64748b")
+      .text("This is a filing-companion report — not filing-grade output. Hand it to your preparer.");
+    doc.moveDown(1);
+
+    // ── Totals band ──────────────────────────────────────────────
+    doc.fontSize(13).fillColor("#0f172a").text("Totals by schedule");
+    doc.moveDown(0.4);
+    doc.fontSize(10);
+    let anyRows = false;
+    for (const code of ["A", "B", "C", "D", "E"]) {
+      if (schedules[code].length === 0) continue;
+      anyRows = true;
+      const t = totals[code];
+      const sign = t >= 0 ? "+" : "−";
+      doc.fillColor("#0f172a")
+        .text(`${scheduleTitles[code]}: ${sign}${fmt(Math.abs(t))} (${schedules[code].length} entries)`);
+    }
+    if (!anyRows) doc.fillColor("#94a3b8")
+      .text(`No tax-tagged transactions in ${year}. Assign a Schedule to a category or flag individual transactions as deductible.`);
+    doc.moveDown(1);
+
+    // ── Per-schedule detail ──────────────────────────────────────
+    for (const code of ["A", "B", "C", "D", "E"]) {
+      const list = schedules[code];
+      if (list.length === 0) continue;
+      if (doc.y > 640) doc.addPage();
+      doc.fontSize(13).fillColor("#0f172a").text(scheduleTitles[code]);
+      doc.moveDown(0.3);
+      doc.fontSize(9).fillColor("#0f172a");
+      // Group by category for readability.
+      const byCat = new Map();
+      for (const r of list) {
+        const k = r.category || "Other";
+        if (!byCat.has(k)) byCat.set(k, []);
+        byCat.get(k).push(r);
+      }
+      for (const [cat, txns] of byCat.entries()) {
+        if (doc.y > 700) doc.addPage();
+        const catTotal = txns.reduce((s, r) => s + Number(r.amount), 0);
+        doc.fillColor("#0f172a").fontSize(10)
+          .text(`${cat}   ·   ${catTotal >= 0 ? "+" : "−"}${fmt(Math.abs(catTotal))}   ·   ${txns.length} txn`);
+        doc.fontSize(8).fillColor("#64748b");
+        for (const r of txns) {
+          if (doc.y > 720) doc.addPage();
+          const sign = Number(r.amount) >= 0 ? "+" : "−";
+          doc.text(`   ${String(r.date).slice(0, 10)}  ${(r.merchant || "").slice(0, 36).padEnd(36)}  ${sign}${fmt(Math.abs(Number(r.amount)))}`, { lineGap: 0 });
+        }
+        doc.moveDown(0.4);
+      }
+      doc.moveDown(0.4);
+    }
+
+    doc.end();
+    return reply;
+  });
+
   // ── Bills & loans summary PDF ────────────────────────────────────
   app.get("/bills-loans.pdf", async (req, reply) => {
     const PDFDocument = (await import("pdfkit")).default;

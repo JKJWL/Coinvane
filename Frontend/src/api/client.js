@@ -124,6 +124,22 @@ export const api = {
   skipBillCycle: (id) => request("POST", `/bills/${id}/skip`),
   refreshBillCycles: () => request("POST", "/bills/refresh-cycles"),
 
+  // ── Reconciliations (Quicken-style statement match) ────────────
+  listReconciliations: () => request("GET", "/reconciliations"),
+  startReconciliation: (data) => request("POST", "/reconciliations", data),
+  getReconciliation: (id) => request("GET", `/reconciliations/${id}`),
+  toggleReconciliationTxn: (id, transaction_id, cleared) =>
+    request("POST", `/reconciliations/${id}/toggle`, { transaction_id, cleared }),
+  finalizeReconciliation: (id) =>
+    request("POST", `/reconciliations/${id}/finalize`),
+  deleteReconciliation: (id) =>
+    request("DELETE", `/reconciliations/${id}`),
+
+  // ── Tax (year-end IRS Schedule rollup) ─────────────────────────
+  getTaxSchedules: () => request("GET", "/tax/schedules"),
+  getTaxSummary: (year) =>
+    request("GET", `/tax/summary${year ? "?year=" + year : ""}`),
+
   // ── Automations (per-user rule engine) ─────────────────────────
   getAutomationVocab:   () => request("GET",    "/automations/vocab"),
   listAutomations:      () => request("GET",    "/automations"),
@@ -216,6 +232,9 @@ export const api = {
                    `coinvane-yoy-${year || "current"}.pdf`),
   exportBudgetsPDF: () => downloadAuthed("/export/budgets.pdf", "coinvane-budgets.pdf"),
   exportBillsLoansPDF: () => downloadAuthed("/export/bills-loans.pdf", "coinvane-bills-loans.pdf"),
+  exportTaxSummaryPDF: (year) =>
+    downloadAuthed(`/export/tax-summary.pdf${year ? "?year=" + encodeURIComponent(year) : ""}`,
+                   `coinvane-tax-summary-${year || "current"}.pdf`),
 
   // admin
   adminInfo: () => request("GET", "/admin/info"),

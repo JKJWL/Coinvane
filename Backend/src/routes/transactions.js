@@ -99,6 +99,9 @@ export default async function (app) {
               t.is_scheduled AS isScheduled,
               t.has_automation_error AS hasAutomationError,
               t.has_attachment AS hasAttachment,
+              t.cleared AS cleared,
+              t.reconciliation_id AS reconciliationId,
+              t.is_deductible AS isDeductible,
               t.paystub_json AS paystubJson,
               a.name AS accountName, a.id AS accountId, a.plaid_item_id AS plaidItemId
        FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
@@ -546,23 +549,26 @@ export default async function (app) {
   });
 
   app.patch("/:id", async (req) => {
-    const { merchant, category, amount, note, date } = req.body || {};
+    const { merchant, category, amount, note, date, is_deductible } = req.body || {};
     // If amount changes on a manual account txn, adjust balance by the delta.
     // Scheduled rows are excluded (see DELETE handler above).
     const existing = await queryOne(
       "SELECT account_id, amount, is_scheduled FROM transactions WHERE id = ? AND user_id = ?",
       [req.params.id, req.user.id]
     );
+    const deductibleBit = is_deductible === undefined
+      ? null : (is_deductible ? 1 : 0);
     await query(
       `UPDATE transactions SET
          merchant = COALESCE(?, merchant),
          category = COALESCE(?, category),
          amount = COALESCE(?, amount),
          note = COALESCE(?, note),
-         date = COALESCE(?, date)
+         date = COALESCE(?, date),
+         is_deductible = COALESCE(?, is_deductible)
        WHERE id = ? AND user_id = ?`,
       [merchant ?? null, category ?? null, amount ?? null, note ?? null, date ?? null,
-       req.params.id, req.user.id]
+       deductibleBit, req.params.id, req.user.id]
     );
     if (existing && !existing.is_scheduled
         && amount !== undefined && Number(amount) !== Number(existing.amount)) {
