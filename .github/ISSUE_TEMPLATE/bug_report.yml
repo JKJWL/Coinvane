@@ -1,0 +1,91 @@
+name: Bug report
+description: Report a defect in Coinvane's code, not your specific deployment.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. A few notes before you start:
+
+        - **Security issues** — please do NOT open a public issue. Follow
+          the private disclosure process in
+          [SECURITY.md](../../blob/master/SECURITY.md).
+        - **Deployment questions** (Caddy config, DNS, your VPS setup)
+          are out of scope — see the "Operator responsibility" section
+          of SECURITY.md.
+        - **Feature ideas** — please open a
+          [Discussion](../../discussions) instead of an issue.
+
+  - type: input
+    id: version
+    attributes:
+      label: Commit SHA or release tag
+      description: Which commit did you test against? Run `git rev-parse HEAD` in your deployment folder, or check the release notes.
+      placeholder: "e.g. 813a8f2 or 1.6.0"
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser + OS
+      description: Only relevant for frontend / UI bugs. Backend-only bugs can leave this blank.
+      placeholder: "e.g. Firefox 128 on macOS 14, Safari on iOS 17"
+    validations:
+      required: false
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Minimal steps someone else can follow to hit the same bug.
+        Include the tab (Transactions, Budgets, etc.) and the specific
+        action (click X, change Y, etc.).
+      placeholder: |
+        1. Go to Transactions tab
+        2. Tap a transaction to open the detail sheet
+        3. Click "Split this transaction"
+        4. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: Screenshots welcome (drag them into the box). If the UI hung or crashed, please include browser DevTools console output too.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs (optional)
+      description: |
+        For backend bugs, `docker compose logs --tail=50 backend` or
+        `docker compose logs --tail=50 worker` is usually enough.
+        Please scrub anything that looks like a token, secret, or bank
+        account number before pasting.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I have checked existing issues and this doesn't appear to be a duplicate.
+          required: true
+        - label: This is a code bug, not a deployment / infrastructure question.
+          required: true
+        - label: This is NOT a security vulnerability. (Security issues use the private disclosure process instead.)
+          required: true

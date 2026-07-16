@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Feature idea or general question
+    url: https://github.com/JKJWL/Coinvane/discussions
+    about: Please open a Discussion, not an issue. Feature ideas that fit the project's single-tenant / small-household scope may be promoted to issues later.
+  - name: Security vulnerability
+    url: https://github.com/JKJWL/Coinvane/security/advisories/new
+    about: Please report privately via GitHub Security Advisory. Do not open a public issue for security bugs.
