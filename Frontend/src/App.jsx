@@ -2294,7 +2294,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
                     <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider flex items-center gap-1.5`}>
                       <ImageIcon className="w-3 h-3 text-pink-500" /> Receipt
                     </div>
-                    {detail.hasAttachment && receiptState.url && (
+                    {!!detail.hasAttachment && receiptState.url && (
                       <div className="flex gap-2">
                         <button type="button"
                           onClick={() => {
