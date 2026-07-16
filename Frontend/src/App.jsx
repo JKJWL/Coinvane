@@ -8050,6 +8050,9 @@ function Shell({ user, onLogout, refreshUser }) {
               <IconButton theme={theme} onClick={() => navigate("investments")}>
                 <TrendingUp className={`w-5 h-5 ${theme.textMuted}`} />
               </IconButton>
+              <IconButton theme={theme} onClick={() => navigate("bills")}>
+                <Calendar className={`w-5 h-5 ${theme.textMuted}`} />
+              </IconButton>
               <IconButton theme={theme} onClick={syncBanks}>
                 <RefreshCw className={`w-5 h-5 ${theme.textMuted} ${syncing ? "animate-spin" : ""}`} />
               </IconButton>
