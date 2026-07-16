@@ -850,13 +850,15 @@ function kpiRangeToDates(range) {
 
 // Chip pill row shared by the KPI cards. `expanded` swaps to a slightly
 // larger tap target when the card is rendered inside the fullscreen modal.
-function KpiPeriodChips({ range, setRange, theme, darkMode, expanded }) {
+function KpiPeriodChips({ range, setRange, theme, darkMode, expanded, exclude }) {
   const size = expanded ? "px-3 py-1.5 text-xs" : "px-2.5 py-1 text-[11px]";
+  const excludeSet = new Set(exclude || []);
+  const periods = KPI_PERIODS.filter(p => !excludeSet.has(p.id));
   return (
     <div className={`flex items-center gap-1 p-1 rounded-full overflow-x-auto no-scrollbar ${
       darkMode ? "bg-slate-800" : "bg-slate-100"
     }`}>
-      {KPI_PERIODS.map(p => {
+      {periods.map(p => {
         const active = range === p.id;
         return (
           <button key={p.id} onClick={() => setRange(p.id)}
@@ -1180,7 +1182,7 @@ function CashflowCard({ theme, darkMode, expanded, onExpand }) {
           <p className={`text-xs ${theme.textSubtle}`}>Income vs spending</p>
         </div>
         <div className="flex items-center gap-2">
-          <KpiPeriodChips range={range} setRange={setRange} theme={theme} darkMode={darkMode} expanded={expanded} />
+          <KpiPeriodChips range={range} setRange={setRange} theme={theme} darkMode={darkMode} expanded={expanded} exclude={["mtd"]} />
           {!expanded && onExpand && (
             <button type="button" onClick={onExpand}
               title="Expand"
