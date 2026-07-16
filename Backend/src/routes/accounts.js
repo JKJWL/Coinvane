@@ -68,9 +68,15 @@ export default async function (app) {
       `SELECT type, SUM(balance) AS total FROM accounts WHERE user_id = ? GROUP BY type`,
       [req.user.id]
     );
-    const summary = { cash: 0, credit: 0, investment: 0, loan: 0, other: 0 };
+    const summary = { cash: 0, credit: 0, investment: 0, loan: 0, other: 0, assets: 0 };
     for (const r of rows) summary[r.type] = Number(r.total) || 0;
-    summary.netWorth = summary.cash + summary.investment + summary.credit + summary.loan;
+    // Assets (vehicles, valuables, etc.) roll into net worth too.
+    const assetSum = await queryOne(
+      "SELECT COALESCE(SUM(current_value), 0) AS total FROM assets WHERE user_id = ? AND archived_at IS NULL",
+      [req.user.id]
+    );
+    summary.assets = Number(assetSum?.total || 0);
+    summary.netWorth = summary.cash + summary.investment + summary.credit + summary.loan + summary.assets;
     return summary;
   });
 

@@ -564,6 +564,97 @@ const SCHEMA = [
   `ALTER TABLE loans ADD COLUMN IF NOT EXISTS escrow_pmi DECIMAL(14,2) DEFAULT 0`,
   `ALTER TABLE loans ADD COLUMN IF NOT EXISTS escrow_other DECIMAL(14,2) DEFAULT 0`,
 
+  // ── Investment lot tracking (Stage 3: cost basis + wash sales) ────
+  // One row per purchase event of a security in a specific brokerage
+  // account. `remaining_quantity` decrements on each disposal so this
+  // table is the source of truth for "how many shares of this lot are
+  // still open". Disposals get their own row for realized gain reporting.
+  //
+  // security_id / account_id are FK'd to the SAME tables Plaid syncs into,
+  // so lots created before Plaid re-syncs the account keep referring to
+  // the same underlying security/account rows.
+  `CREATE TABLE IF NOT EXISTS holding_lots (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    security_id INT NOT NULL,
+    account_id INT NULL,
+    acquired_date DATE NOT NULL,
+    original_quantity DECIMAL(20,8) NOT NULL,
+    remaining_quantity DECIMAL(20,8) NOT NULL,
+    cost_basis_per_share DECIMAL(14,4) NOT NULL,
+    method ENUM('fifo','lifo','specific') NOT NULL DEFAULT 'specific',
+    notes VARCHAR(255) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (security_id) REFERENCES securities(id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE SET NULL,
+    INDEX idx_user_sec (user_id, security_id, acquired_date)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // ── Assets (Stage 3d: vehicles / valuables + depreciation) ────────
+  // Tracked outside of `accounts` because they're not bank-account-shaped:
+  // no transactions, no linked institution. But they DO count toward net
+  // worth. current_value is authoritative (persisted) so a user who
+  // overrides the depreciated number keeps that override; the compute
+  // path only runs when the user asks for "refresh depreciation".
+  //   depreciation_method:
+  //     none            → static value the user maintains manually
+  //     straight_line   → drops evenly from acquired_value to salvage_value
+  //                       over useful_life_years
+  //     declining_balance → 20%/yr (or override) of remaining value
+  `CREATE TABLE IF NOT EXISTS assets (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    kind VARCHAR(32) NOT NULL DEFAULT 'other',
+    acquired_date DATE NOT NULL,
+    acquired_value DECIMAL(14,2) NOT NULL,
+    current_value DECIMAL(14,2) NOT NULL,
+    salvage_value DECIMAL(14,2) DEFAULT 0,
+    useful_life_years DECIMAL(6,2) DEFAULT 0,
+    depreciation_method ENUM('none','straight_line','declining_balance') NOT NULL DEFAULT 'none',
+    declining_rate DECIMAL(5,2) DEFAULT 20.00,
+    notes VARCHAR(500) NULL,
+    archived_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user_active (user_id, archived_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // ── Saved reports (Stage 3c: custom report builder) ──────────────
+  `CREATE TABLE IF NOT EXISTS saved_reports (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    config LONGTEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user (user_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Realized-gain disposals. Each row references the lot the shares were
+  // pulled from. Wash-sale flag is a boolean computed at insert time (any
+  // purchase of the same security within ±30 days of disposal_date at a
+  // loss taints this disposal).
+  `CREATE TABLE IF NOT EXISTS lot_disposals (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    lot_id INT NOT NULL,
+    security_id INT NOT NULL,
+    disposal_date DATE NOT NULL,
+    quantity DECIMAL(20,8) NOT NULL,
+    price_per_share DECIMAL(14,4) NOT NULL,
+    realized_gain DECIMAL(14,4) NOT NULL,
+    is_wash_sale TINYINT DEFAULT 0,
+    notes VARCHAR(255) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (lot_id) REFERENCES holding_lots(id) ON DELETE CASCADE,
+    INDEX idx_user_sec_date (user_id, security_id, disposal_date)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
   `CREATE TABLE IF NOT EXISTS bill_cycles (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,

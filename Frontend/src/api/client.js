@@ -140,6 +140,20 @@ export const api = {
   getTaxSummary: (year) =>
     request("GET", `/tax/summary${year ? "?year=" + year : ""}`),
 
+  // ── Custom reports (pivot builder + saved bookmarks) ───────────
+  runReport: (config) => request("POST", "/reports/query", config),
+  listSavedReports: () => request("GET", "/reports/saved"),
+  saveReport: (name, config) => request("POST", "/reports/saved", { name, config }),
+  deleteSavedReport: (id) => request("DELETE", `/reports/saved/${id}`),
+
+  // ── Assets (vehicles / valuables + depreciation) ───────────────
+  listAssets: () => request("GET", "/assets"),
+  getAssetSummary: () => request("GET", "/assets/summary"),
+  createAsset: (data) => request("POST", "/assets", data),
+  updateAsset: (id, data) => request("PATCH", `/assets/${id}`, data),
+  refreshAssetValue: (id) => request("POST", `/assets/${id}/refresh`),
+  deleteAsset: (id) => request("DELETE", `/assets/${id}`),
+
   // ── Automations (per-user rule engine) ─────────────────────────
   getAutomationVocab:   () => request("GET",    "/automations/vocab"),
   listAutomations:      () => request("GET",    "/automations"),
@@ -208,6 +222,13 @@ export const api = {
   // investments
   getHoldings: () => request("GET", "/investments/holdings"),
   getInvestmentSummary: () => request("GET", "/investments/summary"),
+  // Lot tracking (per-security cost basis + realized gains)
+  getSecurityLots: (securityId) => request("GET", `/investments/lots/${securityId}`),
+  addLot: (securityId, data) => request("POST", `/investments/lots/${securityId}`, data),
+  updateLot: (lotId, data) => request("PATCH", `/investments/lots/${lotId}`, data),
+  deleteLot: (lotId) => request("DELETE", `/investments/lots/${lotId}`),
+  addDisposal: (data) => request("POST", "/investments/disposals", data),
+  deleteDisposal: (id) => request("DELETE", `/investments/disposals/${id}`),
 
   // plaid
   createLinkToken: (data = {}) => request("POST", "/plaid/link-token", data),
@@ -223,6 +244,8 @@ export const api = {
   // CSV / PDF — non-JSON download endpoints
   exportTransactionsCSV: () => downloadAuthed("/transactions/export.csv", "coinvane-transactions.csv"),
   importTransactionsCSV: (csv) => request("POST", "/transactions/import.csv", { csv }),
+  importQuicken: (content, accountId) =>
+    request("POST", "/transactions/import/quicken", { content, account_id: accountId || null }),
   exportFullPDF: () => downloadAuthed("/export/full.pdf", "coinvane-export.pdf"),
   exportMonthlyPDF: (month) =>
     downloadAuthed(`/export/monthly.pdf${month ? "?month=" + encodeURIComponent(month) : ""}`,

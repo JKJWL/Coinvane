@@ -1733,6 +1733,472 @@ function TaxCategoriesPanel({ theme, darkMode, toast }) {
   );
 }
 
+// ─── Assets panel (AccountsTab) ───────────────────────────────────────────────
+// Non-account holdings that still contribute to net worth — vehicles,
+// jewelry, art, collectibles, property. Support 3 depreciation methods:
+//   none              → user maintains current_value manually
+//   straight_line     → drops evenly from acquired → salvage over N years
+//   declining_balance → drops by X%/yr on remaining value
+// A "refresh depreciation" button snaps current_value to the projected
+// value for today (server owns the compute).
+const ASSET_KINDS = [
+  { code: "vehicle",     label: "Vehicle" },
+  { code: "boat",        label: "Boat" },
+  { code: "jewelry",     label: "Jewelry" },
+  { code: "art",         label: "Art" },
+  { code: "collectible", label: "Collectible" },
+  { code: "property",    label: "Property" },
+  { code: "other",       label: "Other" },
+];
+function AssetsPanel({ theme, darkMode, toast, onChange }) {
+  const [assets, setAssets] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setAssets(await api.listAssets()); }
+    catch { toast?.("Failed to load assets", "error"); }
+    finally { setLoading(false); }
+  }, [toast]);
+  useEffect(() => { load(); }, [load]);
+
+  const refresh = async (asset) => {
+    try {
+      await api.refreshAssetValue(asset.id);
+      toast?.("Value refreshed to projected depreciation", "success");
+      load(); onChange?.();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+  const remove = async (asset) => {
+    if (!window.confirm(`Archive "${asset.name}"?`)) return;
+    try {
+      await api.deleteAsset(asset.id);
+      toast?.("Asset archived", "success");
+      load(); onChange?.();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+
+  const total = assets.reduce((s, a) => s + Number(a.currentValue || 0), 0);
+
+  return (
+    <div className={`${theme.surface} rounded-2xl border ${theme.border} overflow-hidden`}>
+      <div className={`px-5 py-3.5 border-b ${theme.border} flex items-center justify-between`}>
+        <div>
+          <h3 className="font-semibold text-sm">Assets &amp; valuables</h3>
+          <div className={`text-xs ${theme.textSubtle}`}>
+            Total: <span className="private-amount" tabIndex={0}>{fmt(total)}</span> · counted in net worth
+          </div>
+        </div>
+        <button type="button" onClick={() => { setEditing(null); setShowForm(true); }}
+          className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-violet-500 text-white hover:bg-violet-600 flex items-center gap-1">
+          <Plus className="w-3 h-3" /> Add asset
+        </button>
+      </div>
+      {loading ? (
+        <div className={`p-4 text-xs ${theme.textSubtle}`}>Loading…</div>
+      ) : assets.length === 0 ? (
+        <div className={`p-6 text-center text-xs ${theme.textSubtle}`}>
+          No assets tracked. Add a car, boat, or valuable — it'll count toward net worth.
+        </div>
+      ) : (
+        <div className={`divide-y ${theme.divide}`}>
+          {assets.map(a => {
+            const drop = Number(a.acquiredValue) - Number(a.currentValue);
+            const dropPct = Number(a.acquiredValue) > 0
+              ? Math.round((drop / Number(a.acquiredValue)) * 100) : 0;
+            const projectedDiff = Number(a.projectedValue) - Number(a.currentValue);
+            const drift = Math.abs(projectedDiff) >= 1;
+            return (
+              <div key={a.id} className="flex items-center gap-3 px-5 py-3.5">
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold text-sm truncate">{a.name}</div>
+                  <div className={`text-xs ${theme.textSubtle}`}>
+                    {(ASSET_KINDS.find(k => k.code === a.kind) || {}).label || "Other"} ·
+                    Acquired {a.acquiredDate} at <span className="private-amount" tabIndex={0}>{fmt(a.acquiredValue)}</span>
+                    {drop > 0 && <> · Down {dropPct}%</>}
+                  </div>
+                  {drift && a.depreciationMethod !== "none" && (
+                    <div className={`text-[10px] mt-0.5 ${projectedDiff < 0 ? "text-rose-500" : "text-emerald-500"}`}>
+                      Projected {fmt(a.projectedValue)} today —
+                      <button type="button" onClick={() => refresh(a)} className="ml-1 underline hover:text-violet-500">
+                        refresh
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="text-right">
+                  <div className="text-sm font-semibold private-amount" tabIndex={0}>{fmt(a.currentValue)}</div>
+                  <div className="flex items-center gap-1 justify-end">
+                    <button type="button" onClick={() => { setEditing(a); setShowForm(true); }}
+                      className={`text-[10px] ${theme.textSubtle} hover:text-violet-500`}>
+                      Edit
+                    </button>
+                    <button type="button" onClick={() => remove(a)}
+                      className={`text-[10px] ${theme.textSubtle} hover:text-rose-500`}>
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <AssetFormSheet open={showForm} onClose={() => { setShowForm(false); setEditing(null); }}
+        editing={editing} theme={theme} darkMode={darkMode} toast={toast}
+        onSaved={() => { setShowForm(false); setEditing(null); load(); onChange?.(); }} />
+    </div>
+  );
+}
+
+function AssetFormSheet({ open, onClose, editing, theme, darkMode, toast, onSaved }) {
+  const [form, setForm] = useState(() => defaultAssetForm());
+  const [saving, setSaving] = useState(false);
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
+
+  useEffect(() => {
+    if (!open) return;
+    if (editing) {
+      setForm({
+        name: editing.name || "", kind: editing.kind || "other",
+        acquired_date: editing.acquiredDate?.slice(0, 10) || new Date().toISOString().slice(0, 10),
+        acquired_value: String(editing.acquiredValue ?? ""),
+        current_value: String(editing.currentValue ?? ""),
+        salvage_value: String(editing.salvageValue ?? "0"),
+        useful_life_years: String(editing.usefulLifeYears ?? ""),
+        depreciation_method: editing.depreciationMethod || "none",
+        declining_rate: String(editing.decliningRate ?? "20"),
+        notes: editing.notes || "",
+      });
+    } else {
+      setForm(defaultAssetForm());
+    }
+  }, [open, editing]);
+
+  const save = async () => {
+    if (!form.name.trim() || !(Number(form.acquired_value) >= 0)) {
+      toast?.("Name and acquired value required", "error"); return;
+    }
+    setSaving(true);
+    try {
+      const payload = {
+        ...form,
+        acquired_value: Number(form.acquired_value),
+        current_value: form.current_value ? Number(form.current_value) : Number(form.acquired_value),
+        salvage_value: Number(form.salvage_value) || 0,
+        useful_life_years: Number(form.useful_life_years) || 0,
+        declining_rate: Number(form.declining_rate) || 20,
+      };
+      if (editing) await api.updateAsset(editing.id, payload);
+      else await api.createAsset(payload);
+      toast?.(editing ? "Asset updated" : "Asset added", "success");
+      onSaved();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Sheet open={open} onClose={onClose} title={editing ? "Edit asset" : "Add asset"} theme={theme}>
+      <div className="space-y-3">
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Name</label>
+          <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
+            placeholder="e.g. Honda Civic" className={inputCls} />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Kind</label>
+            <select value={form.kind} onChange={e => setForm({ ...form, kind: e.target.value })} className={inputCls}>
+              {ASSET_KINDS.map(k => <option key={k.code} value={k.code}>{k.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Acquired date</label>
+            <input type="date" value={form.acquired_date}
+              onChange={e => setForm({ ...form, acquired_date: e.target.value })} className={inputCls} />
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Acquired value</label>
+            <input type="number" step="0.01" value={form.acquired_value}
+              onChange={e => setForm({ ...form, acquired_value: e.target.value })} className={inputCls} />
+          </div>
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Current value</label>
+            <input type="number" step="0.01" value={form.current_value}
+              onChange={e => setForm({ ...form, current_value: e.target.value })} className={inputCls} />
+          </div>
+        </div>
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Depreciation method</label>
+          <select value={form.depreciation_method}
+            onChange={e => setForm({ ...form, depreciation_method: e.target.value })} className={inputCls}>
+            <option value="none">None — value stays put until I change it</option>
+            <option value="straight_line">Straight-line — drops evenly to salvage over N years</option>
+            <option value="declining_balance">Declining balance — X% off the remaining value each year</option>
+          </select>
+        </div>
+        {form.depreciation_method === "straight_line" && (
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Useful life (years)</label>
+              <input type="number" step="0.5" value={form.useful_life_years}
+                onChange={e => setForm({ ...form, useful_life_years: e.target.value })} className={inputCls} />
+            </div>
+            <div>
+              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Salvage value</label>
+              <input type="number" step="0.01" value={form.salvage_value}
+                onChange={e => setForm({ ...form, salvage_value: e.target.value })} className={inputCls} />
+            </div>
+          </div>
+        )}
+        {form.depreciation_method === "declining_balance" && (
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Rate (% per year)</label>
+              <input type="number" step="0.5" value={form.declining_rate}
+                onChange={e => setForm({ ...form, declining_rate: e.target.value })} className={inputCls} />
+            </div>
+            <div>
+              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Salvage value</label>
+              <input type="number" step="0.01" value={form.salvage_value}
+                onChange={e => setForm({ ...form, salvage_value: e.target.value })} className={inputCls} />
+            </div>
+          </div>
+        )}
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Notes</label>
+          <input value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })}
+            className={inputCls} />
+        </div>
+        <div className="flex gap-2 pt-2">
+          <button type="button" onClick={onClose}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.textSubtle}`}>Cancel</button>
+          <button type="button" onClick={save} disabled={saving}
+            className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-60">
+            {saving ? "Saving…" : editing ? "Save changes" : "Add asset"}
+          </button>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+function defaultAssetForm() {
+  return {
+    name: "", kind: "vehicle",
+    acquired_date: new Date().toISOString().slice(0, 10),
+    acquired_value: "", current_value: "",
+    salvage_value: "0", useful_life_years: "5",
+    depreciation_method: "none", declining_rate: "20",
+    notes: "",
+  };
+}
+
+// ─── Custom Reports panel (Settings > Data) ───────────────────────────────────
+// Pivot-style report builder: pick 1-2 dimensions, pick a measure, pick a
+// side (all / expense / income), an optional date range, and hit Run. The
+// server rolls the result up and returns a small table. Save-as-report
+// bookmarks the current configuration for one-click re-runs.
+const REPORT_DIMS = [
+  { code: "category", label: "Category" },
+  { code: "merchant", label: "Merchant" },
+  { code: "account",  label: "Account" },
+  { code: "month",    label: "Month" },
+  { code: "year",     label: "Year" },
+];
+function CustomReportsPanel({ theme, darkMode, toast }) {
+  const [config, setConfig] = useState({
+    dimensions: ["category"], measure: "sum", side: "expense",
+    from: "", to: "", credit: "exclude",
+  });
+  const [result, setResult] = useState(null);
+  const [running, setRunning] = useState(false);
+  const [saved, setSaved] = useState([]);
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [saveName, setSaveName] = useState("");
+
+  const loadSaved = useCallback(async () => {
+    try { setSaved(await api.listSavedReports()); } catch {}
+  }, []);
+  useEffect(() => { loadSaved(); }, [loadSaved]);
+
+  const run = async () => {
+    setRunning(true);
+    try { setResult(await api.runReport(config)); }
+    catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    finally { setRunning(false); }
+  };
+  const saveConfig = async () => {
+    if (!saveName.trim()) return;
+    try {
+      await api.saveReport(saveName.trim(), config);
+      toast?.("Report saved", "success");
+      setSaveOpen(false); setSaveName(""); loadSaved();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+  const loadSavedReport = (r) => { setConfig(r.config); };
+  const removeSaved = async (r) => {
+    if (!window.confirm(`Delete saved report "${r.name}"?`)) return;
+    try { await api.deleteSavedReport(r.id); loadSaved(); }
+    catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+
+  const toggleDim = (d) => {
+    const has = config.dimensions.includes(d);
+    let next;
+    if (has) next = config.dimensions.filter(x => x !== d);
+    else if (config.dimensions.length >= 2) next = [config.dimensions[1], d];
+    else next = [...config.dimensions, d];
+    if (next.length === 0) next = ["category"];
+    setConfig({ ...config, dimensions: next });
+  };
+  const chip = (active) =>
+    `px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-colors ${
+      active
+        ? "bg-violet-500 text-white border-violet-500"
+        : `${theme.textSubtle} border ${theme.border} ${theme.hover}`
+    }`;
+
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
+
+  return (
+    <div className={`${theme.surface} border ${theme.border} rounded-2xl p-5 space-y-3`}>
+      <div className="flex items-center justify-between">
+        <h3 className="font-semibold">Custom reports</h3>
+        {saved.length > 0 && (
+          <div className={`text-xs ${theme.textSubtle}`}>{saved.length} saved</div>
+        )}
+      </div>
+      <p className={`text-xs ${theme.textSubtle}`}>
+        Pivot-style report builder — pick up to two dimensions, choose a measure, and
+        run against your transaction history. Save configurations to re-run instantly.
+      </p>
+
+      <div>
+        <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5`}>Dimensions</div>
+        <div className="flex flex-wrap gap-1.5">
+          {REPORT_DIMS.map(d => (
+            <button key={d.code} type="button" onClick={() => toggleDim(d.code)}
+              className={chip(config.dimensions.includes(d.code))}>
+              {d.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        <div>
+          <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1`}>Measure</div>
+          <select value={config.measure} onChange={e => setConfig({ ...config, measure: e.target.value })} className={inputCls}>
+            <option value="sum">Sum ($)</option>
+            <option value="count">Count</option>
+            <option value="avg">Average ($)</option>
+          </select>
+        </div>
+        <div>
+          <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1`}>Side</div>
+          <select value={config.side} onChange={e => setConfig({ ...config, side: e.target.value })} className={inputCls}>
+            <option value="expense">Expenses</option>
+            <option value="income">Income</option>
+            <option value="all">All</option>
+          </select>
+        </div>
+        <div>
+          <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1`}>Credit cards</div>
+          <select value={config.credit} onChange={e => setConfig({ ...config, credit: e.target.value })} className={inputCls}>
+            <option value="exclude">Exclude</option>
+            <option value="include">Include</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1`}>From</div>
+          <input type="date" value={config.from} onChange={e => setConfig({ ...config, from: e.target.value })} className={inputCls} />
+        </div>
+        <div>
+          <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1`}>To</div>
+          <input type="date" value={config.to} onChange={e => setConfig({ ...config, to: e.target.value })} className={inputCls} />
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <button type="button" onClick={run} disabled={running}
+          className="px-3 py-2 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-60">
+          {running ? "Running…" : "Run report"}
+        </button>
+        <button type="button" onClick={() => setSaveOpen(v => !v)}
+          className={`px-3 py-2 rounded-xl text-sm font-medium border ${theme.border} ${theme.surface}`}>
+          Save configuration
+        </button>
+      </div>
+
+      {saveOpen && (
+        <div className={`rounded-xl border ${theme.border} p-3 flex gap-2 items-center`}>
+          <input value={saveName} onChange={e => setSaveName(e.target.value)}
+            placeholder="Name (e.g. Grocery spend by month)"
+            className={inputCls} />
+          <button type="button" onClick={saveConfig}
+            className="px-3 py-2 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600">
+            Save
+          </button>
+        </div>
+      )}
+
+      {saved.length > 0 && (
+        <div className={`rounded-xl border ${theme.border} p-2 flex flex-wrap gap-1.5`}>
+          {saved.map(r => (
+            <div key={r.id} className={`flex items-center gap-1 rounded-full border ${theme.border} pl-2.5 pr-1 py-0.5 text-[11px]`}>
+              <button type="button" onClick={() => loadSavedReport(r)}
+                className="font-semibold hover:text-violet-500">
+                {r.name}
+              </button>
+              <button type="button" onClick={() => removeSaved(r)}
+                className={`p-0.5 rounded-full ${theme.textSubtle} hover:text-rose-500`}>
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {result && (
+        <div className={`rounded-xl border ${theme.border} overflow-hidden`}>
+          <div className={`px-3 py-2 text-[10px] font-semibold ${theme.textSubtle} uppercase tracking-wider ${darkMode ? "bg-slate-800" : "bg-slate-50"} flex items-center justify-between`}>
+            <span>{result.rows.length} rows · {result.dims.join(" × ")} → {result.measure}</span>
+            <span className="private-amount" tabIndex={0}>
+              Total: {result.measure === "count" ? Math.round(result.total) : fmt(result.total)}
+            </span>
+          </div>
+          <div className={`divide-y ${theme.divide} max-h-72 overflow-y-auto`}>
+            {result.rows.length === 0 && (
+              <div className={`p-4 text-xs ${theme.textSubtle} text-center`}>No rows.</div>
+            )}
+            {result.rows.map((r, i) => (
+              <div key={i} className="flex items-center gap-3 px-3 py-2 text-xs">
+                <div className="flex-1 min-w-0 truncate">
+                  <span className="font-medium">{r.dim1}</span>
+                  {r.dim2 !== undefined && (
+                    <> <span className={theme.textSubtle}> · </span> <span>{r.dim2}</span></>
+                  )}
+                </div>
+                <div className="text-right font-semibold private-amount" tabIndex={0}>
+                  {result.measure === "count" ? Math.round(r.value) : fmt(r.value)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Reconciliation Sheet ─────────────────────────────────────────────────────
 // Quicken-style statement match. Two-phase flow:
 //   1. User enters statement date + ending balance → we open a draft
@@ -2087,6 +2553,9 @@ function AccountsTab({ theme, darkMode, toast }) {
           </div>
         )}
       </div>
+
+      {/* Assets & valuables */}
+      <AssetsPanel theme={theme} darkMode={darkMode} toast={toast} onChange={refreshAll} />
 
       {/* Add manual account sheet */}
       <Sheet open={showAdd} onClose={() => setShowAdd(false)} title="Add Manual Account" theme={theme}>
@@ -7221,40 +7690,344 @@ function GoalsTab({ theme, darkMode, toast }) {
 }
 
 // ─── Investments Tab ──────────────────────────────────────────────────────────
-function InvestmentsTab({ theme, darkMode }) {
+function InvestmentsTab({ theme, darkMode, toast }) {
   const { holdings, investSummary } = useData();
+  const [expanded, setExpanded] = useState(null); // securityId of expanded row
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <KpiCard label="Total Value"    value={investSummary?.total || 0} icon={Briefcase}  color="sky"     theme={theme} darkMode={darkMode} onClick={() => {}} />
         <KpiCard label="Total Gain/Loss" value={investSummary?.gain || 0} icon={TrendingUp}  color="emerald" theme={theme} darkMode={darkMode} onClick={() => {}} />
+        <KpiCard label="Realized YTD"  value={investSummary?.realizedYTD || 0} icon={DollarSign} color="violet" theme={theme} darkMode={darkMode} onClick={() => {}} />
         <KpiCard label="Holdings"       value={holdings.length}           icon={Target}      color="amber"   theme={theme} darkMode={darkMode} format={n => Math.round(n).toString()} onClick={() => {}} />
       </div>
       <div className={`${theme.surface} rounded-2xl border ${theme.border} overflow-hidden`}>
-        <div className={`px-5 py-4 border-b ${theme.border}`}><h3 className="font-semibold">Holdings</h3></div>
+        <div className={`px-5 py-4 border-b ${theme.border} flex items-center justify-between`}>
+          <h3 className="font-semibold">Holdings</h3>
+          <div className={`text-xs ${theme.textSubtle}`}>Tap a holding to see lots + realized gains.</div>
+        </div>
         {holdings.length === 0 ? (
           <div className={`px-5 py-12 text-center text-sm ${theme.textSubtle}`}>
             No holdings — connect a brokerage account via Plaid.
           </div>
         ) : holdings.map((h, i) => {
           const gain = Number(h.value) - (Number(h.costBasis) * Number(h.quantity) || 0);
+          const isOpen = expanded === h.securityId;
           return (
-            <div key={h.id} className={`flex items-center justify-between px-5 py-3.5 ${i < holdings.length - 1 ? `border-b ${theme.border}` : ""}`}>
-              <div>
-                <div className="font-semibold text-sm">{h.ticker || "—"}</div>
-                <div className={`text-xs ${theme.textSubtle}`}>{h.securityName}</div>
-              </div>
-              <div className="text-right">
-                <div className="font-semibold text-sm private-amount" tabIndex={0}>{fmt(h.value)}</div>
-                <div className={`text-xs private-amount ${gain >= 0 ? "text-emerald-500" : "text-rose-500"}`} tabIndex={0}>
-                  {gain >= 0 ? "+" : ""}{fmt(gain)}
+            <div key={h.id} className={`${i < holdings.length - 1 ? `border-b ${theme.border}` : ""}`}>
+              <button type="button" onClick={() => setExpanded(isOpen ? null : h.securityId)}
+                className={`w-full flex items-center justify-between px-5 py-3.5 ${theme.hover} transition-colors text-left`}>
+                <div className="flex items-center gap-2">
+                  <ChevronRight className={`w-3.5 h-3.5 transition-transform ${isOpen ? "rotate-90" : ""} ${theme.textSubtle}`} />
+                  <div>
+                    <div className="font-semibold text-sm">{h.ticker || "—"}</div>
+                    <div className={`text-xs ${theme.textSubtle}`}>{h.securityName}</div>
+                  </div>
                 </div>
-              </div>
+                <div className="text-right">
+                  <div className="font-semibold text-sm private-amount" tabIndex={0}>{fmt(h.value)}</div>
+                  <div className={`text-xs private-amount ${gain >= 0 ? "text-emerald-500" : "text-rose-500"}`} tabIndex={0}>
+                    {gain >= 0 ? "+" : ""}{fmt(gain)}
+                  </div>
+                </div>
+              </button>
+              <AnimatePresence initial={false}>
+                {isOpen && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: "auto", opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className={`border-t ${theme.border} overflow-hidden`}>
+                    <LotsPanel securityId={h.securityId} accountId={h.accountId}
+                      theme={theme} darkMode={darkMode} toast={toast} />
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           );
         })}
       </div>
     </div>
+  );
+}
+
+// ─── LotsPanel (per-security cost basis + realized gains) ────────────────────
+// Shown when a holding row is expanded. Lists open lots (add / dispose /
+// delete) and realized disposals. Wash sales flagged rose. Numbers are
+// display-only — no reconciliation with Plaid's cost_basis; the user
+// entering their own lots is authoritative.
+function LotsPanel({ securityId, accountId, theme, darkMode, toast }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+  const [disposing, setDisposing] = useState(null); // lot object
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setData(await api.getSecurityLots(securityId)); }
+    catch (e) { toast?.("Failed to load lots", "error"); }
+    finally { setLoading(false); }
+  }, [securityId, toast]);
+  useEffect(() => { load(); }, [load]);
+
+  const removeLot = async (lot) => {
+    if (!window.confirm(`Delete lot from ${lot.acquiredDate}? Any disposals against it will also be removed.`)) return;
+    try { await api.deleteLot(lot.id); load(); }
+    catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+  const removeDisposal = async (d) => {
+    if (!window.confirm("Delete this sale? Shares will return to the source lot.")) return;
+    try { await api.deleteDisposal(d.id); load(); }
+    catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+
+  if (loading || !data) {
+    return <div className={`px-5 py-4 text-xs ${theme.textSubtle}`}>Loading…</div>;
+  }
+  const openLots = data.lots.filter(l => Number(l.remainingQuantity) > 0.00001);
+  const closedLots = data.lots.filter(l => Number(l.remainingQuantity) <= 0.00001);
+  return (
+    <div className="p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className={`text-xs ${theme.textSubtle}`}>
+          Price: <span className="private-amount" tabIndex={0}>{fmt(data.security.price)}</span>
+        </div>
+        <button type="button" onClick={() => setShowAdd(true)}
+          className="text-xs font-semibold text-violet-500 hover:text-violet-600 flex items-center gap-1">
+          <Plus className="w-3 h-3" /> Add lot
+        </button>
+      </div>
+
+      {/* Open lots table */}
+      {openLots.length > 0 ? (
+        <div className={`rounded-xl border ${theme.border} overflow-hidden`}>
+          <div className={`px-3 py-2 text-[10px] font-semibold ${theme.textSubtle} uppercase tracking-wider ${darkMode ? "bg-slate-800" : "bg-slate-50"}`}>
+            Open lots
+          </div>
+          <div className={`divide-y ${theme.divide}`}>
+            {openLots.map(l => {
+              const cost = Number(l.costBasisPerShare) * Number(l.remainingQuantity);
+              const value = data.security.price * Number(l.remainingQuantity);
+              const gain = value - cost;
+              return (
+                <div key={l.id} className="flex items-center gap-3 px-3 py-2 text-xs">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium">{l.acquiredDate}</div>
+                    <div className={theme.textSubtle}>
+                      <span className="private-amount" tabIndex={0}>{Number(l.remainingQuantity).toFixed(4)}</span> @ <span className="private-amount" tabIndex={0}>{fmt(l.costBasisPerShare)}</span>
+                    </div>
+                  </div>
+                  <div className={`text-right ${gain >= 0 ? "text-emerald-500" : "text-rose-500"} font-semibold private-amount`} tabIndex={0}>
+                    {gain >= 0 ? "+" : ""}{fmt(gain)}
+                  </div>
+                  <button type="button" onClick={() => setDisposing(l)}
+                    className="px-2 py-1 rounded-lg text-[10px] font-semibold border border-violet-500 text-violet-500 hover:bg-violet-500/10">
+                    Sell
+                  </button>
+                  <button type="button" onClick={() => removeLot(l)}
+                    className="p-1 rounded-lg text-rose-500 hover:bg-rose-500/10" title="Delete lot">
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <div className={`text-xs ${theme.textSubtle} text-center py-2`}>
+          No open lots. Add one to start tracking cost basis.
+        </div>
+      )}
+
+      {/* Realized disposals */}
+      {data.disposals.length > 0 && (
+        <div className={`rounded-xl border ${theme.border} overflow-hidden`}>
+          <div className={`px-3 py-2 text-[10px] font-semibold ${theme.textSubtle} uppercase tracking-wider ${darkMode ? "bg-slate-800" : "bg-slate-50"}`}>
+            Realized sales
+          </div>
+          <div className={`divide-y ${theme.divide}`}>
+            {data.disposals.map(d => (
+              <div key={d.id} className="flex items-center gap-3 px-3 py-2 text-xs">
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium">{d.disposalDate}</div>
+                  <div className={theme.textSubtle}>
+                    <span className="private-amount" tabIndex={0}>{Number(d.quantity).toFixed(4)}</span> @ <span className="private-amount" tabIndex={0}>{fmt(d.pricePerShare)}</span>
+                    {d.washSale ? <span className="ml-2 text-rose-500 font-semibold">WASH SALE</span> : null}
+                  </div>
+                </div>
+                <div className={`text-right font-semibold ${Number(d.realizedGain) >= 0 ? "text-emerald-500" : "text-rose-500"} private-amount`} tabIndex={0}>
+                  {Number(d.realizedGain) >= 0 ? "+" : ""}{fmt(d.realizedGain)}
+                </div>
+                <button type="button" onClick={() => removeDisposal(d)}
+                  className="p-1 rounded-lg text-rose-500 hover:bg-rose-500/10" title="Undo sale">
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <LotFormSheet open={showAdd} onClose={() => setShowAdd(false)} securityId={securityId}
+        accountId={accountId} theme={theme} darkMode={darkMode} toast={toast}
+        onSaved={() => { setShowAdd(false); load(); }} />
+      <DisposeFormSheet open={!!disposing} onClose={() => setDisposing(null)} lot={disposing}
+        currentPrice={data.security.price}
+        theme={theme} darkMode={darkMode} toast={toast}
+        onSaved={() => { setDisposing(null); load(); }} />
+    </div>
+  );
+}
+
+function LotFormSheet({ open, onClose, securityId, accountId, theme, darkMode, toast, onSaved }) {
+  const [form, setForm] = useState({ acquired_date: new Date().toISOString().slice(0, 10),
+    quantity: "", cost_basis_per_share: "", notes: "" });
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (open) setForm({ acquired_date: new Date().toISOString().slice(0, 10),
+      quantity: "", cost_basis_per_share: "", notes: "" });
+  }, [open]);
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
+  const save = async () => {
+    if (!(Number(form.quantity) > 0) || !(Number(form.cost_basis_per_share) >= 0)) {
+      toast?.("Quantity and cost basis are required", "error"); return;
+    }
+    setSaving(true);
+    try {
+      await api.addLot(securityId, {
+        acquired_date: form.acquired_date,
+        quantity: Number(form.quantity),
+        cost_basis_per_share: Number(form.cost_basis_per_share),
+        account_id: accountId || null,
+        notes: form.notes || null,
+      });
+      toast?.("Lot added", "success");
+      onSaved();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    finally { setSaving(false); }
+  };
+  return (
+    <Sheet open={open} onClose={onClose} title="Add lot" theme={theme}>
+      <div className="space-y-3">
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Acquired date</label>
+          <input type="date" value={form.acquired_date}
+            onChange={e => setForm({ ...form, acquired_date: e.target.value })} className={inputCls} />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Quantity</label>
+            <input type="number" step="0.0001" value={form.quantity}
+              onChange={e => setForm({ ...form, quantity: e.target.value })} className={inputCls} />
+          </div>
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Cost / share</label>
+            <input type="number" step="0.0001" value={form.cost_basis_per_share}
+              onChange={e => setForm({ ...form, cost_basis_per_share: e.target.value })} className={inputCls} />
+          </div>
+        </div>
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Notes</label>
+          <input value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })}
+            placeholder="e.g. 401k rollover" className={inputCls} />
+        </div>
+        <div className="flex gap-2 pt-2">
+          <button type="button" onClick={onClose}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.textSubtle}`}>Cancel</button>
+          <button type="button" onClick={save} disabled={saving}
+            className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-60">
+            {saving ? "Saving…" : "Add lot"}
+          </button>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+function DisposeFormSheet({ open, onClose, lot, currentPrice, theme, darkMode, toast, onSaved }) {
+  const [form, setForm] = useState({ disposal_date: new Date().toISOString().slice(0, 10),
+    quantity: "", price_per_share: "", notes: "" });
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (open && lot) setForm({
+      disposal_date: new Date().toISOString().slice(0, 10),
+      quantity: String(lot.remainingQuantity || ""),
+      price_per_share: String(currentPrice || ""),
+      notes: "",
+    });
+  }, [open, lot, currentPrice]);
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
+  const save = async () => {
+    if (!lot) return;
+    const q = Number(form.quantity); const px = Number(form.price_per_share);
+    if (!(q > 0) || !(px >= 0)) {
+      toast?.("Quantity and price required", "error"); return;
+    }
+    if (q > Number(lot.remainingQuantity) + 1e-8) {
+      toast?.(`Only ${Number(lot.remainingQuantity).toFixed(4)} shares remain in that lot`, "error"); return;
+    }
+    setSaving(true);
+    try {
+      const r = await api.addDisposal({
+        lot_id: lot.id, disposal_date: form.disposal_date,
+        quantity: q, price_per_share: px,
+        notes: form.notes || null,
+      });
+      if (r.isWashSale) toast?.("Sale recorded — wash sale flagged", "warning");
+      else toast?.(`Realized ${r.realizedGain >= 0 ? "+" : ""}${fmt(r.realizedGain)}`, "success");
+      onSaved();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    finally { setSaving(false); }
+  };
+  const preview = lot && Number(form.quantity) > 0 && Number(form.price_per_share) >= 0
+    ? (Number(form.price_per_share) - Number(lot.costBasisPerShare)) * Number(form.quantity)
+    : 0;
+  return (
+    <Sheet open={open} onClose={onClose} title={lot ? `Sell lot from ${lot.acquiredDate}` : "Sell lot"} theme={theme}>
+      {lot && (
+        <div className="space-y-3">
+          <div className={`rounded-xl border ${theme.border} p-3 text-xs ${theme.textSubtle}`}>
+            Remaining: <span className="private-amount" tabIndex={0}>{Number(lot.remainingQuantity).toFixed(4)}</span> shares · Cost: <span className="private-amount" tabIndex={0}>{fmt(lot.costBasisPerShare)}</span>/share
+          </div>
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Sale date</label>
+            <input type="date" value={form.disposal_date}
+              onChange={e => setForm({ ...form, disposal_date: e.target.value })} className={inputCls} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Quantity</label>
+              <input type="number" step="0.0001" value={form.quantity}
+                onChange={e => setForm({ ...form, quantity: e.target.value })} className={inputCls} />
+            </div>
+            <div>
+              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Price / share</label>
+              <input type="number" step="0.0001" value={form.price_per_share}
+                onChange={e => setForm({ ...form, price_per_share: e.target.value })} className={inputCls} />
+            </div>
+          </div>
+          <div className={`rounded-xl border ${theme.border} p-3 text-xs`}>
+            <span className={theme.textSubtle}>Realized gain: </span>
+            <span className={`font-semibold private-amount ${preview >= 0 ? "text-emerald-500" : "text-rose-500"}`} tabIndex={0}>
+              {preview >= 0 ? "+" : ""}{fmt(preview)}
+            </span>
+          </div>
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Notes</label>
+            <input value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })}
+              className={inputCls} />
+          </div>
+          <div className="flex gap-2 pt-2">
+            <button type="button" onClick={onClose}
+              className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.textSubtle}`}>Cancel</button>
+            <button type="button" onClick={save} disabled={saving}
+              className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-60">
+              {saving ? "Recording…" : "Record sale"}
+            </button>
+          </div>
+        </div>
+      )}
+    </Sheet>
   );
 }
 
@@ -8676,7 +9449,11 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
   const [clearing, setClearing] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [importingCsv, setImportingCsv] = useState(false);
+  const [importingQuicken, setImportingQuicken] = useState(false);
+  const [quickenAccountId, setQuickenAccountId] = useState("");
+  const quickenInputRef = useRef(null);
   const [saving, setSaving] = useState(false);
+  const { accounts } = useData();
 
   // Snapshot of "what the server currently has" so we can detect unsaved
   // changes by comparing to `form`. Built lazily once at mount; reset
@@ -8763,6 +9540,23 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
     } catch (e) {
       toast?.("Import failed: " + (e.message || ""), "error");
     } finally { setImportingCsv(false); }
+  };
+
+  // QIF / OFX / QFX import. Same pattern as CSV, but with an account
+  // dropdown that binds every imported row to a chosen account (or
+  // leaves them account-less for later assignment). Bank exports don't
+  // carry account context so this is the only way to tie them in.
+  const handleQuickenFile = async (file) => {
+    if (!file) return;
+    setImportingQuicken(true);
+    try {
+      const text = await file.text();
+      const r = await api.importQuicken(text, quickenAccountId ? Number(quickenAccountId) : null);
+      toast?.(`Imported ${r.imported} ${r.format.toUpperCase()} txns (skipped ${r.skipped})`, "success");
+      onUpdate?.();
+    } catch (e) {
+      toast?.("Import failed: " + (e.message || ""), "error");
+    } finally { setImportingQuicken(false); }
   };
 
   return (
@@ -8992,10 +9786,44 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
           CSV columns: date, merchant, category, amount, account, note, pending.
           On import, the account column is matched to your existing accounts by name; unknown names import as manual rows.
         </div>
+
+        {/* ── Quicken / Mint migration ── */}
+        <div className={`border-t ${theme.border} pt-3 mt-3 space-y-2`}>
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <div className="text-sm font-semibold">Import from Quicken / Mint / bank export</div>
+              <div className={`text-xs ${theme.textSubtle}`}>
+                Accepts .QIF, .OFX, or .QFX. Bind imported rows to a specific account.
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <select value={quickenAccountId} onChange={e => setQuickenAccountId(e.target.value)}
+              className={`text-sm ${theme.inputBg} border ${theme.border} px-3 py-2 rounded-xl focus:outline-none focus:border-violet-500`}>
+              <option value="">— account-less (manual) —</option>
+              {accounts.map(a => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+            <motion.button whileTap={{ scale: 0.97 }} type="button"
+              disabled={importingQuicken}
+              onClick={() => quickenInputRef.current?.click()}
+              className={`text-sm font-medium ${theme.surface} border ${theme.border} px-3 py-2 rounded-xl disabled:opacity-60`}>
+              {importingQuicken ? "Importing…" : "Import QIF / OFX / QFX"}
+            </motion.button>
+            <input ref={quickenInputRef} type="file"
+              accept=".qif,.ofx,.qfx,application/x-ofx,text/plain"
+              className="hidden"
+              onChange={e => { handleQuickenFile(e.target.files?.[0]); e.target.value = ""; }} />
+          </div>
+        </div>
       </div>
 
       {/* ── Tax categories ── */}
       <TaxCategoriesPanel theme={theme} darkMode={darkMode} toast={toast} />
+
+      {/* ── Custom reports ── */}
+      <CustomReportsPanel theme={theme} darkMode={darkMode} toast={toast} />
 
       {/* ── Danger zone ── */}
       <div className={`${theme.surface} border ${darkMode ? "border-rose-500/30" : "border-rose-200"} rounded-2xl p-5 space-y-3`}>
@@ -9248,7 +10076,7 @@ function Shell({ user, onLogout, refreshUser }) {
               {tab === "dashboard"    && <OverviewTab      theme={theme} darkMode={darkMode} onNavigate={navigate} />}
               {tab === "accounts"     && <AccountsTab      theme={theme} darkMode={darkMode} toast={toast} />}
               {tab === "transactions" && <TransactionsTab  theme={theme} darkMode={darkMode} toast={toast} />}
-              {tab === "investments"  && <InvestmentsTab   theme={theme} darkMode={darkMode} />}
+              {tab === "investments"  && <InvestmentsTab   theme={theme} darkMode={darkMode} toast={toast} />}
               {tab === "budgets"      && <BudgetsTab       theme={theme} darkMode={darkMode} toast={toast} />}
               {tab === "bills"        && <BillsTab         theme={theme} darkMode={darkMode} toast={toast} />}
               {tab === "goals"        && <GoalsTab         theme={theme} darkMode={darkMode} toast={toast} />}

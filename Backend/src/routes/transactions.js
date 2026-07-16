@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { query, queryOne } from "../db.js";
 import { runRulesForTrigger } from "../automation-engine.js";
+import { parseAny } from "../quicken-import.js";
 import { promises as fs } from "fs";
 import path from "path";
 
@@ -861,5 +862,64 @@ export default async function (app) {
       }
     }
     return { ok: true, imported, skipped };
+  });
+
+  // ── QIF / OFX / QFX import ─────────────────────────────────────
+  // For migrating off Quicken, Mint, or any bank that only exports these
+  // formats. Auto-detects which of the three the file is. `account_id`
+  // param binds every imported row to a chosen account so the manual
+  // balance adjustment matches what actually happened in the source
+  // system. Sends back { format, imported, skipped } like CSV import.
+  app.post("/import/quicken", {
+    bodyLimit: 5 * 1024 * 1024,
+    config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
+    const raw = typeof req.body === "string"
+      ? req.body
+      : req.body?.content || "";
+    const accountId = Number(req.body?.account_id) || null;
+    if (!raw || raw.length < 5) {
+      return reply.code(400).send({ error: "Empty import body" });
+    }
+    // Guard against binary + oversize junk sooner than the bodyLimit trips.
+    if (raw.length > 5 * 1024 * 1024) {
+      return reply.code(400).send({ error: "File too large (5 MB max)" });
+    }
+    const { format, transactions: parsed } = parseAny(raw);
+    if (format === "unknown") {
+      return reply.code(400).send({ error: "Unrecognized format — expected QIF, OFX, or QFX" });
+    }
+    // Validate the account belongs to the user (if supplied).
+    let boundAccount = null;
+    if (accountId) {
+      boundAccount = await queryOne(
+        "SELECT id, plaid_item_id FROM accounts WHERE id = ? AND user_id = ?",
+        [accountId, req.user.id]
+      );
+      if (!boundAccount) return reply.code(400).send({ error: "account not found" });
+    }
+    let imported = 0, skipped = 0, balanceDelta = 0;
+    for (const row of parsed) {
+      if (!row.date || !row.merchant || !Number.isFinite(row.amount)) { skipped++; continue; }
+      try {
+        await query(
+          `INSERT INTO transactions (user_id, account_id, date, merchant, category, amount, note)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [req.user.id, accountId || null, row.date, row.merchant,
+           row.category || "Other", row.amount, row.note || null]
+        );
+        imported++;
+        balanceDelta += Number(row.amount);
+      } catch (e) {
+        skipped++;
+      }
+    }
+    // Manual-account balance is authoritative for manual accounts, so
+    // shift it by the sum of imported amounts. Plaid-linked accounts are
+    // untouched (their balance is pulled fresh from Plaid on next sync).
+    if (boundAccount && !boundAccount.plaid_item_id && balanceDelta !== 0) {
+      await adjustManualAccountBalance(req.user.id, accountId, balanceDelta);
+    }
+    return { ok: true, format, imported, skipped };
   });
 }
