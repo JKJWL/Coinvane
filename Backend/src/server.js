@@ -5,6 +5,7 @@ import cors from "@fastify/cors";
 import jwt from "@fastify/jwt";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
+import multipart from "@fastify/multipart";
 import rawBody from "fastify-raw-body";
 
 import authRoutes from "./routes/auth.js";
@@ -121,6 +122,18 @@ await app.register(jwt, {
   secret: process.env.JWT_SECRET,
   sign:   { expiresIn: "30d" },
   verify: { maxAge: "30d" },
+});
+
+// Multipart uploads — only used for receipt attachments today. The 5 MB
+// cap here is a hard wall in addition to the per-mime + per-user rate
+// limits enforced in the route.
+await app.register(multipart, {
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+    files: 1,
+    fields: 4,
+    fieldSize: 512,
+  },
 });
 
 await app.register(rawBody, {

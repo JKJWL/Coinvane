@@ -11,7 +11,8 @@ import {
   ChevronDown, Check, Trash2, Shield, AlertCircle, AlertTriangle,
   Pin, Calendar, Link2, Mail, CheckCircle2, Plus,
   Pencil, GripVertical, Sparkles, TrendingDown,
-  Lock, Unlock, ChevronRight
+  Lock, Unlock, ChevronRight,
+  Image as ImageIcon, Split, Upload, Printer,
 } from "lucide-react";
 import {
   PieChart, Pie, Cell, ResponsiveContainer, AreaChart, Area,
@@ -309,6 +310,20 @@ function ScheduledPill({ isScheduled, darkMode, size = "sm" }) {
     }`}>
       <span className="w-1 h-1 rounded-full bg-indigo-500" />
       Scheduled
+    </span>
+  );
+}
+
+// ─── ReceiptMarker ────────────────────────────────────────────────────────────
+// Small pink image outline shown next to a transaction's amount when it has
+// a receipt attachment. Purely visual — the actual receipt is opened from
+// the detail sheet. Kept intentionally minimal (no chip, no label) so the
+// row layout doesn't shift.
+function ReceiptMarker({ hasAttachment }) {
+  if (!hasAttachment) return null;
+  return (
+    <span title="Receipt attached" className="inline-flex items-center">
+      <ImageIcon className="w-3.5 h-3.5 text-pink-500" strokeWidth={2} />
     </span>
   );
 }
@@ -1246,10 +1261,13 @@ function OverviewTab({ theme, darkMode, onNavigate }) {
                   </div>
                   <div className={`text-xs ${theme.textSubtle}`}>{t.date} · {t.category}</div>
                 </div>
-                <div className={`font-semibold text-sm private-amount ${
-                  t.isTransfer ? "text-sky-500" : Number(t.amount) >= 0 ? "text-emerald-500" : ""
-                }`} tabIndex={0}>
-                  {t.isTransfer ? "±" : Number(t.amount) >= 0 ? "+" : "−"}{fmt(Math.abs(Number(t.amount)))}
+                <div className="flex items-center gap-1.5">
+                  <ReceiptMarker hasAttachment={t.hasAttachment} />
+                  <div className={`font-semibold text-sm private-amount ${
+                    t.isTransfer ? "text-sky-500" : Number(t.amount) >= 0 ? "text-emerald-500" : ""
+                  }`} tabIndex={0}>
+                    {t.isTransfer ? "±" : Number(t.amount) >= 0 ? "+" : "−"}{fmt(Math.abs(Number(t.amount)))}
+                  </div>
                 </div>
               </div>
             );
@@ -1524,6 +1542,36 @@ function TransactionsTab({ theme, darkMode, toast }) {
   useEffect(() => { setAcctFilter("all"); }, [side]);
   const [detail, setDetail] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  // Manual split editor state — array of {category, amount} rows shown
+  // inside the detail sheet's Split panel. When null the panel is closed.
+  const [splitDraft, setSplitDraft] = useState(null);
+  const [splitSaving, setSplitSaving] = useState(false);
+  // Receipt state per open detail sheet: {url, loading, error, uploading}.
+  // Object URL is created on-demand and revoked when the sheet closes.
+  const [receiptState, setReceiptState] = useState({
+    url: null, loading: false, error: null, uploading: false,
+  });
+  const receiptFileRef = useRef(null);
+
+  // Load / revoke the receipt object URL as detail sheet opens & closes.
+  // Runs whenever `detail?.id` changes; guards against setState after
+  // close by capturing the id and comparing before commit.
+  useEffect(() => {
+    if (!detail?.id || !detail?.hasAttachment) return;
+    let alive = true;
+    setReceiptState(s => ({ ...s, loading: true, error: null }));
+    (async () => {
+      try {
+        const url = await api.fetchAttachment(detail.id);
+        if (!alive) { URL.revokeObjectURL(url); return; }
+        setReceiptState({ url, loading: false, error: null, uploading: false });
+      } catch (e) {
+        if (!alive) return;
+        setReceiptState({ url: null, loading: false, error: e.message || "load failed", uploading: false });
+      }
+    })();
+    return () => { alive = false; };
+  }, [detail?.id, detail?.hasAttachment]);
   // Category-edit flow: 'pick' = pick new category, 'scope' = ask just-this/all-future
   const [catEdit, setCatEdit] = useState(null); // { stage, newCategory }
   // Paystub editor sheet — open when set, holds the transaction being edited.
@@ -1607,6 +1655,11 @@ function TransactionsTab({ theme, darkMode, toast }) {
       date_asc:   (a, b) => (a.date || "").localeCompare(b.date || "") || a.id - b.id,
       amount_asc: (a, b) => Number(a.amount) - Number(b.amount), // most negative first → biggest expense
       amount_desc:(a, b) => Number(b.amount) - Number(a.amount), // most positive first → biggest income
+      // Receipts first (has_attachment DESC), then newest within each bucket.
+      has_receipt:(a, b) =>
+        (b.hasAttachment ? 1 : 0) - (a.hasAttachment ? 1 : 0)
+        || (b.date || "").localeCompare(a.date || "")
+        || b.id - a.id,
     }[sort] || ((a, b) => 0);
     return [...rows].sort(cmp);
   }, [transactions, search, catFilter, acctFilter, sort, side, creditAccountIds]);
@@ -1617,10 +1670,12 @@ function TransactionsTab({ theme, darkMode, toast }) {
   // collided with React keys → other tabs misrendering). For amount sorts
   // we render a single flat group with no date header.
   const isAmountSort = sort === "amount_asc" || sort === "amount_desc";
+  const isFlatSort = isAmountSort || sort === "has_receipt";
   const grouped = useMemo(() => {
     if (filtered.length === 0) return [];
-    if (isAmountSort) {
-      // Single flat group — date headers don't make sense when sorted by $.
+    if (isFlatSort) {
+      // Single flat group — date headers don't make sense when sorted by
+      // amount or receipt-first (both scatter dates arbitrarily).
       return [{ date: "__flat__", items: filtered }];
     }
     // Date sort: group consecutive same-date rows. Keys use date + index of
@@ -1636,7 +1691,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
       groups[groups.length - 1].items.push(t);
     }
     return groups;
-  }, [filtered, isAmountSort]);
+  }, [filtered, isFlatSort]);
 
   const fmtGroupDate = (d) => {
     if (!d || d === "—") return "Undated";
@@ -1814,6 +1869,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
                     <option value="date_asc">Oldest first</option>
                     <option value="amount_asc">Highest expense</option>
                     <option value="amount_desc">Highest income</option>
+                    <option value="has_receipt">Has receipt</option>
                   </select>
                 </div>
               </div>
@@ -1946,10 +2002,13 @@ function TransactionsTab({ theme, darkMode, toast }) {
                             {isFlat ? `${t.date} · ` : ""}{t.category} · <span className="private-name" tabIndex={0}>{t.accountName || "—"}</span>
                           </div>
                         </div>
-                        <div className={`font-semibold text-sm flex-shrink-0 private-amount ${
-                          t.isTransfer ? "text-sky-500" : Number(t.amount) >= 0 ? "text-emerald-500" : ""
-                        }`} tabIndex={0}>
-                          {t.isTransfer ? "±" : Number(t.amount) >= 0 ? "+" : "−"}{fmt(Math.abs(Number(t.amount)))}
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          <ReceiptMarker hasAttachment={t.hasAttachment} />
+                          <div className={`font-semibold text-sm private-amount ${
+                            t.isTransfer ? "text-sky-500" : Number(t.amount) >= 0 ? "text-emerald-500" : ""
+                          }`} tabIndex={0}>
+                            {t.isTransfer ? "±" : Number(t.amount) >= 0 ? "+" : "−"}{fmt(Math.abs(Number(t.amount)))}
+                          </div>
                         </div>
                       </motion.button>
                     );
@@ -2029,7 +2088,11 @@ function TransactionsTab({ theme, darkMode, toast }) {
       </Sheet>
 
       {/* Transaction detail / delete sheet */}
-      <Sheet open={!!detail} onClose={() => { setDetail(null); setCatEdit(null); }} title="Transaction" theme={theme}>
+      <Sheet open={!!detail} onClose={() => {
+        setDetail(null); setCatEdit(null); setSplitDraft(null);
+        if (receiptState.url) URL.revokeObjectURL(receiptState.url);
+        setReceiptState({ url: null, loading: false, error: null, uploading: false });
+      }} title="Transaction" theme={theme}>
         {detail && (() => {
           const Icon = CAT_ICONS[detail.category] || Briefcase;
           const color = CAT_COLORS[detail.category] || "#64748b";
@@ -2217,6 +2280,218 @@ function TransactionsTab({ theme, darkMode, toast }) {
                       Break this paycheck out by earnings, taxes, deductions,
                       and deposits — matches what your paystub shows.
                     </p>
+                  )}
+                </div>
+              )}
+
+              {/* Receipt attachment — hidden on scheduled rows (no bank
+                  record yet to receipt) AND on split children (child rows
+                  reference the parent's receipt, which prevents dupes and
+                  keeps the 1-per-txn cap meaningful). */}
+              {!detail.isScheduled && !(detail.note || "").startsWith("Split from #") && (
+                <div className={`rounded-2xl border ${theme.border} p-4`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider flex items-center gap-1.5`}>
+                      <ImageIcon className="w-3 h-3 text-pink-500" /> Receipt
+                    </div>
+                    {detail.hasAttachment && receiptState.url && (
+                      <div className="flex gap-2">
+                        <button type="button"
+                          onClick={() => {
+                            // Print flow: pop a minimal window with just the
+                            // image, then trigger the browser print dialog.
+                            const w = window.open("", "_blank");
+                            if (!w) return;
+                            w.document.write(`<!doctype html><html><head><title>Receipt — ${
+                              detail.merchant.replace(/</g, "&lt;")
+                            }</title><style>body{margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#fff}img{max-width:100%;max-height:100vh;object-fit:contain}@media print{body{min-height:auto}img{max-height:none}}</style></head><body><img src="${receiptState.url}" onload="setTimeout(()=>window.print(),200)"/></body></html>`);
+                            w.document.close();
+                          }}
+                          className="text-xs font-semibold text-pink-500 flex items-center gap-1">
+                          <Printer className="w-3 h-3" /> Print
+                        </button>
+                        <button type="button"
+                          onClick={async () => {
+                            if (!confirm("Delete this receipt?")) return;
+                            try {
+                              await api.deleteAttachment(detail.id);
+                              toast?.("Receipt deleted", "success");
+                              if (receiptState.url) URL.revokeObjectURL(receiptState.url);
+                              setReceiptState({ url: null, loading: false, error: null, uploading: false });
+                              setDetail(null);
+                              refreshAll();
+                            } catch (e) {
+                              toast?.("Failed: " + (e.message || ""), "error");
+                            }
+                          }}
+                          className="text-xs font-semibold text-rose-500 flex items-center gap-1">
+                          <Trash2 className="w-3 h-3" /> Delete
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  {/* Hidden input, triggered by the visible button. Accepts
+                      PNG / JPG only — the server rejects everything else. */}
+                  <input ref={receiptFileRef} type="file" accept="image/png,image/jpeg"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      e.target.value = "";
+                      if (!file) return;
+                      if (file.size > 5 * 1024 * 1024) {
+                        toast?.("Max 5 MB", "error");
+                        return;
+                      }
+                      setReceiptState(s => ({ ...s, uploading: true, error: null }));
+                      try {
+                        await api.uploadAttachment(detail.id, file);
+                        toast?.("Receipt uploaded", "success");
+                        // Refresh the object URL from the new file.
+                        if (receiptState.url) URL.revokeObjectURL(receiptState.url);
+                        const url = await api.fetchAttachment(detail.id);
+                        setReceiptState({ url, loading: false, error: null, uploading: false });
+                        refreshAll();
+                      } catch (e) {
+                        setReceiptState(s => ({ ...s, uploading: false, error: e.message }));
+                        toast?.("Upload failed: " + (e.message || ""), "error");
+                      }
+                    }}
+                  />
+                  {detail.hasAttachment ? (
+                    receiptState.loading ? (
+                      <p className={`text-xs ${theme.textSubtle}`}>Loading receipt…</p>
+                    ) : receiptState.error ? (
+                      <p className={`text-xs text-rose-500`}>Failed: {receiptState.error}</p>
+                    ) : receiptState.url ? (
+                      <div className="space-y-2">
+                        <img src={receiptState.url} alt="Receipt"
+                          className={`w-full rounded-lg border ${theme.border} max-h-80 object-contain bg-white`} />
+                        <button type="button"
+                          disabled={receiptState.uploading}
+                          onClick={() => receiptFileRef.current?.click()}
+                          className={`w-full py-2 rounded-lg text-xs font-semibold border ${theme.border} ${theme.hover} flex items-center justify-center gap-1.5 disabled:opacity-60`}>
+                          <Upload className="w-3 h-3" />
+                          {receiptState.uploading ? "Uploading…" : "Replace receipt"}
+                        </button>
+                      </div>
+                    ) : null
+                  ) : (
+                    <button type="button"
+                      disabled={receiptState.uploading}
+                      onClick={() => receiptFileRef.current?.click()}
+                      className={`w-full py-2 rounded-lg text-xs font-semibold border ${theme.border} ${theme.hover} text-pink-500 flex items-center justify-center gap-1.5 disabled:opacity-60`}>
+                      <Upload className="w-3 h-3" />
+                      {receiptState.uploading ? "Uploading…" : "Add receipt (PNG / JPG, 5 MB max)"}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Manual split — only on non-scheduled rows that haven't
+                  been split yet and aren't split children themselves.
+                  Sum of splits ≤ |parent|; residual stays on parent. */}
+              {!detail.isScheduled
+                && !(detail.note || "").includes("[Split into ")
+                && !(detail.note || "").startsWith("Split from #") && (
+                <div className={`rounded-2xl border ${theme.border} p-4`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider flex items-center gap-1.5`}>
+                      <Split className="w-3 h-3" /> Split transaction
+                    </div>
+                    {!splitDraft && (
+                      <button type="button"
+                        onClick={() => setSplitDraft([
+                          { category: "Other", amount: "", note: "" },
+                          { category: "Other", amount: "", note: "" },
+                        ])}
+                        className="text-xs font-semibold text-emerald-500 flex items-center gap-1">
+                        <Plus className="w-3 h-3" /> Split
+                      </button>
+                    )}
+                  </div>
+                  {!splitDraft ? (
+                    <p className={`text-xs ${theme.textSubtle}`}>
+                      Break this ${fmt(Math.abs(Number(detail.amount)))} charge into
+                      multiple categories (e.g. groceries + household from a
+                      single Target run). Any residual stays on this row.
+                    </p>
+                  ) : (
+                    (() => {
+                      const total = splitDraft.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+                      const parentAbs = Math.abs(Number(detail.amount));
+                      const remaining = parentAbs - total;
+                      const overflow = total > parentAbs + 0.001;
+                      return (
+                        <div className="space-y-2">
+                          {splitDraft.map((r, i) => (
+                            <div key={i} className="flex gap-1.5">
+                              <select value={r.category}
+                                onChange={e => setSplitDraft(d => d.map((x, idx) => idx === i ? { ...x, category: e.target.value } : x))}
+                                className={`${inputCls} flex-1`}>
+                                {catList.map(c => <option key={c} value={c}>{c}</option>)}
+                              </select>
+                              <input type="number" step="0.01" placeholder="Amount"
+                                value={r.amount}
+                                onChange={e => setSplitDraft(d => d.map((x, idx) => idx === i ? { ...x, amount: e.target.value } : x))}
+                                className={`${inputCls} w-24`} />
+                              {splitDraft.length > 1 && (
+                                <button type="button"
+                                  onClick={() => setSplitDraft(d => d.filter((_, idx) => idx !== i))}
+                                  className={`px-2 rounded-lg border ${theme.border} ${theme.hover}`}>
+                                  <X className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                          <button type="button"
+                            onClick={() => setSplitDraft(d => [...d, { category: "Other", amount: "", note: "" }])}
+                            className={`w-full py-1.5 rounded-lg text-xs font-semibold border ${theme.border} ${theme.hover} flex items-center justify-center gap-1`}>
+                            <Plus className="w-3 h-3" /> Add row
+                          </button>
+                          <div className={`flex justify-between text-xs pt-1 border-t ${theme.border}`}>
+                            <span className={theme.textSubtle}>Total / Parent</span>
+                            <span className={`font-semibold ${overflow ? "text-rose-500" : ""}`}>
+                              {fmt(total)} / {fmt(parentAbs)}
+                            </span>
+                          </div>
+                          <div className={`flex justify-between text-xs`}>
+                            <span className={theme.textSubtle}>Residual on parent</span>
+                            <span className="font-semibold">{fmt(Math.max(0, remaining))}</span>
+                          </div>
+                          <div className="flex gap-2 pt-1">
+                            <button type="button"
+                              onClick={() => setSplitDraft(null)}
+                              className={`flex-1 py-2 rounded-lg text-xs font-medium ${theme.textSubtle}`}>
+                              Cancel
+                            </button>
+                            <button type="button"
+                              disabled={splitSaving || overflow || total <= 0}
+                              onClick={async () => {
+                                setSplitSaving(true);
+                                try {
+                                  const splits = splitDraft
+                                    .filter(r => Number(r.amount) > 0)
+                                    .map(r => ({
+                                      category: r.category,
+                                      amount: Number(r.amount),
+                                      note: r.note || undefined,
+                                    }));
+                                  await api.splitTransaction(detail.id, splits);
+                                  toast?.(`Split into ${splits.length} rows`, "success");
+                                  setSplitDraft(null);
+                                  setDetail(null);
+                                  refreshAll();
+                                } catch (e) {
+                                  toast?.("Failed: " + (e.message || ""), "error");
+                                } finally { setSplitSaving(false); }
+                              }}
+                              className={`flex-1 py-2 rounded-lg text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-40`}>
+                              {splitSaving ? "Splitting…" : "Save split"}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })()
                   )}
                 </div>
               )}

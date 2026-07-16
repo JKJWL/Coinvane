@@ -1,6 +1,32 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { query, queryOne } from "../db.js";
 import { runRulesForTrigger } from "../automation-engine.js";
+import { promises as fs } from "fs";
+import path from "path";
+
+// Receipt attachments live on disk, one file per transaction. The path is
+// stored in DB but the file is authoritative. A DB row without a matching
+// file surfaces as a broken thumbnail (rare — only if operator manually
+// deleted the volume) and vice versa.
+const ATTACHMENTS_ROOT = process.env.ATTACHMENTS_ROOT || "/data/attachments";
+
+// Rate limits — enforced in-code against attachment_upload_log.
+//   3 uploads / transaction / 5 min
+//   50 uploads / user / 30 min
+const TXN_LIMIT_COUNT = 3;
+const TXN_LIMIT_WINDOW_SEC = 5 * 60;
+const USER_LIMIT_COUNT = 50;
+const USER_LIMIT_WINDOW_SEC = 30 * 60;
+
+// Only PNG / JPG. No PDF, no WebP.
+const ALLOWED_MIMES = new Set(["image/png", "image/jpeg", "image/jpg"]);
+const EXT_FOR = { "image/png": "png", "image/jpeg": "jpg", "image/jpg": "jpg" };
+
+// A row is a split child if its note was seeded by split_txn. Same note
+// prefix the automation action writes (see automation-actions.js).
+function isSplitChildNote(note) {
+  return typeof note === "string" && note.startsWith("Split from #");
+}
 
 // Update a manual account's balance by the given delta.
 // Plaid-linked accounts are NEVER touched here — their balances come from Plaid sync.
@@ -21,7 +47,8 @@ export default async function (app) {
   app.addHook("preHandler", app.authenticate);
 
   app.get("/", async (req) => {
-    const { limit = 100, offset = 0, category, accountId, search, from, to } = req.query;
+    const { limit = 100, offset = 0, category, accountId, search, from, to,
+            sort = "date_desc", hasReceipt } = req.query;
     const where = ["t.user_id = ?"];
     const params = [req.user.id];
     if (category)  { where.push("t.category = ?"); params.push(category); }
@@ -29,6 +56,9 @@ export default async function (app) {
     if (search)    { where.push("t.merchant LIKE ?"); params.push(`%${search}%`); }
     if (from)      { where.push("t.date >= ?"); params.push(from); }
     if (to)        { where.push("t.date <= ?"); params.push(to); }
+    if (hasReceipt === "1" || hasReceipt === "true") {
+      where.push("t.has_attachment = 1");
+    }
     // Scheduled rows are excluded from the main list — they show in the
     // dedicated /scheduled endpoint at the top of the Transactions tab.
     // Once adopted (is_scheduled flips to 0) they reappear here naturally.
@@ -51,16 +81,28 @@ export default async function (app) {
       )
     )`);
 
+    // Sort whitelist. `has_receipt` puts rows with an attachment first,
+    // then falls back to newest-first inside each group so the receipts
+    // list itself is still chronologically sensible.
+    const ORDER_BY = {
+      date_desc:     "t.date DESC, t.id DESC",
+      date_asc:      "t.date ASC, t.id ASC",
+      amount_asc:    "t.amount ASC, t.date DESC",
+      amount_desc:   "t.amount DESC, t.date DESC",
+      has_receipt:   "t.has_attachment DESC, t.date DESC, t.id DESC",
+    };
+    const orderBy = ORDER_BY[sort] || ORDER_BY.date_desc;
     params.push(Number(limit), Number(offset));
     const rows = await query(
       `SELECT t.id, t.date, t.merchant, t.category, t.amount, t.pending, t.note,
               t.is_transfer AS isTransfer, t.transfer_group_id AS transferGroupId,
               t.is_scheduled AS isScheduled,
               t.has_automation_error AS hasAutomationError,
+              t.has_attachment AS hasAttachment,
               t.paystub_json AS paystubJson,
               a.name AS accountName, a.id AS accountId, a.plaid_item_id AS plaidItemId
        FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
-       WHERE ${where.join(" AND ")} ORDER BY t.date DESC, t.id DESC LIMIT ? OFFSET ?`,
+       WHERE ${where.join(" AND ")} ORDER BY ${orderBy} LIMIT ? OFFSET ?`,
       params
     );
     // Parse the paystub blob into structured JSON server-side so the client
@@ -134,6 +176,7 @@ export default async function (app) {
               t.is_scheduled AS isScheduled,
               t.is_transfer AS isTransfer, t.transfer_group_id AS transferGroupId,
               t.has_automation_error AS hasAutomationError,
+              t.has_attachment AS hasAttachment,
               t.paystub_json AS paystubJson,
               a.name AS accountName, a.id AS accountId, a.plaid_item_id AS plaidItemId
        FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
@@ -263,6 +306,209 @@ export default async function (app) {
     return { ok: true };
   });
 
+  // ── Manual split ─────────────────────────────────────────────────
+  // Body: { splits: [{ category, amount, note? }, ...] }.
+  // Reduces the parent by sum(splits) and inserts N children on the
+  // same account/date/merchant, matching the semantics of the
+  // split_txn automation action so a manual split and an automated
+  // split behave identically downstream. Sum must be <= |parent|
+  // (partial split is allowed; residual stays on the parent).
+  //
+  // Manual splits fire the same "[Split into N]" note guard so a
+  // subsequent automation split-fire won't double up.
+  app.post("/:id/split", async (req, reply) => {
+    const splits = Array.isArray(req.body?.splits) ? req.body.splits : [];
+    const valid = splits
+      .filter(s => Number(s.amount) > 0 && String(s.category || "").trim().length > 0)
+      .slice(0, 20); // hard cap so a client bug can't insert thousands of rows
+    if (valid.length === 0) {
+      return reply.code(400).send({ error: "At least one split with category + amount > 0 required" });
+    }
+    const row = await queryOne(
+      `SELECT id, amount, note, account_id, date, merchant, has_attachment
+       FROM transactions WHERE id = ? AND user_id = ?`,
+      [req.params.id, req.user.id]
+    );
+    if (!row) return reply.code(404).send({ error: "not found" });
+    if (row.note && row.note.includes("[Split into ")) {
+      return reply.code(409).send({ error: "Already split" });
+    }
+    if (isSplitChildNote(row.note)) {
+      return reply.code(409).send({ error: "Can't split a split child — split the parent instead" });
+    }
+    const origAmount = Number(row.amount);
+    const sign = origAmount >= 0 ? 1 : -1;
+    const total = valid.reduce((s, x) => s + Number(x.amount), 0);
+    if (total > Math.abs(origAmount) + 0.01) {
+      return reply.code(400).send({
+        error: `Split total $${total.toFixed(2)} exceeds transaction amount $${Math.abs(origAmount).toFixed(2)}`,
+      });
+    }
+    const remaining = Math.abs(origAmount) - total;
+    const newNote = row.note
+      ? `${row.note} [Split into ${valid.length}]`
+      : `[Split into ${valid.length}]`;
+    await query(
+      "UPDATE transactions SET amount = ?, note = ? WHERE id = ? AND user_id = ?",
+      [sign * remaining, newNote, row.id, req.user.id]
+    );
+    for (const s of valid) {
+      await query(
+        `INSERT INTO transactions
+           (user_id, account_id, date, merchant, category, amount, note)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          req.user.id, row.account_id, row.date, row.merchant,
+          String(s.category).trim().slice(0, 64),
+          sign * Number(s.amount),
+          (s.note ? String(s.note).slice(0, 500) : `Split from #${row.id}`),
+        ]
+      );
+    }
+    return {
+      ok: true,
+      splitCount: valid.length,
+      parentRemaining: sign * remaining,
+    };
+  });
+
+  // ── Receipt attachments ──────────────────────────────────────────
+  // Upload (multipart, field name "file"). Enforces:
+  //   - PNG / JPG only, 5 MB max (multipart limits are the hard wall,
+  //     mime-check here is the soft wall so we can 400 with a friendly
+  //     message before the client tries again)
+  //   - per-txn: 3 uploads / 5 min
+  //   - per-user: 50 uploads / 30 min
+  //   - split children can't have their own receipt
+  //   - replace-on-reupload: old file unlinked, DB row overwritten
+  app.post("/:id/attachment", async (req, reply) => {
+    const row = await queryOne(
+      `SELECT id, note, attachment_path FROM transactions
+       WHERE id = ? AND user_id = ?`,
+      [req.params.id, req.user.id]
+    );
+    if (!row) return reply.code(404).send({ error: "not found" });
+    if (isSplitChildNote(row.note)) {
+      return reply.code(400).send({
+        error: "Split children can't hold receipts — attach the receipt to the parent transaction",
+      });
+    }
+
+    // Rate-limit windowing. Prune once, then count.
+    await query(
+      "DELETE FROM attachment_upload_log WHERE uploaded_at < (NOW() - INTERVAL 30 MINUTE)"
+    );
+    const userCount = await queryOne(
+      `SELECT COUNT(*) AS n FROM attachment_upload_log
+       WHERE user_id = ? AND uploaded_at > (NOW() - INTERVAL ? SECOND)`,
+      [req.user.id, USER_LIMIT_WINDOW_SEC]
+    );
+    if (Number(userCount?.n || 0) >= USER_LIMIT_COUNT) {
+      return reply.code(429).send({
+        error: `Too many uploads. Limit is ${USER_LIMIT_COUNT} per 30 minutes.`,
+        retryAfterSeconds: USER_LIMIT_WINDOW_SEC,
+      });
+    }
+    const txnCount = await queryOne(
+      `SELECT COUNT(*) AS n FROM attachment_upload_log
+       WHERE transaction_id = ? AND uploaded_at > (NOW() - INTERVAL ? SECOND)`,
+      [row.id, TXN_LIMIT_WINDOW_SEC]
+    );
+    if (Number(txnCount?.n || 0) >= TXN_LIMIT_COUNT) {
+      return reply.code(429).send({
+        error: `Too many uploads for this transaction. Limit is ${TXN_LIMIT_COUNT} per 5 minutes.`,
+        retryAfterSeconds: TXN_LIMIT_WINDOW_SEC,
+      });
+    }
+
+    // Pull the multipart file. @fastify/multipart auto-rejects if the
+    // request isn't multipart or the file exceeds fileSize.
+    let file;
+    try {
+      file = await req.file();
+    } catch (err) {
+      return reply.code(400).send({ error: "invalid upload: " + (err.message || err) });
+    }
+    if (!file) return reply.code(400).send({ error: "no file uploaded" });
+    const mime = String(file.mimetype || "").toLowerCase();
+    if (!ALLOWED_MIMES.has(mime)) {
+      // Drain the stream so the connection can be reused.
+      try { await file.toBuffer(); } catch { /* ignore */ }
+      return reply.code(400).send({ error: "PNG or JPG only" });
+    }
+    const buf = await file.toBuffer();
+    if (buf.length > 5 * 1024 * 1024) {
+      return reply.code(413).send({ error: "file too large (5 MB max)" });
+    }
+
+    // Write to disk. Path: /data/attachments/{userId}/{txnId}.{ext}
+    // Replace-on-reupload: if a previous file exists, unlink first (we
+    // may be swapping png ↔ jpg so the extension can change).
+    const userDir = path.join(ATTACHMENTS_ROOT, String(req.user.id));
+    await fs.mkdir(userDir, { recursive: true });
+    if (row.attachment_path) {
+      try { await fs.unlink(path.join(ATTACHMENTS_ROOT, row.attachment_path)); }
+      catch { /* file gone already, that's fine */ }
+    }
+    const ext = EXT_FOR[mime];
+    const relPath = path.join(String(req.user.id), `${row.id}.${ext}`).replace(/\\/g, "/");
+    const absPath = path.join(ATTACHMENTS_ROOT, relPath);
+    await fs.writeFile(absPath, buf);
+
+    await query(
+      `UPDATE transactions SET
+         has_attachment = 1, attachment_path = ?, attachment_mimetype = ?,
+         attachment_size = ?, attachment_uploaded_at = NOW()
+       WHERE id = ? AND user_id = ?`,
+      [relPath, mime, buf.length, row.id, req.user.id]
+    );
+    await query(
+      "INSERT INTO attachment_upload_log (user_id, transaction_id) VALUES (?, ?)",
+      [req.user.id, row.id]
+    );
+    return { ok: true, size: buf.length, mimetype: mime };
+  });
+
+  // Serve the raw image inline. Auth-gated (preHandler above), path never
+  // sent as-is to the filesystem — always looked up from the DB row.
+  app.get("/:id/attachment", async (req, reply) => {
+    const row = await queryOne(
+      `SELECT attachment_path, attachment_mimetype, attachment_size, merchant
+       FROM transactions WHERE id = ? AND user_id = ?`,
+      [req.params.id, req.user.id]
+    );
+    if (!row || !row.attachment_path) return reply.code(404).send({ error: "no attachment" });
+    const absPath = path.join(ATTACHMENTS_ROOT, row.attachment_path);
+    let data;
+    try { data = await fs.readFile(absPath); }
+    catch { return reply.code(404).send({ error: "file missing on disk" }); }
+    return reply
+      .header("Content-Type", row.attachment_mimetype || "application/octet-stream")
+      .header("Content-Length", row.attachment_size || data.length)
+      .header("Cache-Control", "private, no-cache")
+      .send(data);
+  });
+
+  app.delete("/:id/attachment", async (req, reply) => {
+    const row = await queryOne(
+      `SELECT attachment_path FROM transactions WHERE id = ? AND user_id = ?`,
+      [req.params.id, req.user.id]
+    );
+    if (!row) return reply.code(404).send({ error: "not found" });
+    if (row.attachment_path) {
+      try { await fs.unlink(path.join(ATTACHMENTS_ROOT, row.attachment_path)); }
+      catch { /* file gone already, that's fine */ }
+    }
+    await query(
+      `UPDATE transactions SET
+         has_attachment = 0, attachment_path = NULL, attachment_mimetype = NULL,
+         attachment_size = NULL, attachment_uploaded_at = NULL
+       WHERE id = ? AND user_id = ?`,
+      [req.params.id, req.user.id]
+    );
+    return { ok: true };
+  });
+
   // Dedicated paystub-detail endpoint. Body: { paystub: <object> | null }.
   // Null clears the attached detail. The client-owned schema is opaque here
   // — we just JSON-stringify and store. Guarded by user ownership.
@@ -320,13 +566,20 @@ export default async function (app) {
     // so we skip the reversal for them — otherwise deleting a scheduled
     // paycheck would fictitiously debit the account.
     const existing = await queryOne(
-      "SELECT account_id, amount, is_scheduled FROM transactions WHERE id = ? AND user_id = ?",
+      `SELECT account_id, amount, is_scheduled, attachment_path
+       FROM transactions WHERE id = ? AND user_id = ?`,
       [req.params.id, req.user.id]
     );
     await query("DELETE FROM transactions WHERE id = ? AND user_id = ?",
       [req.params.id, req.user.id]);
     if (existing && !existing.is_scheduled) {
       await adjustManualAccountBalance(req.user.id, existing.account_id, -Number(existing.amount));
+    }
+    // Best-effort file cleanup — a broken file left on disk isn't fatal
+    // (surfaces as a 404 on next fetch) but we prefer not to leak.
+    if (existing?.attachment_path) {
+      try { await fs.unlink(path.join(ATTACHMENTS_ROOT, existing.attachment_path)); }
+      catch { /* ignore */ }
     }
     return { ok: true };
   });

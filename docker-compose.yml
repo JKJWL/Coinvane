@@ -69,6 +69,10 @@ services:
       # Worker-only: how often Plaid is polled, in minutes. The backend
       # ignores it. Default in code is 60. See .env.example for guidance.
       SYNC_INTERVAL_MINUTES: ${SYNC_INTERVAL_MINUTES:-60}
+    volumes:
+      # Receipt attachments — shared with worker so both can read/write
+      # (worker only reads today, but we future-proof).
+      - attachments_data:/data/attachments
     ports:
       - "127.0.0.1:4000:4000"
 
@@ -81,6 +85,8 @@ services:
       redis:   { condition: service_healthy }
     command: ["node", "src/worker.js"]
     environment: *backend_env
+    volumes:
+      - attachments_data:/data/attachments
 
   frontend:
     build:
@@ -101,3 +107,4 @@ services:
 volumes:
   mariadb_data:
   redis_data:
+  attachments_data:

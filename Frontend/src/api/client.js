@@ -74,6 +74,36 @@ export const api = {
   // one of "income" | "expense" | "transfer".
   classifyTransaction: (id, classification) =>
     request("PATCH", `/transactions/${id}/classify`, { classification }),
+  // Manual split. body: { splits: [{ category, amount, note? }, ...] }
+  splitTransaction: (id, splits) =>
+    request("POST", `/transactions/${id}/split`, { splits }),
+  // Receipt attachments. Upload uses multipart (bespoke — request() only
+  // does JSON). Download returns a signed same-origin URL string.
+  uploadAttachment: async (id, file) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(`${API_URL}/transactions/${id}/attachment`, {
+      method: "POST",
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+      body: fd,
+    });
+    const ct = res.headers.get("content-type") || "";
+    const data = ct.includes("application/json") ? await res.json() : await res.text();
+    if (!res.ok) throw new Error(data?.error || res.statusText);
+    return data;
+  },
+  // Fetches the receipt as a blob (authed) and returns an object URL the
+  // browser can drop into <img src>. Caller is responsible for
+  // URL.revokeObjectURL when the image is no longer displayed.
+  fetchAttachment: async (id) => {
+    const res = await fetch(`${API_URL}/transactions/${id}/attachment`, {
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+    });
+    if (!res.ok) throw new Error("failed to load attachment");
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
+  },
+  deleteAttachment: (id) => request("DELETE", `/transactions/${id}/attachment`),
 
   // ── Automations (per-user rule engine) ─────────────────────────
   getAutomationVocab:   () => request("GET",    "/automations/vocab"),

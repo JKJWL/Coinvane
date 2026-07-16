@@ -411,6 +411,36 @@ const SCHEMA = [
   // completed goals disappear from the main list without losing
   // history / audit context.
   `ALTER TABLE goals ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP NULL`,
+
+  // ── Receipt attachments (1:1 per transaction) ─────────────────────
+  // Filesystem-backed. The columns are the entire row metadata; the
+  // actual image lives at attachment_path (relative to the shared
+  // uploads volume mounted into backend + worker at /data/attachments).
+  //   - Only PNG / JPG. Enforced at upload.
+  //   - Max 5 MB. Enforced at upload.
+  //   - Replace-on-reupload: same row updated, old file unlinked.
+  //   - Split children can't have their own — enforced by checking
+  //     `note LIKE '[Split from #%'` at upload time. The parent gets
+  //     the receipt; children reference the parent for print.
+  //   - has_attachment denormalised for fast "receipts first" sorts.
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS has_attachment TINYINT DEFAULT 0`,
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS attachment_path VARCHAR(255) NULL`,
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS attachment_mimetype VARCHAR(64) NULL`,
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS attachment_size INT NULL`,
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS attachment_uploaded_at TIMESTAMP NULL`,
+
+  // Upload log — used purely for rate-limit windowing. Two windows:
+  //   3 uploads per transaction per 5 minutes
+  //   50 uploads per user per 30 minutes
+  // Rows older than 30 minutes are pruned lazily on each rate check.
+  `CREATE TABLE IF NOT EXISTS attachment_upload_log (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    transaction_id INT NOT NULL,
+    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_user_time (user_id, uploaded_at),
+    INDEX idx_txn_time (transaction_id, uploaded_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];
 
 const DEFAULT_CATEGORIES = [
