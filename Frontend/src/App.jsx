@@ -1151,22 +1151,46 @@ function MobileInsights({ cashflow, budgets, theme, darkMode }) {
 // Desktop-only KPI (mobile has its own MobileSpendingPulse). Owns its
 // period-chip state and re-fetches on chip change. When `expanded` is
 // true, the chart body swells to fill the fullscreen modal.
-function CashflowCard({ theme, darkMode, expanded, onExpand }) {
+function CashflowCard({ theme, darkMode, expanded, onExpand, showForecast, onForecastToggle }) {
   const [range, setRange] = useState("1y");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
-  useEffect(() => {
+  const [showAddOneOff, setShowAddOneOff] = useState(false);
+  // Number of forecast months to request. 3 keeps the chart legible; the
+  // fullscreen expanded view stretches to 6 for a longer horizon.
+  const forecastMonths = showForecast ? (expanded ? 6 : 3) : 0;
+  const reload = useCallback(() => {
     let alive = true;
     setLoading(true);
-    api.getCashflow(kpiRangeToDates(range))
+    api.getCashflow({ ...kpiRangeToDates(range), ...(forecastMonths ? { forecastMonths } : {}) })
       .then(r => { if (alive) { setRows(Array.isArray(r) ? r : []); setLoading(false); } })
       .catch(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [range]);
-  const data = rows.map(c => ({
-    month: (c.month || "").slice(5) || c.month,
-    income: Number(c.income), spending: Number(c.spending),
-  }));
+  }, [range, forecastMonths]);
+  useEffect(() => { return reload(); }, [reload]);
+  // Split each month into (income, spending) + (forecastIncome,
+  // forecastSpending). Recharts renders both series with different
+  // stroke styles so past + future read as one continuous shape.
+  const data = rows.map(c => {
+    const isForecast = !!c.forecast;
+    return {
+      month: (c.month || "").slice(5) || c.month,
+      income: isForecast ? null : Number(c.income),
+      spending: isForecast ? null : Number(c.spending),
+      forecastIncome:   isForecast ? Number(c.income)   : null,
+      forecastSpending: isForecast ? Number(c.spending) : null,
+      _forecast: isForecast,
+    };
+  });
+  // For a seamless join between historic and forecast, duplicate the
+  // last historic point into the forecast series so its dashed line
+  // starts from that vertex (otherwise Recharts leaves a gap).
+  const bridgeIdx = data.findIndex(d => d._forecast);
+  if (bridgeIdx > 0) {
+    const prev = data[bridgeIdx - 1];
+    prev.forecastIncome   = prev.income;
+    prev.forecastSpending = prev.spending;
+  }
   const tipStyle = {
     borderRadius: "12px",
     border: `1px solid ${theme.tooltipBorder}`,
@@ -1179,10 +1203,32 @@ function CashflowCard({ theme, darkMode, expanded, onExpand }) {
       <div className="flex items-start justify-between gap-3 mb-4 flex-wrap">
         <div>
           <h3 className="font-semibold">Cashflow</h3>
-          <p className={`text-xs ${theme.textSubtle}`}>Income vs spending</p>
+          <p className={`text-xs ${theme.textSubtle}`}>
+            Income vs spending
+            {showForecast && forecastMonths > 0 && <> · <span className="opacity-70">dashed = forecast</span></>}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <KpiPeriodChips range={range} setRange={setRange} theme={theme} darkMode={darkMode} expanded={expanded} exclude={["mtd"]} />
+          {/* One-off adjustment: opens the schedule form so the user can
+              add an expected inflow / outflow the forecast doesn't know
+              about yet. Manual fallback for the auto-forecast. */}
+          <button type="button" onClick={() => setShowAddOneOff(true)}
+            title="Add a one-off future adjustment"
+            className={`hidden lg:inline-flex p-1.5 rounded-lg border ${theme.border} ${theme.hover}`}>
+            <Plus className="w-3.5 h-3.5" />
+          </button>
+          {/* Toggle for the forecast overlay. Persisted to the user row
+              so it's remembered across devices. */}
+          {onForecastToggle && (
+            <button type="button" onClick={onForecastToggle}
+              title={showForecast ? "Hide forecast" : "Show forecast"}
+              className={`hidden lg:inline-flex p-1.5 rounded-lg border ${theme.border} ${theme.hover} ${
+                showForecast ? "text-emerald-500" : theme.textMuted
+              }`}>
+              <Sparkles className="w-3.5 h-3.5" />
+            </button>
+          )}
           {!expanded && onExpand && (
             <button type="button" onClick={onExpand}
               title="Expand"
@@ -1208,9 +1254,15 @@ function CashflowCard({ theme, darkMode, expanded, onExpand }) {
               </defs>
               <XAxis dataKey="month" tick={{ fontSize: 11 }} stroke={theme.chartAxis} />
               <YAxis tick={{ fontSize: 11 }} stroke={theme.chartAxis} tickFormatter={fmtShort} />
-              <Tooltip contentStyle={tipStyle} formatter={v => fmt(v)} />
-              <Area type="monotone" dataKey="income"   stroke="#10b981" fill={`url(#gInc-${expanded ? "big" : "small"})`} strokeWidth={2} isAnimationActive={!loading} />
-              <Area type="monotone" dataKey="spending" stroke="#f43f5e" fill={`url(#gSpd-${expanded ? "big" : "small"})`} strokeWidth={2} isAnimationActive={!loading} />
+              <Tooltip contentStyle={tipStyle} formatter={v => v == null ? "—" : fmt(v)} />
+              <Area type="monotone" dataKey="income"   stroke="#10b981" fill={`url(#gInc-${expanded ? "big" : "small"})`} strokeWidth={2} isAnimationActive={!loading} connectNulls={false} />
+              <Area type="monotone" dataKey="spending" stroke="#f43f5e" fill={`url(#gSpd-${expanded ? "big" : "small"})`} strokeWidth={2} isAnimationActive={!loading} connectNulls={false} />
+              {showForecast && forecastMonths > 0 && (
+                <>
+                  <Area type="monotone" dataKey="forecastIncome"   stroke="#10b981" strokeDasharray="5 4" strokeOpacity={0.8} fill="transparent" strokeWidth={2} isAnimationActive={!loading} connectNulls={false} />
+                  <Area type="monotone" dataKey="forecastSpending" stroke="#f43f5e" strokeDasharray="5 4" strokeOpacity={0.8} fill="transparent" strokeWidth={2} isAnimationActive={!loading} connectNulls={false} />
+                </>
+              )}
             </AreaChart>
           </ResponsiveContainer>
         </div>
@@ -1219,7 +1271,96 @@ function CashflowCard({ theme, darkMode, expanded, onExpand }) {
           {loading ? "Loading…" : "No cashflow data in this range"}
         </div>
       )}
+      <OneOffAdjustmentSheet open={showAddOneOff}
+        onClose={() => setShowAddOneOff(false)}
+        onSaved={() => { setShowAddOneOff(false); reload(); }}
+        theme={theme} darkMode={darkMode} />
     </div>
+  );
+}
+
+// ─── One-off future cashflow adjustment ───────────────────────────────────────
+// Manual fallback for the forecast overlay. Creates a scheduled transaction
+// with a "[Forecast]" tag so the user can find + delete these later. Uses
+// the existing scheduled endpoint — no new backend surface.
+function OneOffAdjustmentSheet({ open, onClose, onSaved, theme, darkMode }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [form, setForm] = useState({ date: today, label: "", amount: "", direction: "out" });
+  const [saving, setSaving] = useState(false);
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-emerald-500`;
+
+  useEffect(() => {
+    if (!open) return;
+    setForm({ date: today, label: "", amount: "", direction: "out" });
+  }, [open]);
+
+  const save = async () => {
+    if (!form.label.trim() || !form.amount) return;
+    setSaving(true);
+    try {
+      const signed = (form.direction === "in" ? 1 : -1) * Math.abs(Number(form.amount));
+      await api.createScheduledTransaction({
+        date: form.date,
+        merchant: `${form.label.trim()} [Forecast]`,
+        category: form.direction === "in" ? "Other Income" : "Other",
+        amount: signed,
+      });
+      onSaved?.();
+    } catch {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Sheet open={open} onClose={onClose} title="One-off adjustment" theme={theme}>
+      <div className="space-y-3">
+        <p className={`text-xs ${theme.textSubtle}`}>
+          Add an expected inflow or outflow the forecast doesn't know about.
+          Saved as a scheduled transaction; delete it any time.
+        </p>
+        <div className="grid grid-cols-2 gap-2 p-1 rounded-full bg-slate-100 dark:bg-slate-800">
+          {["out", "in"].map(dir => (
+            <button key={dir} onClick={() => setForm({ ...form, direction: dir })}
+              className={`py-1.5 rounded-full text-xs font-semibold ${
+                form.direction === dir
+                  ? (dir === "in" ? "bg-emerald-500 text-white" : "bg-rose-500 text-white")
+                  : "text-slate-500"
+              }`}>
+              {dir === "in" ? "Inflow" : "Outflow"}
+            </button>
+          ))}
+        </div>
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Label</label>
+          <input value={form.label} onChange={e => setForm({ ...form, label: e.target.value })}
+            placeholder="Bonus, refund, one-off bill…" className={inputCls} />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Amount</label>
+            <input type="number" step="0.01" value={form.amount}
+              onChange={e => setForm({ ...form, amount: e.target.value })}
+              placeholder="0.00" className={inputCls} />
+          </div>
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Date</label>
+            <input type="date" value={form.date}
+              onChange={e => setForm({ ...form, date: e.target.value })}
+              className={inputCls} />
+          </div>
+        </div>
+        <div className="flex gap-2 pt-2">
+          <button type="button" onClick={onClose}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.textSubtle}`}>
+            Cancel
+          </button>
+          <button type="button" onClick={save} disabled={saving || !form.label.trim() || !form.amount}
+            className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-60">
+            {saving ? "Saving…" : "Add"}
+          </button>
+        </div>
+      </div>
+    </Sheet>
   );
 }
 
@@ -1324,7 +1465,7 @@ function SpendingByCategoryCard({ theme, darkMode, expanded, onExpand }) {
 // ─── KPI fullscreen modal ─────────────────────────────────────────────────────
 // Desktop-only. Wraps a card component in a centered overlay so the chart
 // fills most of the viewport. Escape / backdrop click closes.
-function KpiFullscreenModal({ kind, onClose, theme, darkMode }) {
+function KpiFullscreenModal({ kind, onClose, theme, darkMode, showForecast, onForecastToggle }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -1341,7 +1482,8 @@ function KpiFullscreenModal({ kind, onClose, theme, darkMode }) {
           className={`absolute -top-3 -right-3 z-10 w-8 h-8 rounded-full ${theme.surface} border ${theme.border} flex items-center justify-center shadow-lg`}>
           <X className="w-4 h-4" />
         </button>
-        {kind === "cashflow" && <CashflowCard theme={theme} darkMode={darkMode} expanded />}
+        {kind === "cashflow" && <CashflowCard theme={theme} darkMode={darkMode} expanded
+          showForecast={showForecast} onForecastToggle={onForecastToggle} />}
         {kind === "spending" && <SpendingByCategoryCard theme={theme} darkMode={darkMode} expanded />}
         {kind === "networth" && <NetWorthChart theme={theme} darkMode={darkMode} variant="card" />}
       </div>
@@ -1353,6 +1495,7 @@ function KpiFullscreenModal({ kind, onClose, theme, darkMode }) {
 // ─── Overview Tab ─────────────────────────────────────────────────────────────
 function OverviewTab({ theme, darkMode, onNavigate }) {
   const { summary, cashflow, byCategory, transactions, budgets } = useData();
+  const { user: authUser, refresh: refreshUser } = useAuth();
   const net  = Number(summary?.netWorth   || 0);
   const cash = Number(summary?.cash       || 0);
   const cred = Number(summary?.credit     || 0);
@@ -1361,6 +1504,19 @@ function OverviewTab({ theme, darkMode, onNavigate }) {
   // Desktop KPI expand — "cashflow" | "spending" | "networth" | null.
   // Mobile falls through to inline behaviour (no modal).
   const [expandedKpi, setExpandedKpi] = useState(null);
+  // Cashflow forecast visibility — sourced from the user row and toggled
+  // via PATCH /auth/me. Local optimistic state so the toggle feels
+  // instant; refreshUser syncs the truth after the round trip.
+  const [showForecast, setShowForecast] = useState(!!authUser?.show_cashflow_forecast);
+  useEffect(() => { setShowForecast(!!authUser?.show_cashflow_forecast); }, [authUser?.show_cashflow_forecast]);
+  const toggleForecast = async () => {
+    const next = !showForecast;
+    setShowForecast(next);
+    try {
+      await api.updateMe({ show_cashflow_forecast: next });
+      refreshUser?.();
+    } catch { setShowForecast(!next); }
+  };
 
   return (
     <motion.div initial="hidden" animate="visible" variants={{ visible: { transition: { staggerChildren: 0.06 } } }} className="space-y-4 lg:space-y-6">
@@ -1413,7 +1569,9 @@ function OverviewTab({ theme, darkMode, onNavigate }) {
             if (e.target.closest("button")) return;
             setExpandedKpi("cashflow");
           }} className="cursor-pointer">
-            <CashflowCard theme={theme} darkMode={darkMode} onExpand={() => setExpandedKpi("cashflow")} />
+            <CashflowCard theme={theme} darkMode={darkMode}
+              onExpand={() => setExpandedKpi("cashflow")}
+              showForecast={showForecast} onForecastToggle={toggleForecast} />
           </div>
         </motion.div>
 
@@ -1428,7 +1586,8 @@ function OverviewTab({ theme, darkMode, onNavigate }) {
       </div>
 
       <KpiFullscreenModal kind={expandedKpi} onClose={() => setExpandedKpi(null)}
-        theme={theme} darkMode={darkMode} />
+        theme={theme} darkMode={darkMode}
+        showForecast={showForecast} onForecastToggle={toggleForecast} />
 
       {/* Quick access */}
       <motion.div variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0 } }}>

@@ -617,7 +617,7 @@ export default async function (app) {
     // Optional `from` / `to` (YYYY-MM-DD) let the dashboard KPI's period
     // chip drive the range. Default remains the last 12 months so
     // callers with no params keep the old behaviour.
-    const { from, to } = req.query || {};
+    const { from, to, forecastMonths } = req.query || {};
     const params = [req.user.id];
     let dateClause = "";
     if (from) { dateClause += " AND t.date >= ?"; params.push(from); }
@@ -625,7 +625,7 @@ export default async function (app) {
     if (!from && !to) {
       dateClause += " AND t.date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)";
     }
-    return query(
+    const historic = await query(
       `SELECT DATE_FORMAT(t.date, '%Y-%m') AS month,
               SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END) AS income,
               SUM(CASE WHEN t.amount < 0 THEN ABS(t.amount) ELSE 0 END) AS spending
@@ -639,6 +639,66 @@ export default async function (app) {
        GROUP BY month ORDER BY month`,
       params
     );
+    // Forecast: aggregate future scheduled transactions + open bill
+    // cycles (unpaid, un-skipped) into month buckets. Only fires when
+    // forecastMonths is passed and > 0. Clamped to 12 as an upper bound
+    // so a malicious client can't ask for 100 years.
+    const fm = Math.max(0, Math.min(12, Number(forecastMonths) || 0));
+    if (fm > 0) {
+      // Windows: current month through +fm months (inclusive of the
+      // current month so partial-month scheduled items merge with the
+      // historic bar rather than duplicating it).
+      const now = new Date();
+      const startYm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      const endMonth = new Date(now.getFullYear(), now.getMonth() + fm, 1);
+      const endYm = `${endMonth.getFullYear()}-${String(endMonth.getMonth() + 1).padStart(2, "0")}`;
+
+      // Scheduled transactions in window.
+      const scheduled = await query(
+        `SELECT DATE_FORMAT(date, '%Y-%m') AS month,
+                SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS income,
+                SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) AS spending
+         FROM transactions
+         WHERE user_id = ? AND is_scheduled = 1
+           AND DATE_FORMAT(date, '%Y-%m') BETWEEN ? AND ?
+         GROUP BY month`,
+        [req.user.id, startYm, endYm]
+      );
+      // Open bill cycles due in window (they represent expected outflows).
+      const billOutflows = await query(
+        `SELECT DATE_FORMAT(bc.due_date, '%Y-%m') AS month,
+                SUM(bc.expected_amount) AS spending
+         FROM bill_cycles bc
+         JOIN bills b ON b.id = bc.bill_id AND b.archived_at IS NULL
+         WHERE bc.user_id = ?
+           AND bc.paid_at IS NULL AND bc.skipped = 0
+           AND DATE_FORMAT(bc.due_date, '%Y-%m') BETWEEN ? AND ?
+         GROUP BY month`,
+        [req.user.id, startYm, endYm]
+      );
+
+      // Merge everything by month. If a month already appears in
+      // historic (e.g. current month), we overlay forecast additions.
+      const buckets = new Map();
+      for (const h of historic) buckets.set(h.month, { month: h.month, income: Number(h.income), spending: Number(h.spending), forecast: false });
+      for (const s of scheduled) {
+        const cur = buckets.get(s.month) || { month: s.month, income: 0, spending: 0, forecast: true };
+        cur.income   += Number(s.income);
+        cur.spending += Number(s.spending);
+        // If it's future-only (no historic anchor) mark forecast.
+        if (!buckets.has(s.month)) cur.forecast = true;
+        buckets.set(s.month, cur);
+      }
+      for (const bo of billOutflows) {
+        const cur = buckets.get(bo.month) || { month: bo.month, income: 0, spending: 0, forecast: true };
+        cur.spending += Number(bo.spending);
+        if (!buckets.has(bo.month)) cur.forecast = true;
+        buckets.set(bo.month, cur);
+      }
+      // Return sorted.
+      return [...buckets.values()].sort((a, b) => a.month.localeCompare(b.month));
+    }
+    return historic;
   });
 
   // ── Recategorise all transactions sharing a merchant name + save rule.

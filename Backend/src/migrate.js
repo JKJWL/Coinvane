@@ -479,6 +479,11 @@ const SCHEMA = [
   //   paid_at NULL  = unpaid (may be upcoming or overdue)
   //   paid_at set   = paid, with paid_amount + variance_pct populated
   //   skipped = 1   = user marked "skip this cycle" (doesn't count as unpaid)
+  // ── User preference: cashflow forecast visibility ───────────────
+  // Default TRUE so new users see it out of the box. Settings-panel
+  // toggle just PATCHes /auth/me with this field.
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS show_cashflow_forecast BOOLEAN DEFAULT TRUE`,
+
   `CREATE TABLE IF NOT EXISTS bill_cycles (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,

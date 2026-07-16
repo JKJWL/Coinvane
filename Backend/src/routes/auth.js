@@ -59,6 +59,7 @@ function userPayload(u) {
     notify_goal_milestone:  u.notify_goal_milestone  === undefined ? true  : !!u.notify_goal_milestone,
     // Misc prefs
     privacy_mode:    !!u.privacy_mode,
+    show_cashflow_forecast: u.show_cashflow_forecast === undefined ? true : !!u.show_cashflow_forecast,
     week_start:      Number(u.week_start ?? 0),
     email_frequency: u.email_frequency || "daily",
     email_weekday:   Number(u.email_weekday ?? 1),
@@ -243,7 +244,7 @@ export default async function (app) {
         notify_income, income_threshold,
         notify_budget_warning, budget_warning_pct,
         notify_budget_exceeded, notify_goal_milestone,
-        privacy_mode, week_start, email_frequency, email_weekday`;
+        privacy_mode, show_cashflow_forecast, week_start, email_frequency, email_weekday`;
 
   app.get("/me", { preHandler: [app.authenticate] }, async (req) => {
     const u = await queryOne(`SELECT ${ME_COLUMNS} FROM users WHERE id = ?`, [req.user.id]);
@@ -282,6 +283,7 @@ export default async function (app) {
          notify_budget_exceeded = COALESCE(?, notify_budget_exceeded),
          notify_goal_milestone = COALESCE(?, notify_goal_milestone),
          privacy_mode = COALESCE(?, privacy_mode),
+         show_cashflow_forecast = COALESCE(?, show_cashflow_forecast),
          week_start = COALESCE(?, week_start),
          email_frequency = COALESCE(?, email_frequency),
          email_weekday = COALESCE(?, email_weekday)
@@ -293,7 +295,8 @@ export default async function (app) {
         bool(b.notify_income),          int(b.income_threshold, 1, 1_000_000),
         bool(b.notify_budget_warning),  int(b.budget_warning_pct, 1, 99),
         bool(b.notify_budget_exceeded), bool(b.notify_goal_milestone),
-        bool(b.privacy_mode),           int(b.week_start, 0, 6),
+        bool(b.privacy_mode),           bool(b.show_cashflow_forecast),
+        int(b.week_start, 0, 6),
         freq,                           int(b.email_weekday, 0, 6),
         req.user.id,
       ]
