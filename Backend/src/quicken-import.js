@@ -97,7 +97,7 @@ function normalizeQifRecord(r) {
 // Quicken's D07/05'2024 apostrophe-year form.
 function parseQifDate(s) {
   if (!s) return null;
-  const cleaned = String(s).replace(/[^\d\/'\-]/g, "").replace("'", "/");
+  const cleaned = String(s).replace(/[^\d\/'\-]/g, "").replace(/'/g, "/");
   const parts = cleaned.split(/[\/\-]/).map(p => p.trim()).filter(Boolean);
   if (parts.length !== 3) return null;
   let [a, b, c] = parts;

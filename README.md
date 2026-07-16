@@ -60,7 +60,9 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 - **Manual classification override** — flip an already-posted transaction between Income / Expense / Transfer when Plaid gets it wrong, without deleting and re-entering.
 - **Split transactions** — carve one transaction into multiple category slices (e.g. a Costco run split across Groceries / Household / Fuel). Child rows inherit the merchant + date; the parent becomes a container.
 - **Receipt attachments** — attach one image (PNG or JPG, ≤5MB) per transaction from the detail sheet, view or reprint later. Uploads are rate-limited (3 per transaction per 5 min, 50 per user per 30 min); a new upload replaces the old file to conserve disk. A pink image marker appears next to any transaction that has a receipt, and the transaction list has a **Has receipt** sort that groups them at the top.
+- **Reconciliation** — Quicken-style statement match on any cash or credit account. Enter the statement date + ending balance, tick off transactions until the running difference hits zero, then finalize to lock the pass. Reconciled transactions are frozen with a `reconciliation_id` so a later pass can't re-tick them.
 - **CSV import / export** — full transaction roundtrip from the Settings → Data section. CSV columns: `date, merchant, category, amount, account, note, pending`. On import, accounts are matched by name; unknown names fall back to manual rows.
+- **QIF / OFX / QFX import** — dedicated migration path for Quicken, Mint, or any bank export that only speaks the old formats. Auto-detects the format from the file, binds every imported row to a chosen account, and shifts the manual balance to match.
 
 ### Budgets
 - **Master period** — one reset rhythm drives every budget AND the credit-usage tracker. Pick a cadence on the Income card (weekly, bi-weekly, semi-monthly, monthly, yearly, or every N days from a date) and "this week's groceries", "this week's income", and "this week's allocation total" all line up exactly. The "Weekly" option's reset day follows your global *Week starts on* setting (any day of the week, set in Settings → Appearance).
@@ -78,7 +80,9 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 - **Savings goals** with target / progress
 - **Contribute** button + quick-add chips for deposits or withdrawals (negative amounts clamp at $0)
 - **Link to a bank account** — when linked, the goal's saved amount is the linked account's live balance, no manual contributions needed (and they're explicitly refused server-side to keep the source of truth single)
-- **Loan tracker** — a second section under Goals for mortgages, auto loans, student loans, credit-card balances you're paying down. Principal, rate, term, minimum + optional extra payment. Interactive amortization with an extra-payment slider that recomputes payoff date and total interest live. Choose a **snowball** (smallest balance first) or **avalanche** (highest rate first) strategy across all your loans; the app highlights which one to attack next.
+- **Loan tracker** — a second section under Goals for mortgages, auto loans, student loans, credit-card balances you're paying down. Principal, rate, term, minimum + optional extra payment. Interactive amortization with an extra-payment slider that recomputes payoff date and total interest live.
+- **Mortgage escrow breakdown (PITI)** — separate monthly amounts for property tax, homeowners insurance, PMI, and other escrow. Loan cards render a proportional stacked bar and full PITI monthly total when any escrow is set.
+- **Unified debt simulator** — one extra $/mo slider applied across every active loan, with snowball-style cascading of each cleared debt's minimum onto the current target. Toggle Avalanche vs Snowball to see the target flip and the "months / interest saved" headline update live.
 - **Themed delete confirmation** instead of the native browser dialog
 
 ### Bills
@@ -96,6 +100,7 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 
 ### Investments
 - **Holdings, gains/losses** — brokerage syncing via Plaid
+- **Lot tracking + cost basis** — each holding is expandable into per-purchase lots (acquired date, quantity, cost-per-share). Sell any lot with a quantity + price; the app records the realized gain, decrements the lot, and flags **wash sales** when the same security was purchased within ±30 days of the loss. Realized YTD is exposed on its own KPI card for Schedule D prep.
 
 ### Notifications & per-user settings
 - **Per-type toggles** — large transactions, income received ("Congrats You Got Paid!"), approaching budget limit, budget exceeded, goal milestones. Each independently on/offable.
@@ -113,6 +118,18 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 - **Notification cleanup** — bulk-delete in-app notifications older than N days. Audit-logged as a major event.
 - **Audit log viewer** — last 100 entries with IP + offline GeoIP location. Routine entries auto-prune at 48 h; major entries (role changes, user deletes, bulk wipes, settings edits) survive 7 days and render with a red left border.
 - **Per-user test email** — owner-only Mail icon next to each Members row sends a sample digest (with a "this is a test" banner) to verify SMTP delivery to that user without logging in as them.
+
+### Assets & valuables
+- **Non-account holdings** — vehicles, boats, jewelry, art, collectibles, property. Track acquired value, current value, and (optionally) a depreciation curve. All roll into net worth alongside your bank accounts.
+- **Three depreciation methods** — `none` (you maintain the value manually), `straight-line` (drops evenly from acquired to salvage over N years), `declining-balance` (X% of remaining value each year). "Refresh depreciation" snaps the current value to today's projected number in one click.
+
+### Tax reporting
+- **IRS Schedule tagging on categories** — map each category to Schedule A (itemized), B (interest/dividends), C (business), D (capital gains), or E (rental/royalty). Every transaction in that category rolls into the year-end tax summary.
+- **Per-transaction deductible override** — flag any individual transaction as deductible from its detail sheet; ungrouped tags roll to Schedule A.
+- **Year-end tax summary PDF** — 6th report in the PDF dropdown. Grouped by Schedule with per-category detail and totals, formatted to hand to a preparer.
+
+### Custom reports
+- **Pivot builder in Settings → Data** — pick 1-2 dimensions (category / merchant / account / month / year), a measure (sum / count / average), a side (expense / income / all), an optional date range, and credit-card include/exclude. Save configurations as one-click chips.
 
 ### Misc
 - **Notes** — free-form notes, content encrypted at rest
@@ -596,6 +613,7 @@ coinvane/
 │   │   ├── queue.js               # BullMQ queue/job helpers
 │   │   ├── sync.js                # Plaid sync orchestration
 │   │   ├── mailer.js              # SMTP / Nodemailer + notification-digest template
+│   │   ├── quicken-import.js      # QIF / OFX / QFX parsers for Quicken / Mint migration
 │   │   └── routes/
 │   │       ├── auth.js            # Google SSO, /me, members, role updates, test-email
 │   │       ├── accounts.js
@@ -608,7 +626,11 @@ coinvane/
 │   │       ├── investments.js
 │   │       ├── plaid.js
 │   │       ├── admin.js           # Owner/admin admin-panel surface (info, sync-interval, allowlist, audit, cleanup)
-│   │       └── export.js          # PDF full-export (pdfkit, server-side, no headless browser)
+│   │       ├── reconciliations.js # Quicken-style statement match (draft/locked passes)
+│   │       ├── tax.js             # Year-end IRS Schedule roll-up
+│   │       ├── reports.js         # Custom pivot builder + saved reports
+│   │       ├── assets.js          # Vehicles / valuables + depreciation
+│   │       └── export.js          # PDF dropdown: full / monthly / yoy / budgets / bills-loans / tax-summary
 │   ├── Dockerfile
 │   └── package.json
 ├── Frontend/
