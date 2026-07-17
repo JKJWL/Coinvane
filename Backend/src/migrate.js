@@ -622,6 +622,23 @@ const SCHEMA = [
     INDEX idx_user_active (user_id, archived_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
+  // Damage / impairment events for an asset. Each row is one incident
+  // (fender-bender, hail, scratch) with a positive value_impact that is
+  // subtracted from the asset's current_value at the time of logging.
+  // Repair events use a NEGATIVE value_impact to add value back.
+  `CREATE TABLE IF NOT EXISTS asset_damage_events (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    asset_id INT NOT NULL,
+    event_date DATE NOT NULL,
+    description VARCHAR(255) NOT NULL,
+    value_impact DECIMAL(14,2) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE,
+    INDEX idx_asset (asset_id, event_date)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
   // ── Saved reports (Stage 3c: custom report builder) ──────────────
   `CREATE TABLE IF NOT EXISTS saved_reports (
     id INT AUTO_INCREMENT PRIMARY KEY,

@@ -153,6 +153,9 @@ export const api = {
   updateAsset: (id, data) => request("PATCH", `/assets/${id}`, data),
   refreshAssetValue: (id) => request("POST", `/assets/${id}/refresh`),
   deleteAsset: (id) => request("DELETE", `/assets/${id}`),
+  listAssetDamage: (id) => request("GET", `/assets/${id}/damage`),
+  logAssetDamage: (id, data) => request("POST", `/assets/${id}/damage`, data),
+  deleteAssetDamage: (eventId) => request("DELETE", `/assets/damage/${eventId}`),
 
   // ── Automations (per-user rule engine) ─────────────────────────
   getAutomationVocab:   () => request("GET",    "/automations/vocab"),

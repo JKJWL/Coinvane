@@ -51,17 +51,87 @@ export default async function (app) {
        ORDER BY current_value DESC`,
       [req.user.id]
     );
+    // Aggregate damage/repair impact per asset (positive = value lost).
+    const damageRows = await query(
+      `SELECT asset_id, COALESCE(SUM(value_impact), 0) AS total,
+              COUNT(*) AS event_count
+       FROM asset_damage_events
+       WHERE user_id = ?
+       GROUP BY asset_id`,
+      [req.user.id]
+    );
+    const damageByAsset = new Map(damageRows.map(d => [d.asset_id, d]));
     for (const r of rows) {
-      r.projectedValue = Number(projectDepreciatedValue({
+      const d = damageByAsset.get(r.id);
+      r.damageTotal = Number(d?.total || 0);
+      r.damageEventCount = Number(d?.event_count || 0);
+      // Projected value from the depreciation curve, then damage applied on top.
+      const baseProjection = projectDepreciatedValue({
         acquired_value: r.acquiredValue,
         salvage_value: r.salvageValue,
         useful_life_years: r.usefulLifeYears,
         depreciation_method: r.depreciationMethod,
         declining_rate: r.decliningRate,
         acquired_date: r.acquiredDate,
-      }).toFixed(2));
+      });
+      r.projectedValue = Number(Math.max(0, baseProjection - r.damageTotal).toFixed(2));
     }
     return rows;
+  });
+
+  // ── Damage / impairment events ─────────────────────────────────────
+  app.get("/:id/damage", async (req, reply) => {
+    const owned = await queryOne("SELECT id FROM assets WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]);
+    if (!owned) return reply.code(404).send({ error: "not found" });
+    return query(
+      `SELECT id, event_date AS eventDate, description,
+              value_impact AS valueImpact, created_at AS createdAt
+       FROM asset_damage_events
+       WHERE asset_id = ? AND user_id = ?
+       ORDER BY event_date DESC, id DESC`,
+      [req.params.id, req.user.id]
+    );
+  });
+
+  app.post("/:id/damage", async (req, reply) => {
+    const asset = await queryOne(
+      "SELECT id, current_value FROM assets WHERE id = ? AND user_id = ? AND archived_at IS NULL",
+      [req.params.id, req.user.id]
+    );
+    if (!asset) return reply.code(404).send({ error: "not found" });
+    const b = req.body || {};
+    const impact = Number(b.value_impact);
+    if (!b.description || !b.event_date || !Number.isFinite(impact) || impact === 0) {
+      return reply.code(400).send({ error: "description, event_date, non-zero value_impact required" });
+    }
+    const desc = String(b.description).slice(0, 255);
+    await query(
+      `INSERT INTO asset_damage_events (user_id, asset_id, event_date, description, value_impact)
+       VALUES (?, ?, ?, ?, ?)`,
+      [req.user.id, asset.id, b.event_date, desc, impact]
+    );
+    // Damage subtracts, repairs add back. Clamp at zero.
+    const newVal = Math.max(0, Number(asset.current_value) - impact);
+    await query("UPDATE assets SET current_value = ? WHERE id = ?", [newVal, asset.id]);
+    return { ok: true, current_value: newVal };
+  });
+
+  app.delete("/damage/:eventId", async (req, reply) => {
+    const evt = await queryOne(
+      `SELECT e.id, e.asset_id, e.value_impact, a.current_value
+       FROM asset_damage_events e
+       JOIN assets a ON a.id = e.asset_id
+       WHERE e.id = ? AND e.user_id = ?`,
+      [req.params.eventId, req.user.id]
+    );
+    if (!evt) return reply.code(404).send({ error: "not found" });
+    await query("DELETE FROM asset_damage_events WHERE id = ? AND user_id = ?",
+      [evt.id, req.user.id]);
+    // Reverse the impact — add it back to current_value.
+    const restored = Number(evt.current_value) + Number(evt.value_impact);
+    await query("UPDATE assets SET current_value = ? WHERE id = ?", [restored, evt.asset_id]);
+    return { ok: true, current_value: restored };
   });
 
   app.get("/summary", async (req) => {
@@ -136,16 +206,23 @@ export default async function (app) {
     return queryOne("SELECT * FROM assets WHERE id = ?", [req.params.id]);
   });
 
-  // Snap current_value to the projected depreciation for today.
+  // Snap current_value to the projected depreciation for today, minus
+  // any logged damage. Depreciation is time-based; damage events are
+  // point-in-time deductions that must survive the refresh.
   app.post("/:id/refresh", async (req, reply) => {
     const asset = await queryOne(
       "SELECT * FROM assets WHERE id = ? AND user_id = ?",
       [req.params.id, req.user.id]
     );
     if (!asset) return reply.code(404).send({ error: "not found" });
+    const damage = await queryOne(
+      "SELECT COALESCE(SUM(value_impact), 0) AS total FROM asset_damage_events WHERE asset_id = ? AND user_id = ?",
+      [asset.id, req.user.id]
+    );
     const projected = Number(projectDepreciatedValue(asset).toFixed(2));
-    await query("UPDATE assets SET current_value = ? WHERE id = ?", [projected, asset.id]);
-    return { ok: true, current_value: projected };
+    const withDamage = Number(Math.max(0, projected - Number(damage?.total || 0)).toFixed(2));
+    await query("UPDATE assets SET current_value = ? WHERE id = ?", [withDamage, asset.id]);
+    return { ok: true, current_value: withDamage };
   });
 
   app.delete("/:id", async (req, reply) => {

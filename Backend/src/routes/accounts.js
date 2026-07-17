@@ -124,7 +124,18 @@ export default async function (app) {
       "SELECT COALESCE(SUM(balance), 0) AS net FROM accounts WHERE user_id = ?",
       [req.user.id]
     );
-    const currentNet = Number(sum?.net) || 0;
+    // Assets (vehicles, valuables, property) contribute to net worth too.
+    // We don't have historical valuation snapshots, so treat the current
+    // asset total as a flat baseline added to every point in the series.
+    // Better than excluding them entirely — and depreciating assets are
+    // refreshed via /assets/refresh, so the "current" number tracks reality.
+    const assetSum = await queryOne(
+      "SELECT COALESCE(SUM(current_value), 0) AS total FROM assets WHERE user_id = ? AND archived_at IS NULL",
+      [req.user.id]
+    );
+    const accountsNet = Number(sum?.net) || 0;
+    const assetsNet = Number(assetSum?.total) || 0;
+    const currentNet = accountsNet + assetsNet;
 
     // Pull all transactions in the window; we walk forward from start.
     const startStr = start.toISOString().slice(0, 10);

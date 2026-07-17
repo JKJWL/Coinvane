@@ -1755,6 +1755,7 @@ function AssetsPanel({ theme, darkMode, toast, onChange }) {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [damageAsset, setDamageAsset] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1827,10 +1828,19 @@ function AssetsPanel({ theme, darkMode, toast, onChange }) {
                       </button>
                     </div>
                   )}
+                  {a.damageEventCount > 0 && (
+                    <div className="text-[10px] mt-0.5 text-rose-500">
+                      {a.damageEventCount} damage {a.damageEventCount === 1 ? "event" : "events"} · −<span className="private-amount" tabIndex={0}>{fmt(a.damageTotal)}</span>
+                    </div>
+                  )}
                 </div>
                 <div className="text-right">
                   <div className="text-sm font-semibold private-amount" tabIndex={0}>{fmt(a.currentValue)}</div>
-                  <div className="flex items-center gap-1 justify-end">
+                  <div className="flex items-center gap-1 justify-end flex-wrap">
+                    <button type="button" onClick={() => setDamageAsset(a)}
+                      className={`text-[10px] ${theme.textSubtle} hover:text-rose-500`}>
+                      Log damage
+                    </button>
                     <button type="button" onClick={() => { setEditing(a); setShowForm(true); }}
                       className={`text-[10px] ${theme.textSubtle} hover:text-violet-500`}>
                       Edit
@@ -1849,7 +1859,144 @@ function AssetsPanel({ theme, darkMode, toast, onChange }) {
       <AssetFormSheet open={showForm} onClose={() => { setShowForm(false); setEditing(null); }}
         editing={editing} theme={theme} darkMode={darkMode} toast={toast}
         onSaved={() => { setShowForm(false); setEditing(null); load(); onChange?.(); }} />
+      <AssetDamageSheet open={!!damageAsset} onClose={() => setDamageAsset(null)}
+        asset={damageAsset} theme={theme} darkMode={darkMode} toast={toast}
+        onChanged={() => { load(); onChange?.(); }} />
     </div>
+  );
+}
+
+function AssetDamageSheet({ open, onClose, asset, theme, darkMode, toast, onChanged }) {
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [form, setForm] = useState({
+    event_date: new Date().toISOString().slice(0, 10),
+    description: "",
+    value_impact: "",
+    kind: "damage",
+  });
+  const [saving, setSaving] = useState(false);
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
+
+  useEffect(() => {
+    if (!open || !asset) return;
+    setForm({
+      event_date: new Date().toISOString().slice(0, 10),
+      description: "", value_impact: "", kind: "damage",
+    });
+    setLoading(true);
+    api.listAssetDamage(asset.id)
+      .then(setEvents)
+      .catch(() => toast?.("Failed to load damage log", "error"))
+      .finally(() => setLoading(false));
+  }, [open, asset, toast]);
+
+  const save = async () => {
+    const raw = Number(form.value_impact);
+    if (!form.description.trim() || !Number.isFinite(raw) || raw <= 0) {
+      toast?.("Description and positive amount required", "error"); return;
+    }
+    // Damage subtracts value; repair adds it back (negative impact).
+    const signed = form.kind === "repair" ? -raw : raw;
+    setSaving(true);
+    try {
+      await api.logAssetDamage(asset.id, {
+        event_date: form.event_date,
+        description: form.description.trim(),
+        value_impact: signed,
+      });
+      toast?.(form.kind === "repair" ? "Repair logged" : "Damage logged", "success");
+      const list = await api.listAssetDamage(asset.id);
+      setEvents(list);
+      setForm({ ...form, description: "", value_impact: "" });
+      onChanged?.();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    finally { setSaving(false); }
+  };
+
+  const remove = async (evt) => {
+    if (!window.confirm(`Undo "${evt.description}"? Current value will be restored.`)) return;
+    try {
+      await api.deleteAssetDamage(evt.id);
+      toast?.("Reverted", "success");
+      const list = await api.listAssetDamage(asset.id);
+      setEvents(list);
+      onChanged?.();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+
+  return (
+    <Sheet open={open} onClose={onClose} title={asset ? `${asset.name} — damage log` : "Damage log"} theme={theme}>
+      <div className="space-y-4">
+        <div className={`text-xs ${theme.textSubtle}`}>
+          Log damage (fender-bender, hail, scratch) to subtract value, or log a repair to add it back.
+          The change flows into net worth and survives depreciation refreshes.
+        </div>
+        <div className={`${theme.inputBg} border ${theme.border} rounded-xl p-3 space-y-2`}>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className={`text-[10px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Kind</label>
+              <select value={form.kind} onChange={e => setForm({ ...form, kind: e.target.value })} className={inputCls}>
+                <option value="damage">Damage (subtracts)</option>
+                <option value="repair">Repair (adds back)</option>
+              </select>
+            </div>
+            <div>
+              <label className={`text-[10px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Date</label>
+              <input type="date" value={form.event_date}
+                onChange={e => setForm({ ...form, event_date: e.target.value })} className={inputCls} />
+            </div>
+          </div>
+          <div>
+            <label className={`text-[10px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Description</label>
+            <input value={form.description} onChange={e => setForm({ ...form, description: e.target.value })}
+              placeholder="e.g. Rear bumper repair estimate" className={inputCls} />
+          </div>
+          <div>
+            <label className={`text-[10px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>
+              {form.kind === "repair" ? "Value restored ($)" : "Value lost ($)"}
+            </label>
+            <input type="number" step="0.01" min="0" value={form.value_impact}
+              onChange={e => setForm({ ...form, value_impact: e.target.value })} className={inputCls} />
+          </div>
+          <button type="button" onClick={save} disabled={saving}
+            className={`w-full py-2 rounded-xl text-sm font-semibold text-white disabled:opacity-60 ${
+              form.kind === "repair" ? "bg-emerald-500 hover:bg-emerald-600" : "bg-rose-500 hover:bg-rose-600"
+            }`}>
+            {saving ? "Saving…" : form.kind === "repair" ? "Log repair" : "Log damage"}
+          </button>
+        </div>
+        <div>
+          <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-2`}>History</div>
+          {loading ? (
+            <div className={`text-xs ${theme.textSubtle}`}>Loading…</div>
+          ) : events.length === 0 ? (
+            <div className={`text-xs ${theme.textSubtle}`}>No damage or repairs logged yet.</div>
+          ) : (
+            <div className={`divide-y ${theme.divide} border ${theme.border} rounded-xl overflow-hidden`}>
+              {events.map(e => {
+                const isRepair = Number(e.valueImpact) < 0;
+                return (
+                  <div key={e.id} className="flex items-center gap-2 px-3 py-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm truncate">{e.description}</div>
+                      <div className={`text-[10px] ${theme.textSubtle}`}>{e.eventDate}</div>
+                    </div>
+                    <div className={`text-sm font-semibold private-amount ${isRepair ? "text-emerald-500" : "text-rose-500"}`} tabIndex={0}>
+                      {isRepair ? "+" : "−"}{fmt(Math.abs(Number(e.valueImpact)))}
+                    </div>
+                    <button type="button" onClick={() => remove(e)}
+                      className={`text-[10px] ${theme.textSubtle} hover:text-rose-500`}>
+                      Undo
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </Sheet>
   );
 }
 
@@ -5242,7 +5389,7 @@ function ZeroBudgetSummary({ zb, theme, darkMode }) {
           Zero-based budget
         </div>
         {balanced ? (
-          <div className="text-[11px] font-semibold text-violet-500 flex items-center gap-1">
+          <div className="text-[11px] font-semibold text-emerald-500 flex items-center gap-1">
             <Check className="w-3 h-3" /> Fully allocated
           </div>
         ) : remaining > 0 ? (
@@ -5265,14 +5412,14 @@ function ZeroBudgetSummary({ zb, theme, darkMode }) {
         <motion.div
           initial={{ width: 0 }} animate={{ width: `${incomePct / 2}%` }}
           transition={{ duration: 0.8, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
-          className="bg-violet-500" />
+          className="bg-emerald-500" />
       </div>
       <div className="flex items-center justify-between text-[11px] mt-2">
         <div className="flex items-center gap-1 text-rose-500 font-semibold">
           <span className="w-2 h-2 rounded-full bg-rose-500" /> Budgeted <span className="private-amount" tabIndex={0}>{fmt(allocated)}</span>
         </div>
-        <div className="flex items-center gap-1 text-violet-500 font-semibold">
-          Income <span className="private-amount" tabIndex={0}>{fmt(income)}</span> <span className="w-2 h-2 rounded-full bg-violet-500" />
+        <div className="flex items-center gap-1 text-emerald-500 font-semibold">
+          Income <span className="private-amount" tabIndex={0}>{fmt(income)}</span> <span className="w-2 h-2 rounded-full bg-emerald-500" />
         </div>
       </div>
     </div>
@@ -9453,7 +9600,7 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
   const [quickenAccountId, setQuickenAccountId] = useState("");
   const quickenInputRef = useRef(null);
   const [saving, setSaving] = useState(false);
-  const { accounts } = useData();
+  const { accounts, refreshAll } = useData();
 
   // Snapshot of "what the server currently has" so we can detect unsaved
   // changes by comparing to `form`. Built lazily once at mount; reset
@@ -9593,8 +9740,9 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
       </div>
 
       {/* Mobile-only: Banks & Accounts management lives here (desktop has its own Accounts tab) */}
-      <div className="lg:hidden">
+      <div className="lg:hidden space-y-4">
         <MobileBanksSection theme={theme} darkMode={darkMode} toast={toast} />
+        <AssetsPanel theme={theme} darkMode={darkMode} toast={toast} onChange={refreshAll} />
       </div>
 
       {/* ── Account ── */}
