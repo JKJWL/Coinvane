@@ -57,6 +57,10 @@ function userPayload(u) {
     budget_warning_pct:     Number(u.budget_warning_pct ?? 80),
     notify_budget_exceeded: u.notify_budget_exceeded === undefined ? true  : !!u.notify_budget_exceeded,
     notify_goal_milestone:  u.notify_goal_milestone  === undefined ? true  : !!u.notify_goal_milestone,
+    notify_bill_reminders:  u.notify_bill_reminders  === undefined ? true  : !!u.notify_bill_reminders,
+    notify_bill_days_before: Number(u.notify_bill_days_before ?? 3),
+    notify_cashflow_enabled: !!u.notify_cashflow_enabled,
+    notify_cashflow_min:     Number(u.notify_cashflow_min ?? 0),
     // Misc prefs
     privacy_mode:    !!u.privacy_mode,
     show_cashflow_forecast: u.show_cashflow_forecast === undefined ? true : !!u.show_cashflow_forecast,
@@ -244,6 +248,8 @@ export default async function (app) {
         notify_income, income_threshold,
         notify_budget_warning, budget_warning_pct,
         notify_budget_exceeded, notify_goal_milestone,
+        notify_bill_reminders, notify_bill_days_before,
+        notify_cashflow_enabled, notify_cashflow_min,
         privacy_mode, show_cashflow_forecast, week_start, email_frequency, email_weekday`;
 
   app.get("/me", { preHandler: [app.authenticate] }, async (req) => {
@@ -282,6 +288,10 @@ export default async function (app) {
          budget_warning_pct = COALESCE(?, budget_warning_pct),
          notify_budget_exceeded = COALESCE(?, notify_budget_exceeded),
          notify_goal_milestone = COALESCE(?, notify_goal_milestone),
+         notify_bill_reminders = COALESCE(?, notify_bill_reminders),
+         notify_bill_days_before = COALESCE(?, notify_bill_days_before),
+         notify_cashflow_enabled = COALESCE(?, notify_cashflow_enabled),
+         notify_cashflow_min = COALESCE(?, notify_cashflow_min),
          privacy_mode = COALESCE(?, privacy_mode),
          show_cashflow_forecast = COALESCE(?, show_cashflow_forecast),
          week_start = COALESCE(?, week_start),
@@ -295,6 +305,8 @@ export default async function (app) {
         bool(b.notify_income),          int(b.income_threshold, 1, 1_000_000),
         bool(b.notify_budget_warning),  int(b.budget_warning_pct, 1, 99),
         bool(b.notify_budget_exceeded), bool(b.notify_goal_milestone),
+        bool(b.notify_bill_reminders),  int(b.notify_bill_days_before, 0, 60),
+        bool(b.notify_cashflow_enabled), int(b.notify_cashflow_min, 0, 100_000_000),
         bool(b.privacy_mode),           bool(b.show_cashflow_forecast),
         int(b.week_start, 0, 6),
         freq,                           int(b.email_weekday, 0, 6),

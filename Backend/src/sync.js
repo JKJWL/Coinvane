@@ -20,7 +20,25 @@ const CATEGORY_MAP = {
   INCOME: "Income", TRANSFER_IN: "Transfer", TRANSFER_OUT: "Transfer",
 };
 
-function normalizeCategory(c) { return CATEGORY_MAP[c] || "Other"; }
+// Plaid PFC codes that mean brokerage dividend, savings-interest, or
+// bond coupon income. All roll into "Interest & Dividends" — a Schedule
+// B category ready for a CPA to pull from at year end.
+const DIVIDEND_INTEREST_CODES = new Set([
+  "INCOME_DIVIDENDS", "INCOME_INTEREST_EARNED",
+  "TRANSFER_IN_INVESTMENT_AND_RETIREMENT_INVESTMENT_INCOME",
+]);
+const DIVIDEND_INTEREST_MERCHANT_PATTERNS = [
+  /\bdividend\b/i, /\bdiv\s+re[iv]/i, /\binterest earned\b/i,
+  /\bintrst\b/i, /\bcoupon\b/i,
+];
+
+function normalizeCategory(c, merchant) {
+  if (DIVIDEND_INTEREST_CODES.has(c)) return "Interest & Dividends";
+  if (merchant && DIVIDEND_INTEREST_MERCHANT_PATTERNS.some(re => re.test(merchant))) {
+    return "Interest & Dividends";
+  }
+  return CATEGORY_MAP[c] || "Other";
+}
 
 export async function syncAccounts(userId, itemId, accessToken, institutionName) {
   const resp = await plaid.accountsGet({ access_token: accessToken });
@@ -95,7 +113,7 @@ export async function syncTransactions(userId, itemId, accessToken) {
     const merchant = t.merchant_name || t.name || "Unknown";
     const plaidCat = t.personal_finance_category?.primary || (t.category?.[0]) || "Other";
     // User-defined rule takes precedence over Plaid's category
-    const finalCat = ruleMap.get(merchant.toLowerCase()) || normalizeCategory(plaidCat);
+    const finalCat = ruleMap.get(merchant.toLowerCase()) || normalizeCategory(plaidCat, merchant);
     // Plaid tagged transfer (strong signal). We flag the row now so the
     // pairing pass below can match it up with the other side even if that
     // side wasn't itself tagged.
@@ -134,6 +152,16 @@ export async function syncTransactions(userId, itemId, accessToken) {
       [userId, accId, t.transaction_id, t.date,
        merchant, finalCat, -t.amount, t.pending ? 1 : 0, plaidIsTransfer ? 1 : 0]
     );
+    // If we labelled this row Interest & Dividends, make sure the user
+    // has a matching category row with tax_schedule=B so it lands in
+    // Schedule B on the tax summary.
+    if (finalCat === "Interest & Dividends") {
+      await query(
+        `INSERT IGNORE INTO categories (user_id, name, color, icon, custom, tax_schedule)
+         VALUES (?, 'Interest & Dividends', '#10b981', 'TrendingUp', TRUE, 'B')`,
+        [userId]
+      );
+    }
   }
 
   for (const r of removed) {

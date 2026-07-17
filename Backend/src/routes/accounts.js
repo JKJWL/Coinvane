@@ -14,13 +14,21 @@ export default async function (app) {
   });
 
   app.post("/", async (req, reply) => {
-    const { name, type, subtype, balance, institution } = req.body || {};
+    const { name, type, subtype, balance, institution, link_asset_id } = req.body || {};
     if (!name || !type) return reply.code(400).send({ error: "name and type required" });
     const r = await query(
       `INSERT INTO accounts (user_id, name, type, subtype, balance, institution)
        VALUES (?, ?, ?, ?, ?, ?)`,
       [req.user.id, name, type, subtype || null, balance || 0, institution || null]
     );
+    // Reverse-link: creating a loan account and pointing it at an asset the
+    // user already owns updates that asset's loan_account_id.
+    if (type === "loan" && link_asset_id) {
+      await query(
+        "UPDATE assets SET loan_account_id = ? WHERE id = ? AND user_id = ? AND archived_at IS NULL",
+        [r.insertId, link_asset_id, req.user.id]
+      );
+    }
     return queryOne("SELECT * FROM accounts WHERE id = ?", [r.insertId]);
   });
 
@@ -142,7 +150,7 @@ export default async function (app) {
     const txns = await query(
       `SELECT date, SUM(amount) AS delta
        FROM transactions
-       WHERE user_id = ? AND date >= ?
+       WHERE user_id = ? AND date >= ? AND voided_at IS NULL
        GROUP BY date ORDER BY date ASC`,
       [req.user.id, startStr]
     );

@@ -180,7 +180,8 @@ export async function spentForBudgetInWindow(userId, b, startStr, endStr) {
        WHERE t.user_id = ? AND t.account_id = ? AND t.amount < 0
          AND t.date >= ? AND t.date < ?
          AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
-         AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)`,
+         AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
+         AND t.voided_at IS NULL`,
       [userId, b.account_id, startStr, endStr]
     );
     return Number(row.spent) || 0;
@@ -192,7 +193,8 @@ export async function spentForBudgetInWindow(userId, b, startStr, endStr) {
      WHERE t.user_id = ? AND t.category = ? AND t.amount < 0
        AND t.date >= ? AND t.date < ?
        AND (a.type IS NULL OR a.type <> 'credit')
-       AND (t.is_transfer = 0 OR t.is_transfer IS NULL)`,
+       AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+       AND t.voided_at IS NULL`,
     [userId, b.category, startStr, endStr]
   );
   return Number(row.spent) || 0;

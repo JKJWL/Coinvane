@@ -131,6 +131,7 @@ export default async function (app) {
          WHERE user_id = ? AND account_id = ? AND date <= ?
            AND (reconciliation_id IS NULL)
            AND (is_scheduled = 0 OR is_scheduled IS NULL)
+           AND voided_at IS NULL
          ORDER BY date ASC, id ASC`,
         [req.user.id, rec.account_id, rec.statement_date]
       );
@@ -208,7 +209,8 @@ export default async function (app) {
     const clearedRows = await query(
       `SELECT id, amount FROM transactions
        WHERE user_id = ? AND account_id = ? AND date <= ?
-         AND cleared = 1 AND reconciliation_id IS NULL`,
+         AND cleared = 1 AND reconciliation_id IS NULL
+         AND voided_at IS NULL`,
       [req.user.id, rec.account_id, rec.statement_date]
     );
     const clearedTotal = clearedRows.reduce((s, t) => s + Number(t.amount), 0);

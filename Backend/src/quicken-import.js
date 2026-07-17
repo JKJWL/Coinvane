@@ -89,6 +89,7 @@ function normalizeQifRecord(r) {
     category: (r.category || "Other").replace(/^\[.*\]$/, "Transfer").trim().slice(0, 64) || "Other",
     amount,
     note: r.memo ? r.memo.trim().slice(0, 500) : null,
+    checkNumber: r.checkNum ? r.checkNum.trim().slice(0, 32) : null,
   };
 }
 

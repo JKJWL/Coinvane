@@ -1373,6 +1373,7 @@ function SpendingByCategoryCard({ theme, darkMode, expanded, onExpand }) {
   const [sortDir, setSortDir] = useState("largest");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [groupBy, setGroupBy] = useState("category"); // "category" | "group"
   useEffect(() => {
     let alive = true;
     setLoading(true);
@@ -1388,12 +1389,24 @@ function SpendingByCategoryCard({ theme, darkMode, expanded, onExpand }) {
     color: darkMode ? "#f1f5f9" : "#0f172a",
   };
   const sorted = useMemo(() => {
-    const arr = [...rows].map((r, i) => ({
-      name: r.category, value: Number(r.total),
-    }));
+    let arr;
+    if (groupBy === "group") {
+      // Roll up leaf categories under their group_name (falling back to
+      // the leaf category name for ungrouped rows).
+      const agg = new Map();
+      for (const r of rows) {
+        const key = r.groupName || r.category;
+        agg.set(key, (agg.get(key) || 0) + Number(r.total));
+      }
+      arr = [...agg.entries()].map(([name, value]) => ({ name, value }));
+    } else {
+      arr = [...rows].map(r => ({ name: r.category, value: Number(r.total) }));
+    }
     arr.sort((a, b) => sortDir === "largest" ? b.value - a.value : a.value - b.value);
     return arr.map((r, i) => ({ ...r, color: CAT_KPI_COLORS[i % CAT_KPI_COLORS.length] }));
-  }, [rows, sortDir]);
+  }, [rows, sortDir, groupBy]);
+  // Detect whether any groups exist to know if we should offer the toggle.
+  const hasGroups = useMemo(() => rows.some(r => r.groupName), [rows]);
   const pieData = sorted.slice(0, expanded ? 10 : 6);
   const listData = sorted.slice(0, expanded ? 12 : 4);
   const chartH = expanded ? "h-[52vh]" : "h-36";
@@ -1416,15 +1429,29 @@ function SpendingByCategoryCard({ theme, darkMode, expanded, onExpand }) {
         <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider`}>
           {sortDir === "largest" ? "Largest first" : "Smallest first"}
         </div>
-        <div className={`flex items-center gap-1 p-0.5 rounded-full ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
-          <button onClick={() => setSortDir("largest")}
-            className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${sortDir === "largest" ? "bg-violet-500 text-white" : theme.textMuted}`}>
-            Largest
-          </button>
-          <button onClick={() => setSortDir("smallest")}
-            className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${sortDir === "smallest" ? "bg-violet-500 text-white" : theme.textMuted}`}>
-            Smallest
-          </button>
+        <div className="flex items-center gap-2">
+          {hasGroups && (
+            <div className={`flex items-center gap-1 p-0.5 rounded-full ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+              <button onClick={() => setGroupBy("category")}
+                className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${groupBy === "category" ? "bg-violet-500 text-white" : theme.textMuted}`}>
+                Categories
+              </button>
+              <button onClick={() => setGroupBy("group")}
+                className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${groupBy === "group" ? "bg-violet-500 text-white" : theme.textMuted}`}>
+                Groups
+              </button>
+            </div>
+          )}
+          <div className={`flex items-center gap-1 p-0.5 rounded-full ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+            <button onClick={() => setSortDir("largest")}
+              className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${sortDir === "largest" ? "bg-violet-500 text-white" : theme.textMuted}`}>
+              Largest
+            </button>
+            <button onClick={() => setSortDir("smallest")}
+              className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${sortDir === "smallest" ? "bg-violet-500 text-white" : theme.textMuted}`}>
+              Smallest
+            </button>
+          </div>
         </div>
       </div>
       {pieData.length > 0 ? (
@@ -1691,28 +1718,41 @@ function TaxCategoriesPanel({ theme, darkMode, toast }) {
     finally { setSavingId(null); }
   };
 
+  const setGroup = async (cat, name) => {
+    setSavingId(cat.id);
+    try {
+      await api.updateCategory(cat.id, { group_name: name });
+      setCats(prev => prev.map(c => c.id === cat.id ? { ...c, groupName: name || null } : c));
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    finally { setSavingId(null); }
+  };
+
   return (
     <div className={`${theme.surface} border ${theme.border} rounded-2xl p-5 space-y-3`}>
       <div className="flex items-center justify-between">
-        <h3 className="font-semibold">Tax categories</h3>
+        <h3 className="font-semibold">Categories</h3>
         <a href="#" onClick={e => { e.preventDefault(); api.exportTaxSummaryPDF(); }}
           className={`text-xs ${theme.textSubtle} hover:text-violet-500`}>
           Download year-to-date tax PDF
         </a>
       </div>
       <p className={`text-xs ${theme.textSubtle}`}>
-        Map a category to an IRS Schedule so every transaction with that category rolls into the
-        year-end tax summary. You can still override individual transactions from their detail sheet
-        (they roll into Schedule A when their category has no schedule set).
+        Schedule maps a category to an IRS bucket for the year-end tax PDF. Group rolls
+        multiple categories into one line on the byCategory pie ("Groceries" + "Restaurants" → "Food")
+        without affecting budgets or rules.
       </p>
       {loading ? (
         <div className={`text-xs ${theme.textSubtle}`}>Loading…</div>
       ) : (
         <div className={`rounded-2xl border ${theme.border} max-h-72 overflow-y-auto divide-y ${theme.divide}`}>
           {cats.map(c => (
-            <div key={c.id} className="flex items-center gap-3 px-3 py-2">
+            <div key={c.id} className="flex items-center gap-2 px-3 py-2">
               <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: c.color }} />
               <div className="flex-1 text-sm font-medium truncate">{c.name}</div>
+              <input placeholder="Group"
+                defaultValue={c.groupName || ""}
+                onBlur={e => { const v = e.target.value.trim(); if (v !== (c.groupName || "")) setGroup(c, v); }}
+                className={`w-24 text-xs px-2 py-1 rounded-lg ${theme.inputBg} border ${theme.border} focus:outline-none focus:border-violet-500`} />
               <select value={c.taxSchedule || ""} disabled={savingId === c.id}
                 onChange={e => setSchedule(c, e.target.value)}
                 className={`text-xs px-2 py-1 rounded-lg ${theme.inputBg} border ${theme.border} focus:outline-none focus:border-violet-500`}>
@@ -1831,6 +1871,15 @@ function AssetsPanel({ theme, darkMode, toast, onChange }) {
                   {a.damageEventCount > 0 && (
                     <div className="text-[10px] mt-0.5 text-rose-500">
                       {a.damageEventCount} damage {a.damageEventCount === 1 ? "event" : "events"} · −<span className="private-amount" tabIndex={0}>{fmt(a.damageTotal)}</span>
+                    </div>
+                  )}
+                  {a.loanAccountId && (
+                    <div className={`text-[10px] mt-0.5 ${theme.textSubtle}`}>
+                      Loan: <span className="private-name" tabIndex={0}>{a.loanAccountName}</span> · owed <span className="private-amount" tabIndex={0}>{fmt(a.loanBalance)}</span>
+                      {" · "}
+                      <span className={`font-semibold ${Number(a.netPosition) >= 0 ? "text-emerald-500" : "text-rose-500"}`}>
+                        net <span className="private-amount" tabIndex={0}>{fmt(a.netPosition)}</span>
+                      </span>
                     </div>
                   )}
                 </div>
@@ -2003,10 +2052,13 @@ function AssetDamageSheet({ open, onClose, asset, theme, darkMode, toast, onChan
 function AssetFormSheet({ open, onClose, editing, theme, darkMode, toast, onSaved }) {
   const [form, setForm] = useState(() => defaultAssetForm());
   const [saving, setSaving] = useState(false);
+  const [loanAccounts, setLoanAccounts] = useState([]);
   const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
 
   useEffect(() => {
     if (!open) return;
+    // Load loan-type accounts the user could link.
+    api.listEligibleAssetLoans().then(setLoanAccounts).catch(() => setLoanAccounts([]));
     if (editing) {
       setForm({
         name: editing.name || "", kind: editing.kind || "other",
@@ -2018,6 +2070,7 @@ function AssetFormSheet({ open, onClose, editing, theme, darkMode, toast, onSave
         depreciation_method: editing.depreciationMethod || "none",
         declining_rate: String(editing.decliningRate ?? "20"),
         notes: editing.notes || "",
+        loan_account_id: editing.loanAccountId ? String(editing.loanAccountId) : "",
       });
     } else {
       setForm(defaultAssetForm());
@@ -2037,6 +2090,8 @@ function AssetFormSheet({ open, onClose, editing, theme, darkMode, toast, onSave
         salvage_value: Number(form.salvage_value) || 0,
         useful_life_years: Number(form.useful_life_years) || 0,
         declining_rate: Number(form.declining_rate) || 20,
+        // Empty string = unlink (null), otherwise coerce to number.
+        loan_account_id: form.loan_account_id === "" ? null : Number(form.loan_account_id),
       };
       if (editing) await api.updateAsset(editing.id, payload);
       else await api.createAsset(payload);
@@ -2121,6 +2176,29 @@ function AssetFormSheet({ open, onClose, editing, theme, darkMode, toast, onSave
           <input value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })}
             className={inputCls} />
         </div>
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>
+            Loan on this asset (optional)
+          </label>
+          {loanAccounts.length === 0 ? (
+            <div className={`text-[11px] ${theme.textSubtle} px-3 py-2 border ${theme.border} rounded-xl`}>
+              No loan-type accounts yet. Add one under Accounts → Add Manual (Type: Loan) to link it here.
+            </div>
+          ) : (
+            <select value={form.loan_account_id}
+              onChange={e => setForm({ ...form, loan_account_id: e.target.value })} className={inputCls}>
+              <option value="">Not linked</option>
+              {loanAccounts.map(l => (
+                <option key={l.id} value={l.id}>
+                  {l.name}{l.institution ? ` · ${l.institution}` : ""} · owed {fmt(Math.abs(Number(l.balance) || 0))}
+                </option>
+              ))}
+            </select>
+          )}
+          <div className={`text-[10px] ${theme.textSubtle} mt-1`}>
+            Linking shows a per-asset net position (asset value − amount owed). Net worth math is unchanged — both sides were already counted.
+          </div>
+        </div>
         <div className="flex gap-2 pt-2">
           <button type="button" onClick={onClose}
             className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.textSubtle}`}>Cancel</button>
@@ -2142,6 +2220,7 @@ function defaultAssetForm() {
     salvage_value: "0", useful_life_years: "5",
     depreciation_method: "none", declining_rate: "20",
     notes: "",
+    loan_account_id: "",
   };
 }
 
@@ -2515,9 +2594,19 @@ function AccountsTab({ theme, darkMode, toast }) {
   const [items, setItems] = useState([]);
   const [removingId, setRemovingId] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
-  const [addForm, setAddForm] = useState({ name: "", type: "cash", subtype: "", balance: "", institution: "" });
+  const [addForm, setAddForm] = useState({ name: "", type: "cash", subtype: "", balance: "", institution: "", link_asset_id: "" });
   const [adding, setAdding] = useState(false);
   const [reconAccount, setReconAccount] = useState(null);
+  const [linkableAssets, setLinkableAssets] = useState([]);
+
+  // Assets available to link when creating a loan account (car, boat, etc.
+  // that don't already have a loan attached).
+  useEffect(() => {
+    if (!showAdd) return;
+    api.listAssets()
+      .then(list => setLinkableAssets(list.filter(a => !a.loanAccountId)))
+      .catch(() => setLinkableAssets([]));
+  }, [showAdd]);
 
   const loadItems = useCallback(async () => {
     try { setItems(await api.listPlaidItems()); } catch {}
@@ -2553,10 +2642,12 @@ function AccountsTab({ theme, darkMode, toast }) {
         subtype: addForm.subtype.trim() || undefined,
         balance: Number(addForm.balance) || 0,
         institution: addForm.institution.trim() || undefined,
+        link_asset_id: addForm.type === "loan" && addForm.link_asset_id
+          ? Number(addForm.link_asset_id) : undefined,
       });
       toast?.("Account added", "success");
       setShowAdd(false);
-      setAddForm({ name: "", type: "cash", subtype: "", balance: "", institution: "" });
+      setAddForm({ name: "", type: "cash", subtype: "", balance: "", institution: "", link_asset_id: "" });
       refreshAll();
     } catch (e) {
       toast?.("Failed: " + (e.message || ""), "error");
@@ -2735,6 +2826,31 @@ function AccountsTab({ theme, darkMode, toast }) {
                 placeholder="0.00" className={inputCls} />
             </div>
           </div>
+          {addForm.type === "loan" && (
+            <div>
+              <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>
+                Backing asset (optional)
+              </label>
+              {linkableAssets.length === 0 ? (
+                <div className={`text-xs ${theme.textSubtle} px-3 py-2 border ${theme.border} rounded-xl`}>
+                  No unlinked assets. Add one under Assets & valuables to pair this loan with a car, boat, or property.
+                </div>
+              ) : (
+                <select value={addForm.link_asset_id}
+                  onChange={e => setAddForm({ ...addForm, link_asset_id: e.target.value })} className={inputCls}>
+                  <option value="">Don't link</option>
+                  {linkableAssets.map(a => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} · value {fmt(Number(a.currentValue) || 0)}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <div className={`text-[10px] ${theme.textSubtle} mt-1`}>
+                Links the loan to a physical asset so you can see (value − amount owed) at a glance.
+              </div>
+            </div>
+          )}
           <p className={`text-xs ${theme.textSubtle}`}>
             Manual accounts won't auto-sync. Update the balance and add transactions yourself.
           </p>
@@ -2767,6 +2883,22 @@ function TransactionsTab({ theme, darkMode, toast }) {
   const [catFilter, setCatFilter] = useState("");      // category filter
   const [acctFilter, setAcctFilter] = useState("all"); // account filter (id | "all")
   const [sort, setSort] = useState("date_desc");       // sort key
+  const [clearedFilter, setClearedFilter] = useState("all"); // "all"|"cleared"|"uncleared"|"reconciled"
+  const [flagFilter, setFlagFilter] = useState("");    // "" | colour
+  const [savedViews, setSavedViews] = useState([]);
+  const [showSaveViewSheet, setShowSaveViewSheet] = useState(false);
+  const [newViewName, setNewViewName] = useState("");
+
+  useEffect(() => {
+    api.listSavedViews().then(setSavedViews).catch(() => setSavedViews([]));
+  }, []);
+
+  // Keyboard shortcut hook — Shell fires 'coinvane:new-txn' on `n` press.
+  useEffect(() => {
+    const open = () => setShowAdd(true);
+    window.addEventListener("coinvane:new-txn", open);
+    return () => window.removeEventListener("coinvane:new-txn", open);
+  }, []);
   // Cash / Credit pill — splits the entire list by account type. Defaults to
   // "cash" every time the tab is mounted (non-persistent by design).
   const [side, setSide] = useState("cash");            // "cash" | "credit"
@@ -2787,6 +2919,10 @@ function TransactionsTab({ theme, darkMode, toast }) {
   // inside the detail sheet's Split panel. When null the panel is closed.
   const [splitDraft, setSplitDraft] = useState(null);
   const [splitSaving, setSplitSaving] = useState(false);
+  const [splitTemplates, setSplitTemplates] = useState([]);
+  useEffect(() => {
+    api.listSplitTemplates().then(setSplitTemplates).catch(() => setSplitTemplates([]));
+  }, []);
   // Receipt state per open detail sheet: {url, loading, error, uploading}.
   // Object URL is created on-demand and revoked when the sheet closes.
   const [receiptState, setReceiptState] = useState({
@@ -2829,9 +2965,10 @@ function TransactionsTab({ theme, darkMode, toast }) {
   const today = new Date().toISOString().slice(0, 10);
   const [form, setForm] = useState({
     date: today, merchant: "", amount: "", category: "Other",
-    account_id: "", note: "", sign: "out",
+    account_id: "", note: "", sign: "out", check_number: "",
   });
   const [adding, setAdding] = useState(false);
+  const [payeeHintApplied, setPayeeHintApplied] = useState(null);
 
   const loadScheduled = useCallback(async () => {
     try { setScheduled(await api.getScheduledTransactions()); }
@@ -2889,6 +3026,10 @@ function TransactionsTab({ theme, darkMode, toast }) {
       }
       if (catFilter && t.category !== catFilter) return false;
       if (acctFilter !== "all" && String(t.accountId) !== String(acctFilter)) return false;
+      if (clearedFilter === "cleared"    && !(t.cleared && !t.reconciliationId)) return false;
+      if (clearedFilter === "uncleared"  && t.cleared) return false;
+      if (clearedFilter === "reconciled" && !t.reconciliationId) return false;
+      if (flagFilter && t.flagColor !== flagFilter) return false;
       return true;
     });
     const cmp = {
@@ -2903,7 +3044,37 @@ function TransactionsTab({ theme, darkMode, toast }) {
         || b.id - a.id,
     }[sort] || ((a, b) => 0);
     return [...rows].sort(cmp);
-  }, [transactions, search, catFilter, acctFilter, sort, side, creditAccountIds]);
+  }, [transactions, search, catFilter, acctFilter, sort, side, creditAccountIds, clearedFilter, flagFilter]);
+
+  // Running balance — Quicken-style. Only meaningful when a single account
+  // is selected; otherwise the number would jump between accounts. Walks
+  // the filtered rows in chronological order from an implicit opening
+  // balance of (current_balance − sum(amounts in view)) and stamps each
+  // row with its post-transaction balance.
+  const runningBalances = useMemo(() => {
+    if (acctFilter === "all") return null;
+    const acct = accounts.find(a => String(a.id) === String(acctFilter));
+    if (!acct) return null;
+    const current = Number(acct.balance) || 0;
+    const chrono = [...filtered].sort((a, b) =>
+      (a.date || "").localeCompare(b.date || "") || a.id - b.id
+    );
+    const totalInView = chrono.reduce((s, t) => s + Number(t.amount || 0), 0);
+    let running = current - totalInView;
+    const map = new Map();
+    for (const t of chrono) {
+      running += Number(t.amount || 0);
+      map.set(t.id, running);
+    }
+    return map;
+  }, [filtered, acctFilter, accounts]);
+  // Decorate the filtered rows with their running balance so the render
+  // can reach it directly on `t`. Not part of the primary useMemo so the
+  // balance re-computes without invalidating the sort.
+  const filteredWithBalance = useMemo(() => {
+    if (!runningBalances) return filtered;
+    return filtered.map(t => ({ ...t, runningBalance: runningBalances.get(t.id) }));
+  }, [filtered, runningBalances]);
 
   // Group by date for the rendered list.
   // BUG FIX: when sorted by amount, transactions aren't ordered by date so
@@ -2913,17 +3084,17 @@ function TransactionsTab({ theme, darkMode, toast }) {
   const isAmountSort = sort === "amount_asc" || sort === "amount_desc";
   const isFlatSort = isAmountSort || sort === "has_receipt";
   const grouped = useMemo(() => {
-    if (filtered.length === 0) return [];
+    if (filteredWithBalance.length === 0) return [];
     if (isFlatSort) {
       // Single flat group — date headers don't make sense when sorted by
       // amount or receipt-first (both scatter dates arbitrarily).
-      return [{ date: "__flat__", items: filtered }];
+      return [{ date: "__flat__", items: filteredWithBalance }];
     }
     // Date sort: group consecutive same-date rows. Keys use date + index of
     // the group to avoid duplicates even if dates ever repeat.
     const groups = [];
     let currentKey = null;
-    for (const t of filtered) {
+    for (const t of filteredWithBalance) {
       const k = t.date || "—";
       if (k !== currentKey) {
         groups.push({ date: k, items: [] });
@@ -2932,7 +3103,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
       groups[groups.length - 1].items.push(t);
     }
     return groups;
-  }, [filtered, isFlatSort]);
+  }, [filteredWithBalance, isFlatSort]);
 
   const fmtGroupDate = (d) => {
     if (!d || d === "—") return "Undated";
@@ -2972,7 +3143,7 @@ function TransactionsTab({ theme, darkMode, toast }) {
     return [...map.entries()];
   }, [accounts, side]);
 
-  const activeFilterCount = (catFilter ? 1 : 0) + (acctFilter !== "all" ? 1 : 0) + (sort !== "date_desc" ? 1 : 0);
+  const activeFilterCount = (catFilter ? 1 : 0) + (acctFilter !== "all" ? 1 : 0) + (sort !== "date_desc" ? 1 : 0) + (clearedFilter !== "all" ? 1 : 0) + (flagFilter ? 1 : 0);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -2986,10 +3157,12 @@ function TransactionsTab({ theme, darkMode, toast }) {
         amount: signed,
         accountId: form.account_id ? Number(form.account_id) : undefined,
         note: form.note.trim() || undefined,
+        check_number: form.check_number.trim() || undefined,
       });
       toast?.("Transaction added", "success");
       setShowAdd(false);
-      setForm({ date: today, merchant: "", amount: "", category: "Other", account_id: "", note: "", sign: "out" });
+      setForm({ date: today, merchant: "", amount: "", category: "Other", account_id: "", note: "", sign: "out", check_number: "" });
+      setPayeeHintApplied(null);
       refreshAll();
     } catch (e) {
       toast?.("Failed: " + (e.message || ""), "error");
@@ -3114,16 +3287,104 @@ function TransactionsTab({ theme, darkMode, toast }) {
                   </select>
                 </div>
               </div>
-              {activeFilterCount > 0 && (
-                <button onClick={() => { setCatFilter(""); setAcctFilter("all"); setSort("date_desc"); }}
-                  className={`text-xs font-medium ${theme.textSubtle} hover:text-violet-500`}>
-                  Clear filters
-                </button>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Clearing status</label>
+                  <select value={clearedFilter} onChange={e => setClearedFilter(e.target.value)} className={inputCls}>
+                    <option value="all">All</option>
+                    <option value="uncleared">Uncleared only</option>
+                    <option value="cleared">Cleared (draft)</option>
+                    <option value="reconciled">Reconciled (locked)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1.5`}>Flag</label>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <button type="button" onClick={() => setFlagFilter("")}
+                      className={`px-2 py-1 rounded-lg text-xs font-semibold ${!flagFilter ? "bg-violet-500 text-white" : `${theme.surface} border ${theme.border}`}`}>
+                      Any
+                    </button>
+                    {["red", "orange", "amber", "emerald", "sky", "violet", "rose"].map(c => (
+                      <button key={c} type="button" onClick={() => setFlagFilter(c === flagFilter ? "" : c)}
+                        className={`w-6 h-6 rounded-full bg-${c}-500 ${flagFilter === c ? "ring-2 ring-offset-2 ring-violet-500" : ""}`}
+                        aria-label={c} />
+                    ))}
+                  </div>
+                </div>
+              </div>
+              {/* Saved views strip */}
+              {savedViews.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mr-1`}>Views:</span>
+                  {savedViews.map(v => (
+                    <button key={v.id} type="button" onClick={() => {
+                      const c = v.config || {};
+                      setCatFilter(c.catFilter || "");
+                      setAcctFilter(c.acctFilter || "all");
+                      setSort(c.sort || "date_desc");
+                      setClearedFilter(c.clearedFilter || "all");
+                      setFlagFilter(c.flagFilter || "");
+                    }}
+                    className={`px-2 py-1 rounded-lg text-xs ${theme.surface} border ${theme.border} hover:border-violet-500 flex items-center gap-1`}>
+                      {v.name}
+                      <span onClick={async (e) => {
+                        e.stopPropagation();
+                        if (!window.confirm(`Delete view "${v.name}"?`)) return;
+                        try { await api.deleteSavedView(v.id); setSavedViews(await api.listSavedViews()); }
+                        catch { toast?.("Failed to delete view", "error"); }
+                      }} className={`ml-1 ${theme.textSubtle} hover:text-rose-500`}>×</span>
+                    </button>
+                  ))}
+                </div>
               )}
+              <div className="flex items-center gap-3">
+                {activeFilterCount > 0 && (
+                  <button onClick={() => {
+                    setCatFilter(""); setAcctFilter("all"); setSort("date_desc");
+                    setClearedFilter("all"); setFlagFilter("");
+                  }}
+                    className={`text-xs font-medium ${theme.textSubtle} hover:text-violet-500`}>
+                    Clear filters
+                  </button>
+                )}
+                {activeFilterCount > 0 && (
+                  <button onClick={() => setShowSaveViewSheet(true)}
+                    className="text-xs font-semibold text-violet-500 hover:underline">
+                    Save current view
+                  </button>
+                )}
+              </div>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Save-view dialog */}
+      <Sheet open={showSaveViewSheet} onClose={() => { setShowSaveViewSheet(false); setNewViewName(""); }}
+        title="Save this view" theme={theme}>
+        <div className="space-y-3">
+          <input value={newViewName} onChange={e => setNewViewName(e.target.value)}
+            placeholder="e.g. Groceries this month" className={inputCls} autoFocus />
+          <div className={`text-xs ${theme.textSubtle}`}>
+            Saves the current filter, sort, clearing status, and flag colour under a name you can re-apply from the filter panel.
+          </div>
+          <div className="flex gap-2">
+            <button onClick={() => { setShowSaveViewSheet(false); setNewViewName(""); }}
+              className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.surface} border ${theme.border}`}>Cancel</button>
+            <button onClick={async () => {
+              if (!newViewName.trim()) return;
+              try {
+                await api.createSavedView(newViewName.trim(), {
+                  catFilter, acctFilter, sort, clearedFilter, flagFilter,
+                });
+                setSavedViews(await api.listSavedViews());
+                setShowSaveViewSheet(false); setNewViewName("");
+                toast?.("View saved", "success");
+              } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+            }} className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600">Save</button>
+          </div>
+        </div>
+      </Sheet>
 
       {/* Scheduled income — pinned above the transaction list. Only shown
           when the user actually has upcoming scheduled rows; hidden
@@ -3224,31 +3485,56 @@ function TransactionsTab({ theme, darkMode, toast }) {
                   {group.items.map((t, i) => {
                     const Icon = CAT_ICONS[t.category] || Briefcase;
                     const color = CAT_COLORS[t.category] || "#64748b";
+                    const voided = !!t.voidedAt;
+                    // Merchant display rename — the join in the SELECT emits
+                    // merchantDisplayName from merchant_rules; fall back to raw.
+                    const shownMerchant = t.merchantDisplayName || t.merchant;
+                    // Running balance appears only when a single account is
+                    // selected; the meaning would be nonsensical otherwise.
+                    const showBalance = acctFilter !== "all" && t.runningBalance !== undefined;
                     return (
                       <motion.button key={t.id}
                         whileTap={{ scale: 0.985 }}
                         onClick={() => setDetail(t)}
-                        className={`w-full flex items-center gap-3 px-4 py-3 text-left ${i < group.items.length - 1 ? `border-b ${theme.border}` : ""} ${theme.hover} transition-colors`}>
+                        className={`w-full flex items-center gap-3 px-4 py-3 text-left ${i < group.items.length - 1 ? `border-b ${theme.border}` : ""} ${theme.hover} transition-colors ${voided ? "opacity-60 line-through" : ""}`}>
+                        {t.flagColor ? (
+                          <div className={`w-1.5 h-9 rounded-full flex-shrink-0 bg-${t.flagColor}-500`} />
+                        ) : null}
                         <div className={`w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
                           <Icon className="w-4 h-4" style={{ color }} />
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5 min-w-0">
-                            <div className="font-medium text-sm truncate">{t.merchant}</div>
+                            <div className="font-medium text-sm truncate">{shownMerchant}</div>
                             <PendingPill pending={t.pending} darkMode={darkMode} />
                             <TransferPill isTransfer={t.isTransfer} darkMode={darkMode} />
                             <AutomationErrorPill hasError={t.hasAutomationError} darkMode={darkMode} />
+                            {voided && (
+                              <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${darkMode ? "bg-slate-800 text-slate-400" : "bg-slate-100 text-slate-500"}`}>Void</span>
+                            )}
+                            {t.reconciliationId ? (
+                              <span className="text-[9px] font-bold uppercase text-emerald-500">R</span>
+                            ) : t.cleared ? (
+                              <span className={`text-[9px] font-bold uppercase ${theme.textSubtle}`}>c</span>
+                            ) : null}
                           </div>
                           <div className={`text-xs ${theme.textSubtle} truncate`}>
-                            {isFlat ? `${t.date} · ` : ""}{t.category} · <span className="private-name" tabIndex={0}>{t.accountName || "—"}</span>
+                            {isFlat ? `${t.date} · ` : ""}{t.checkNumber ? `#${t.checkNumber} · ` : ""}{t.category} · <span className="private-name" tabIndex={0}>{t.accountName || "—"}</span>
                           </div>
                         </div>
                         <div className="flex items-center gap-1.5 flex-shrink-0">
                           <ReceiptMarker hasAttachment={t.hasAttachment} />
-                          <div className={`font-semibold text-sm private-amount ${
-                            t.isTransfer ? "text-sky-500" : Number(t.amount) >= 0 ? "text-emerald-500" : ""
-                          }`} tabIndex={0}>
-                            {t.isTransfer ? "±" : Number(t.amount) >= 0 ? "+" : "−"}{fmt(Math.abs(Number(t.amount)))}
+                          <div className="text-right">
+                            <div className={`font-semibold text-sm private-amount ${
+                              t.isTransfer ? "text-sky-500" : Number(t.amount) >= 0 ? "text-emerald-500" : ""
+                            }`} tabIndex={0}>
+                              {t.isTransfer ? "±" : Number(t.amount) >= 0 ? "+" : "−"}{fmt(Math.abs(Number(t.amount)))}
+                            </div>
+                            {showBalance && (
+                              <div className={`text-[10px] ${theme.textSubtle} private-amount tabular-nums`} tabIndex={0}>
+                                bal {fmt(t.runningBalance)}
+                              </div>
+                            )}
                           </div>
                         </div>
                       </motion.button>
@@ -3284,8 +3570,30 @@ function TransactionsTab({ theme, darkMode, toast }) {
           </div>
           <div>
             <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Merchant / Description</label>
-            <input required value={form.merchant} onChange={e => setForm({ ...form, merchant: e.target.value })}
+            <input required value={form.merchant}
+              onChange={e => setForm({ ...form, merchant: e.target.value })}
+              onBlur={async e => {
+                const q = e.target.value.trim();
+                if (q.length < 2) return;
+                try {
+                  const { hit } = await api.payeeHint(q);
+                  if (!hit) return;
+                  // Prefill category + account IFF the user hasn't already
+                  // picked non-defaults. This avoids overwriting a deliberate
+                  // choice with a stale memory.
+                  const patch = {};
+                  if (form.category === "Other") patch.category = hit.category;
+                  if (!form.account_id && hit.accountId) patch.account_id = String(hit.accountId);
+                  if (Object.keys(patch).length) {
+                    setForm(f => ({ ...f, ...patch }));
+                    setPayeeHintApplied(`Prefilled from a past ${q} entry`);
+                  }
+                } catch { /* silent — hint is best-effort */ }
+              }}
               placeholder="Whole Foods" className={inputCls} />
+            {payeeHintApplied && (
+              <div className="text-[10px] text-emerald-500 mt-1">{payeeHintApplied}</div>
+            )}
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -3302,13 +3610,20 @@ function TransactionsTab({ theme, darkMode, toast }) {
               </select>
             </div>
           </div>
-          <div>
-            <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Account</label>
-            <select value={form.account_id} onChange={e => setForm({ ...form, account_id: e.target.value })}
-              className={inputCls}>
-              <option value="">— No account —</option>
-              {accounts.map(a => <option key={a.id} value={a.id}>{a.name}{a.institution ? ` · ${a.institution}` : ""}</option>)}
-            </select>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Account</label>
+              <select value={form.account_id} onChange={e => setForm({ ...form, account_id: e.target.value })}
+                className={inputCls}>
+                <option value="">— No account —</option>
+                {accounts.map(a => <option key={a.id} value={a.id}>{a.name}{a.institution ? ` · ${a.institution}` : ""}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Check # (optional)</label>
+              <input value={form.check_number} onChange={e => setForm({ ...form, check_number: e.target.value })}
+                placeholder="1024" className={inputCls} />
+            </div>
           </div>
           <div>
             <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Note (optional)</label>
@@ -3464,8 +3779,41 @@ function TransactionsTab({ theme, darkMode, toast }) {
                   </span>
                 </button>
                 <DetailRow label="Account"  value={detail.accountName || "—"} theme={theme} />
+                {detail.checkNumber && <DetailRow label="Check #" value={detail.checkNumber} theme={theme} />}
                 {detail.note && <DetailRow label="Note" value={detail.note} theme={theme} />}
               </div>
+
+              {/* Rename this merchant everywhere — creates or updates the
+                  merchant_rule with a display_name so every row for this
+                  raw merchant string renders under the friendly name. */}
+              <button type="button"
+                onClick={async () => {
+                  const suggested = detail.merchantDisplayName || detail.merchant;
+                  const val = window.prompt(
+                    `Rename "${detail.merchant}" everywhere it appears?\n\nLeave blank to clear the rename.`,
+                    suggested
+                  );
+                  if (val === null) return;
+                  try {
+                    // Upsert a merchant rule for this raw merchant, then set its
+                    // display_name via PATCH. The recategorize endpoint is the
+                    // simplest way to guarantee the rule row exists.
+                    await api.recategorizeMerchant(detail.merchant, detail.category);
+                    const rules = await api.getMerchantRules();
+                    const rule = rules.find(r => r.merchant === detail.merchant);
+                    if (rule) {
+                      await api.updateMerchantRule(rule.id, {
+                        display_name: val.trim() || "",
+                      });
+                    }
+                    toast?.(val.trim() ? `Renamed to "${val.trim()}"` : "Rename cleared", "success");
+                    setDetail(null);
+                    refreshAll();
+                  } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+                }}
+                className={`w-full text-xs font-medium ${theme.textSubtle} hover:text-violet-500 py-2`}>
+                Rename "{detail.merchant}" everywhere…
+              </button>
 
               {/* Paystub detail — only offered on positive-amount rows.
                   Skipped for transfers since those aren't real income. */}
@@ -3664,6 +4012,31 @@ function TransactionsTab({ theme, darkMode, toast }) {
                       const overflow = total > parentAbs + 0.001;
                       return (
                         <div className="space-y-2">
+                          {splitTemplates.length > 0 && (
+                            <div className="flex items-center gap-2">
+                              <select
+                                onChange={e => {
+                                  const t = splitTemplates.find(t => String(t.id) === e.target.value);
+                                  if (!t) return;
+                                  const parent = Math.abs(Number(detail.amount));
+                                  const lines = t.lines.map(l => ({
+                                    category: l.category,
+                                    amount: t.kind === "percent"
+                                      ? (parent * (Number(l.percent) || 0) / 100).toFixed(2)
+                                      : String(l.amount ?? ""),
+                                    note: l.note || "",
+                                  }));
+                                  setSplitDraft(lines);
+                                  e.target.value = "";
+                                }}
+                                className={`${inputCls} flex-1`} defaultValue="">
+                                <option value="">Apply template…</option>
+                                {splitTemplates.map(t => (
+                                  <option key={t.id} value={t.id}>{t.name} ({t.kind})</option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
                           {splitDraft.map((r, i) => (
                             <div key={i} className="flex gap-1.5">
                               <select value={r.category}
@@ -3730,6 +4103,30 @@ function TransactionsTab({ theme, darkMode, toast }) {
                               {splitSaving ? "Splitting…" : "Save split"}
                             </button>
                           </div>
+                          <button type="button"
+                            onClick={async () => {
+                              const validRows = splitDraft.filter(r => Number(r.amount) > 0);
+                              if (validRows.length < 2) { toast?.("Need at least 2 lines", "warning"); return; }
+                              const name = window.prompt("Name this template (e.g. Paycheck 60/40):");
+                              if (!name || !name.trim()) return;
+                              const kind = window.confirm("Save as percentages? OK = percent (rescales to any future amount) · Cancel = fixed amounts")
+                                ? "percent" : "fixed";
+                              try {
+                                const total2 = validRows.reduce((s, r) => s + Number(r.amount), 0);
+                                const lines = validRows.map(r => ({
+                                  category: r.category,
+                                  amount: kind === "fixed" ? Number(r.amount) : null,
+                                  percent: kind === "percent" ? Number(((Number(r.amount) / total2) * 100).toFixed(2)) : null,
+                                  note: r.note || null,
+                                }));
+                                await api.createSplitTemplate({ name: name.trim(), kind, lines });
+                                setSplitTemplates(await api.listSplitTemplates());
+                                toast?.(`Template "${name.trim()}" saved`, "success");
+                              } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+                            }}
+                            className={`w-full text-xs font-medium ${theme.textSubtle} hover:text-violet-500 py-1`}>
+                            Save this as a template…
+                          </button>
                         </div>
                       );
                     })()
@@ -3850,6 +4247,51 @@ function TransactionsTab({ theme, darkMode, toast }) {
                   </button>
                 )}
               </div>
+
+              {/* Flag colour picker — filter your register at a glance */}
+              <div>
+                <div className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-2`}>Flag</div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {[null, "red", "orange", "amber", "emerald", "sky", "violet", "rose"].map(c => (
+                    <button key={c || "none"} type="button"
+                      onClick={async () => {
+                        try {
+                          await api.updateTransaction(detail.id, { flag_color: c });
+                          toast?.(c ? `Flagged ${c}` : "Flag cleared", "success");
+                          setDetail({ ...detail, flagColor: c });
+                          refreshAll();
+                        } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+                      }}
+                      className={`w-7 h-7 rounded-full border-2 flex items-center justify-center ${
+                        c ? `bg-${c}-500 border-${c}-600` : `${theme.surface} border-slate-400`
+                      } ${detail.flagColor === c ? "ring-2 ring-offset-2 ring-violet-500" : ""}`}
+                      aria-label={c || "no flag"}>
+                      {!c && <span className="text-[10px]">×</span>}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Void toggle — Quicken parity. Voided rows stay visible
+                  with a strikethrough but drop out of every aggregation. */}
+              <motion.button whileTap={{ scale: 0.97 }}
+                onClick={async () => {
+                  try {
+                    if (detail.voidedAt) {
+                      await api.unvoidTransaction(detail.id);
+                      toast?.("Transaction restored", "success");
+                    } else {
+                      if (!window.confirm(`Void "${detail.merchant}"? It'll stay visible but drop out of budgets, cashflow, and reports.`)) return;
+                      await api.voidTransaction(detail.id);
+                      toast?.("Transaction voided", "success");
+                    }
+                    setDetail(null);
+                    refreshAll();
+                  } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+                }}
+                className={`w-full py-3 rounded-xl text-sm font-semibold border ${theme.border} ${theme.surface} ${detail.voidedAt ? "text-emerald-500 hover:bg-emerald-500/10" : "text-amber-500 hover:bg-amber-500/10"} flex items-center justify-center gap-2`}>
+                {detail.voidedAt ? "Restore (unvoid)" : "Void transaction"}
+              </motion.button>
 
               <motion.button whileTap={{ scale: 0.97 }} onClick={deleteTransaction} disabled={deleting}
                 className="w-full bg-rose-500 hover:bg-rose-600 text-white py-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-60">
@@ -5701,6 +6143,7 @@ const PDF_REPORTS = [
   { id: "budgets",    label: "Budget performance",         filename: "coinvane-budgets.pdf",      download: (api) => api.exportBudgetsPDF() },
   { id: "billsloans", label: "Bills & loans summary",      filename: "coinvane-bills-loans.pdf",  download: (api) => api.exportBillsLoansPDF() },
   { id: "tax",        label: "Tax summary (year-end)",     filename: "coinvane-tax-summary.pdf",  download: (api) => api.exportTaxSummaryPDF() },
+  { id: "register",   label: "Register (plain print)",     filename: "coinvane-register.pdf",     download: (api) => api.exportRegisterPDF() },
 ];
 function PdfExportDropdown({ exportingPdf, setExportingPdf, theme, darkMode, toast }) {
   const [open, setOpen] = useState(false);
@@ -6187,6 +6630,10 @@ function LoanCard({ loan, theme, darkMode, onEdit, onPayment, onRemove }) {
         <button type="button" onClick={onEdit}
           className={`py-1.5 px-3 rounded-lg text-xs font-semibold border ${theme.border} ${theme.hover} flex items-center gap-1`}>
           <Pencil className="w-3 h-3" /> Edit
+        </button>
+        <button type="button" onClick={() => api.exportAmortizationPDF(loan.id)}
+          className={`py-1.5 px-3 rounded-lg text-xs font-semibold border ${theme.border} ${theme.hover} flex items-center gap-1`}>
+          <FileText className="w-3 h-3" /> Amort PDF
         </button>
         <button type="button" onClick={onRemove}
           className={`py-1.5 px-2 rounded-lg text-xs font-semibold border ${theme.border} text-rose-500 hover:bg-rose-500/10`}>
@@ -9349,12 +9796,19 @@ function MobileBanksSection({ theme, darkMode, toast }) {
   const [showAdd, setShowAdd] = useState(false);
   const [adding, setAdding] = useState(false);
   const [syncing, setSyncing] = useState(false);
-  const [form, setForm] = useState({ name: "", type: "cash", subtype: "", balance: "", institution: "" });
+  const [form, setForm] = useState({ name: "", type: "cash", subtype: "", balance: "", institution: "", link_asset_id: "" });
+  const [linkableAssets, setLinkableAssets] = useState([]);
 
   const loadItems = useCallback(async () => {
     try { setItems(await api.listPlaidItems()); } catch {}
   }, []);
   useEffect(() => { loadItems(); }, [loadItems]);
+  useEffect(() => {
+    if (!showAdd) return;
+    api.listAssets()
+      .then(list => setLinkableAssets(list.filter(a => !a.loanAccountId)))
+      .catch(() => setLinkableAssets([]));
+  }, [showAdd]);
 
   const sync = async () => {
     if (syncing) return;
@@ -9395,10 +9849,12 @@ function MobileBanksSection({ theme, darkMode, toast }) {
         subtype: form.subtype.trim() || undefined,
         balance: Number(form.balance) || 0,
         institution: form.institution.trim() || undefined,
+        link_asset_id: form.type === "loan" && form.link_asset_id
+          ? Number(form.link_asset_id) : undefined,
       });
       toast?.("Account added", "success");
       setShowAdd(false);
-      setForm({ name: "", type: "cash", subtype: "", balance: "", institution: "" });
+      setForm({ name: "", type: "cash", subtype: "", balance: "", institution: "", link_asset_id: "" });
       refreshAll();
     } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
     finally { setAdding(false); }
@@ -9506,6 +9962,28 @@ function MobileBanksSection({ theme, darkMode, toast }) {
                 placeholder="0.00" className={inputCls} />
             </div>
           </div>
+          {form.type === "loan" && (
+            <div>
+              <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>
+                Backing asset (optional)
+              </label>
+              {linkableAssets.length === 0 ? (
+                <div className={`text-xs ${theme.textSubtle} px-3 py-2 border ${theme.border} rounded-xl`}>
+                  No unlinked assets yet. Add one under Assets & valuables to pair this loan with a car, boat, or property.
+                </div>
+              ) : (
+                <select value={form.link_asset_id}
+                  onChange={e => setForm({ ...form, link_asset_id: e.target.value })} className={inputCls}>
+                  <option value="">Don't link</option>
+                  {linkableAssets.map(a => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} · value {fmt(Number(a.currentValue) || 0)}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
           <div className="flex gap-2 pt-2">
             <button type="button" onClick={() => setShowAdd(false)}
               className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.surface} border ${theme.border}`}>
@@ -9617,6 +10095,10 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
     budget_warning_pct:     Number(u.budget_warning_pct ?? 80),
     notify_budget_exceeded: u.notify_budget_exceeded !== false,
     notify_goal_milestone:  u.notify_goal_milestone  !== false,
+    notify_bill_reminders:  u.notify_bill_reminders  !== false,
+    notify_bill_days_before: Number(u.notify_bill_days_before ?? 3),
+    notify_cashflow_enabled: !!u.notify_cashflow_enabled,
+    notify_cashflow_min:     Number(u.notify_cashflow_min ?? 0),
     privacy_mode:           !!u.privacy_mode,
     week_start:             Number(u.week_start ?? 0),
     email_frequency:        u.email_frequency || "daily",
@@ -9647,8 +10129,10 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
       // Coerce empty strings → server default by sending the current row's
       // value; the server's COALESCE leaves it alone if null.
       const payload = { ...form };
-      for (const k of ["large_txn_threshold", "income_threshold", "budget_warning_pct"]) {
+      for (const k of ["large_txn_threshold", "income_threshold", "budget_warning_pct",
+                       "notify_bill_days_before", "notify_cashflow_min"]) {
         if (payload[k] === "" || payload[k] === null) delete payload[k];
+        else if (payload[k] !== undefined) payload[k] = Number(payload[k]) || 0;
       }
       await api.updateMe(payload);
       // Clear dirty by re-baselining original to the current form.
@@ -9698,8 +10182,22 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
     setImportingQuicken(true);
     try {
       const text = await file.text();
-      const r = await api.importQuicken(text, quickenAccountId ? Number(quickenAccountId) : null);
-      toast?.(`Imported ${r.imported} ${r.format.toUpperCase()} txns (skipped ${r.skipped})`, "success");
+      const acctId = quickenAccountId ? Number(quickenAccountId) : null;
+      const r = await api.importQuicken(text, acctId);
+      // If dupes were detected, prompt to import them anyway.
+      let extra = "";
+      if (r.duplicates > 0) {
+        const importAnyway = window.confirm(
+          `${r.duplicates} row${r.duplicates === 1 ? " looks" : "s look"} like duplicate${r.duplicates === 1 ? "" : "s"} of existing transactions in this account (same amount within ±3 days). Import them anyway?\n\nOK = import all\nCancel = keep skipped`
+        );
+        if (importAnyway) {
+          const r2 = await api.importQuicken(text, acctId, true);
+          extra = ` · +${r2.imported - r.imported} dupes imported`;
+        } else {
+          extra = ` · ${r.duplicates} dupes skipped`;
+        }
+      }
+      toast?.(`Imported ${r.imported} ${r.format.toUpperCase()} txns${extra}`, "success");
       onUpdate?.();
     } catch (e) {
       toast?.("Import failed: " + (e.message || ""), "error");
@@ -9861,6 +10359,34 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
             hint="Alert at 75% progress and when a goal completes."
             checked={form.notify_goal_milestone}
             onToggle={v => setForm({ ...form, notify_goal_milestone: v })} />
+
+          <NotifRow
+            theme={theme} darkMode={darkMode} emailOn={emailOn}
+            label="Bill reminders"
+            hint="Remind me before every open bill cycle's due date."
+            checked={form.notify_bill_reminders}
+            onToggle={v => setForm({ ...form, notify_bill_reminders: v })}>
+            <div className="flex items-center gap-2">
+              <span className={`text-xs ${theme.textSubtle}`}>Days before</span>
+              <input type="text" inputMode="numeric" pattern="[0-9]*"
+                className={numCls} value={form.notify_bill_days_before}
+                onChange={e => setForm({ ...form, notify_bill_days_before: e.target.value.replace(/\D/g, "").slice(0, 2) || 0 })} />
+            </div>
+          </NotifRow>
+
+          <NotifRow
+            theme={theme} darkMode={darkMode} emailOn={emailOn}
+            label="Cashflow low-balance warning"
+            hint="Project scheduled income + open bill cycles for 30 days. Warn if the low point dips below your minimum."
+            checked={form.notify_cashflow_enabled}
+            onToggle={v => setForm({ ...form, notify_cashflow_enabled: v })}>
+            <div className="flex items-center gap-2">
+              <span className={`text-xs ${theme.textSubtle}`}>Minimum $</span>
+              <input type="text" inputMode="numeric" pattern="[0-9]*"
+                className={numCls} value={form.notify_cashflow_min}
+                onChange={e => setForm({ ...form, notify_cashflow_min: e.target.value.replace(/\D/g, "").slice(0, 9) || 0 })} />
+            </div>
+          </NotifRow>
 
           {/* Email frequency — not "digest" per request. */}
           <div className="flex items-center justify-between gap-3">
@@ -10046,6 +10572,41 @@ function Shell({ user, onLogout, refreshUser }) {
     else document.body.classList.remove("privacy-on");
     return () => document.body.classList.remove("privacy-on");
   }, [user?.privacy_mode]);
+
+  // Global keyboard shortcuts (Stage 4a, desktop only).
+  //   n         → jump to Transactions and open the new-txn sheet
+  //   /         → focus the header search (if the current tab has one)
+  //   [ / ]     → prev / next month on the dashboard KPI
+  //   Esc       → close any open sheet (framer-motion Sheet listens itself)
+  // Skipped when the user is typing in an input/textarea/select so the
+  // key press doesn't fight actual data entry.
+  useEffect(() => {
+    const isEditable = (el) => {
+      if (!el) return false;
+      const tag = (el.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select") return true;
+      if (el.isContentEditable) return true;
+      return false;
+    };
+    const onKey = (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isEditable(document.activeElement)) return;
+      if (e.key === "n" || e.key === "N") {
+        e.preventDefault();
+        setTab("transactions");
+        // Broadcast so TransactionsTab can pop its add sheet.
+        window.dispatchEvent(new CustomEvent("coinvane:new-txn"));
+      } else if (e.key === "/") {
+        e.preventDefault();
+        const el = document.querySelector('input[type="search"], input[placeholder*="Search"i]');
+        if (el) el.focus();
+      } else if (e.key === "[" || e.key === "]") {
+        window.dispatchEvent(new CustomEvent("coinvane:month-shift", { detail: { dir: e.key === "]" ? 1 : -1 } }));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // Persist dark mode change to backend so it follows you across devices
   const setDarkMode = useCallback(async (v) => {

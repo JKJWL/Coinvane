@@ -32,6 +32,7 @@ export default async function (app) {
          AND YEAR(t.date) = ?
          AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
          AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
+         AND t.voided_at IS NULL
          AND (c.tax_schedule IS NOT NULL OR t.is_deductible = 1)`,
       [req.user.id, year]
     );

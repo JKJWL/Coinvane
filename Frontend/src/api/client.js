@@ -64,6 +64,15 @@ export const api = {
   createTransaction: (data) => request("POST", "/transactions", data),
   updateTransaction: (id, data) => request("PATCH", `/transactions/${id}`, data),
   deleteTransaction: (id) => request("DELETE", `/transactions/${id}`),
+  voidTransaction: (id) => request("POST", `/transactions/${id}/void`),
+  unvoidTransaction: (id) => request("POST", `/transactions/${id}/unvoid`),
+  payeeHint: (merchant) => request("GET", `/transactions/payee-hint?merchant=${encodeURIComponent(merchant)}`),
+  listSavedViews: () => request("GET", "/transactions/saved-views"),
+  createSavedView: (name, config) => request("POST", "/transactions/saved-views", { name, config }),
+  deleteSavedView: (id) => request("DELETE", `/transactions/saved-views/${id}`),
+  listSplitTemplates: () => request("GET", "/transactions/split-templates"),
+  createSplitTemplate: (data) => request("POST", "/transactions/split-templates", data),
+  deleteSplitTemplate: (id) => request("DELETE", `/transactions/split-templates/${id}`),
   savePaystub: (id, paystub) => request("PUT", `/transactions/${id}/paystub`, { paystub }),
   // Scheduled transactions
   getScheduledTransactions: () => request("GET", "/transactions/scheduled"),
@@ -156,6 +165,7 @@ export const api = {
   listAssetDamage: (id) => request("GET", `/assets/${id}/damage`),
   logAssetDamage: (id, data) => request("POST", `/assets/${id}/damage`, data),
   deleteAssetDamage: (eventId) => request("DELETE", `/assets/damage/${eventId}`),
+  listEligibleAssetLoans: () => request("GET", "/assets/eligible-loans"),
 
   // ── Automations (per-user rule engine) ─────────────────────────
   getAutomationVocab:   () => request("GET",    "/automations/vocab"),
@@ -203,6 +213,7 @@ export const api = {
   recategorizeMerchant: (merchant, category) =>
     request("POST", "/transactions/recategorize-merchant", { merchant, category }),
   getMerchantRules: () => request("GET", "/transactions/merchant-rules"),
+  updateMerchantRule: (id, data) => request("PATCH", `/transactions/merchant-rules/${id}`, data),
   deleteMerchantRule: (id) => request("DELETE", `/transactions/merchant-rules/${id}`),
 
   getNotes: () => request("GET", "/notes"),
@@ -247,8 +258,20 @@ export const api = {
   // CSV / PDF — non-JSON download endpoints
   exportTransactionsCSV: () => downloadAuthed("/transactions/export.csv", "coinvane-transactions.csv"),
   importTransactionsCSV: (csv) => request("POST", "/transactions/import.csv", { csv }),
-  importQuicken: (content, accountId) =>
-    request("POST", "/transactions/import/quicken", { content, account_id: accountId || null }),
+  importQuicken: (content, accountId, allowDuplicates = false) =>
+    request("POST", "/transactions/import/quicken", {
+      content, account_id: accountId || null,
+      allow_duplicates: allowDuplicates ? "1" : undefined,
+    }),
+  exportRegisterPDF: (params = {}) => {
+    const q = new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v))
+    ).toString();
+    return downloadAuthed(`/export/register.pdf${q ? "?" + q : ""}`, "coinvane-register.pdf");
+  },
+  exportAmortizationPDF: (loanId) =>
+    downloadAuthed(`/export/amortization.pdf?loan_id=${encodeURIComponent(loanId)}`,
+                   `coinvane-amort-${loanId}.pdf`),
   exportFullPDF: () => downloadAuthed("/export/full.pdf", "coinvane-export.pdf"),
   exportMonthlyPDF: (month) =>
     downloadAuthed(`/export/monthly.pdf${month ? "?month=" + encodeURIComponent(month) : ""}`,

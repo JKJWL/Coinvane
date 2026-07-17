@@ -38,7 +38,8 @@ async function sumIncomeInWindow(userId, startStr, endStr) {
        AND t.date >= ? AND t.date < ?
        AND (a.type IS NULL OR a.type <> 'credit')
        AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
-       AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)`,
+       AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
+       AND t.voided_at IS NULL`,
     [userId, startStr, endStr]
   );
   return Number(row.total) || 0;
@@ -55,6 +56,7 @@ async function creditUsageInWindow(userId, startStr, endStr) {
        AND t.date >= ? AND t.date < ?
        AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
        AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
+       AND t.voided_at IS NULL
      WHERE a.user_id = ? AND a.type = 'credit'
      GROUP BY a.id, a.name, a.institution`,
     [startStr, endStr, userId]
@@ -292,6 +294,7 @@ export default async function (app) {
          AND t.amount < 0
          AND t.date >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
          AND (a.type IS NULL OR a.type <> 'credit')
+         AND t.voided_at IS NULL
          AND t.category NOT IN (
            SELECT category FROM budgets
            WHERE user_id = ? AND account_id IS NULL
@@ -432,6 +435,7 @@ export default async function (app) {
            AND t.date >= ? AND t.date < ?
            AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
            AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
+           AND t.voided_at IS NULL
          ORDER BY t.date DESC, t.id DESC`,
         [req.user.id, b.account_id, startStr, endStr]
       );
@@ -446,6 +450,7 @@ export default async function (app) {
            AND (a.type IS NULL OR a.type <> 'credit')
            AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
            AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
+           AND t.voided_at IS NULL
          ORDER BY t.date DESC, t.id DESC`,
         [req.user.id, b.category, startStr, endStr]
       );

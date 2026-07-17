@@ -49,6 +49,7 @@ function buildQuery(userId, body) {
   else if (side === "income") where.push("t.amount > 0");
   where.push("(t.is_transfer = 0 OR t.is_transfer IS NULL)");
   where.push("(t.is_scheduled = 0 OR t.is_scheduled IS NULL)");
+  where.push("t.voided_at IS NULL");
   if (credit === "exclude") where.push("(a.type IS NULL OR a.type <> 'credit')");
   if (body?.from) { where.push("t.date >= ?"); params.push(body.from); }
   if (body?.to)   { where.push("t.date <= ?"); params.push(body.to); }

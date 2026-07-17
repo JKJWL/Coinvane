@@ -198,6 +198,8 @@ const SCHEMA = [
   // tracked via manual contributions. ON DELETE SET NULL so unlinking
   // an account just detaches the goal instead of cascading.
   `ALTER TABLE goals ADD COLUMN IF NOT EXISTS account_id INT NULL`,
+  // Assets can be backed by a loan account (car loan → the car). Optional.
+  `ALTER TABLE assets ADD COLUMN IF NOT EXISTS loan_account_id INT NULL`,
 
   `CREATE TABLE IF NOT EXISTS notes (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -555,6 +557,81 @@ const SCHEMA = [
   `ALTER TABLE categories ADD COLUMN IF NOT EXISTS tax_schedule VARCHAR(2) NULL`,
   `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_deductible TINYINT DEFAULT 0`,
 
+  // ── Register UX (Stage 4a: check#, void, flag) ─────────────────────
+  // check_number: paper check tracking (also filled from QIF 'N' code)
+  // voided_at: Quicken-style void state — row stays visible but every
+  //   aggregation (budgets / cashflow / by-category / net-worth / tax)
+  //   filters it out.
+  // flag_color: one of null | 'red' | 'orange' | 'amber' | 'emerald' |
+  //   'sky' | 'violet' | 'rose'. Free-form tag for review workflows;
+  //   saved views can filter on it.
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS check_number VARCHAR(32) NULL`,
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS voided_at TIMESTAMP NULL`,
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS flag_color VARCHAR(16) NULL`,
+
+  // display_name overrides the raw merchant string on rendering (Quicken
+  // "payee rename"). Categorization still keys off the raw merchant.
+  `ALTER TABLE merchant_rules ADD COLUMN IF NOT EXISTS display_name VARCHAR(255) NULL`,
+
+  // ── Stage B: bill reminders + cashflow alert prefs ────────────────
+  //   notify_bill_reminders / notify_bill_days_before: reminders fire N
+  //     days before every open bill cycle's due_date. Uses the same
+  //     master email-on switch as the other notification prefs.
+  //   notify_cashflow_enabled / notify_cashflow_min:
+  //     runs the forecast pipeline daily; if the projected balance dips
+  //     below `min` in the next 30 days, a single notification fires
+  //     (one per day per user, so it doesn't spam).
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_bill_reminders BOOLEAN DEFAULT TRUE`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_bill_days_before INT DEFAULT 3`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_cashflow_enabled BOOLEAN DEFAULT FALSE`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_cashflow_min INT DEFAULT 0`,
+
+  // Optional grouping on categories (Groceries + Restaurants → "Food").
+  // Group is display-only: budgets, rules, and by-category totals still
+  // key off the leaf category name. Nullable so existing rows are
+  // ungrouped by default.
+  `ALTER TABLE categories ADD COLUMN IF NOT EXISTS group_name VARCHAR(64) NULL`,
+
+  // Split templates — named recurring split shapes ("Paycheck 60/40").
+  // Rows in split_template_lines hold each leg; sum of leg amounts /
+  // percentages is the full template amount.
+  `CREATE TABLE IF NOT EXISTS split_templates (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    name VARCHAR(64) NOT NULL,
+    kind ENUM('percent', 'fixed') NOT NULL DEFAULT 'percent',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user (user_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  `CREATE TABLE IF NOT EXISTS split_template_lines (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    template_id INT NOT NULL,
+    category VARCHAR(64) NOT NULL,
+    amount DECIMAL(14,2) NULL,
+    percent DECIMAL(6,2) NULL,
+    note VARCHAR(255) NULL,
+    sort_order INT DEFAULT 0,
+    FOREIGN KEY (template_id) REFERENCES split_templates(id) ON DELETE CASCADE,
+    INDEX idx_template (template_id, sort_order)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Saved register views — persist a filter+sort+flag combo the user
+  // can re-apply from a dropdown. config is a small JSON blob rendered
+  // by the frontend; server treats it as opaque.
+  `CREATE TABLE IF NOT EXISTS saved_views (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    name VARCHAR(64) NOT NULL,
+    config LONGTEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user (user_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
   // ── Escrow breakdown on loans (Stage 2: mortgage PITI) ────────────
   // Monthly amounts. Sum of these + principal/interest = total PITI.
   // monthly_payment continues to represent P&I only so amortization math
@@ -618,8 +695,11 @@ const SCHEMA = [
     archived_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    loan_account_id INT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    INDEX idx_user_active (user_id, archived_at)
+    FOREIGN KEY (loan_account_id) REFERENCES accounts(id) ON DELETE SET NULL,
+    INDEX idx_user_active (user_id, archived_at),
+    INDEX idx_loan_account (loan_account_id)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
   // Damage / impairment events for an asset. Each row is one incident
@@ -723,6 +803,11 @@ const SOFT_SCHEMA = [
   // Adopt-match lookup runs on every Plaid insert, so this index is
   // load-bearing (user_id, account_id, is_scheduled, date).
   `ALTER TABLE transactions ADD INDEX idx_scheduled_match (user_id, account_id, is_scheduled, date)`,
+  // Assets → loan-account link (added post-1.7). Silent no-op on fresh DBs
+  // where the CREATE TABLE already declared these.
+  `ALTER TABLE assets ADD INDEX idx_loan_account (loan_account_id)`,
+  `ALTER TABLE assets ADD CONSTRAINT fk_assets_loan_account
+     FOREIGN KEY (loan_account_id) REFERENCES accounts(id) ON DELETE SET NULL`,
 ];
 
 async function run() {

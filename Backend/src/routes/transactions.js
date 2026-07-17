@@ -29,6 +29,14 @@ function isSplitChildNote(note) {
   return typeof note === "string" && note.startsWith("Split from #");
 }
 
+// Flag colour whitelist (Stage 4a). Matches the Tailwind palette keys the
+// frontend renders; any other value falls back to null.
+const FLAG_COLORS = new Set(["red", "orange", "amber", "emerald", "sky", "violet", "rose"]);
+function validFlag(v) {
+  if (!v) return null;
+  return FLAG_COLORS.has(String(v)) ? String(v) : null;
+}
+
 // Update a manual account's balance by the given delta.
 // Plaid-linked accounts are NEVER touched here — their balances come from Plaid sync.
 async function adjustManualAccountBalance(userId, accountId, delta) {
@@ -49,7 +57,7 @@ export default async function (app) {
 
   app.get("/", async (req) => {
     const { limit = 100, offset = 0, category, accountId, search, from, to,
-            sort = "date_desc", hasReceipt } = req.query;
+            sort = "date_desc", hasReceipt, cleared, flag, includeVoided } = req.query;
     const where = ["t.user_id = ?"];
     const params = [req.user.id];
     if (category)  { where.push("t.category = ?"); params.push(category); }
@@ -59,6 +67,16 @@ export default async function (app) {
     if (to)        { where.push("t.date <= ?"); params.push(to); }
     if (hasReceipt === "1" || hasReceipt === "true") {
       where.push("t.has_attachment = 1");
+    }
+    // Clearing-status filter: "cleared", "uncleared", "reconciled".
+    if (cleared === "cleared")    { where.push("t.cleared = 1 AND t.reconciliation_id IS NULL"); }
+    if (cleared === "uncleared")  { where.push("(t.cleared = 0 OR t.cleared IS NULL)"); }
+    if (cleared === "reconciled") { where.push("t.reconciliation_id IS NOT NULL"); }
+    // Flag colour filter.
+    if (flag)                     { where.push("t.flag_color = ?"); params.push(flag); }
+    // Voided rows are hidden from the list unless explicitly asked for.
+    if (includeVoided !== "1" && includeVoided !== "true") {
+      where.push("t.voided_at IS NULL");
     }
     // Scheduled rows are excluded from the main list — they show in the
     // dedicated /scheduled endpoint at the top of the Transactions tab.
@@ -103,9 +121,15 @@ export default async function (app) {
               t.cleared AS cleared,
               t.reconciliation_id AS reconciliationId,
               t.is_deductible AS isDeductible,
+              t.check_number AS checkNumber,
+              t.voided_at AS voidedAt,
+              t.flag_color AS flagColor,
               t.paystub_json AS paystubJson,
-              a.name AS accountName, a.id AS accountId, a.plaid_item_id AS plaidItemId
-       FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
+              a.name AS accountName, a.id AS accountId, a.plaid_item_id AS plaidItemId,
+              mr.display_name AS merchantDisplayName
+       FROM transactions t
+       LEFT JOIN accounts a ON a.id = t.account_id
+       LEFT JOIN merchant_rules mr ON mr.user_id = t.user_id AND mr.merchant = t.merchant
        WHERE ${where.join(" AND ")} ORDER BY ${orderBy} LIMIT ? OFFSET ?`,
       params
     );
@@ -125,14 +149,16 @@ export default async function (app) {
   });
 
   app.post("/", async (req, reply) => {
-    const { date, merchant, category, amount, accountId, note } = req.body || {};
+    const { date, merchant, category, amount, accountId, note, check_number, flag_color } = req.body || {};
     if (!date || !merchant || amount === undefined) {
       return reply.code(400).send({ error: "date, merchant, amount required" });
     }
     const r = await query(
-      `INSERT INTO transactions (user_id, account_id, date, merchant, category, amount, note)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [req.user.id, accountId || null, date, merchant, category || "Other", amount, note || null]
+      `INSERT INTO transactions (user_id, account_id, date, merchant, category, amount, note, check_number, flag_color)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [req.user.id, accountId || null, date, merchant, category || "Other", amount, note || null,
+        check_number ? String(check_number).slice(0, 32) : null,
+        validFlag(flag_color)]
     );
     // Reflect the change in the linked manual account's balance
     // (income +, expense −). Plaid accounts are skipped.
@@ -550,7 +576,8 @@ export default async function (app) {
   });
 
   app.patch("/:id", async (req) => {
-    const { merchant, category, amount, note, date, is_deductible } = req.body || {};
+    const { merchant, category, amount, note, date, is_deductible,
+            check_number, flag_color } = req.body || {};
     // If amount changes on a manual account txn, adjust balance by the delta.
     // Scheduled rows are excluded (see DELETE handler above).
     const existing = await queryOne(
@@ -559,6 +586,12 @@ export default async function (app) {
     );
     const deductibleBit = is_deductible === undefined
       ? null : (is_deductible ? 1 : 0);
+    // Flag: undefined = no change; null or "" = clear; else validate.
+    // Check num: undefined = no change; null or "" = clear; else store.
+    const flagVal = flag_color === undefined
+      ? null : (flag_color ? validFlag(flag_color) : null);
+    const checkVal = check_number === undefined
+      ? null : (check_number ? String(check_number).slice(0, 32) : null);
     await query(
       `UPDATE transactions SET
          merchant = COALESCE(?, merchant),
@@ -566,10 +599,15 @@ export default async function (app) {
          amount = COALESCE(?, amount),
          note = COALESCE(?, note),
          date = COALESCE(?, date),
-         is_deductible = COALESCE(?, is_deductible)
+         is_deductible = COALESCE(?, is_deductible),
+         flag_color = IF(?, ?, flag_color),
+         check_number = IF(?, ?, check_number)
        WHERE id = ? AND user_id = ?`,
       [merchant ?? null, category ?? null, amount ?? null, note ?? null, date ?? null,
-       deductibleBit, req.params.id, req.user.id]
+       deductibleBit,
+       flag_color !== undefined ? 1 : 0, flagVal,
+       check_number !== undefined ? 1 : 0, checkVal,
+       req.params.id, req.user.id]
     );
     if (existing && !existing.is_scheduled
         && amount !== undefined && Number(amount) !== Number(existing.amount)) {
@@ -577,6 +615,62 @@ export default async function (app) {
       await adjustManualAccountBalance(req.user.id, existing.account_id, delta);
     }
     return queryOne("SELECT * FROM transactions WHERE id = ?", [req.params.id]);
+  });
+
+  // ── Void / unvoid ──────────────────────────────────────────────────
+  // Quicken parity: voided transactions stay visible with a strikethrough
+  // but every aggregation filters them out (budgets, cashflow, netWorth,
+  // by-category, tax summary, reports). Voiding also reverses the manual-
+  // account balance side-effect from the original creation.
+  app.post("/:id/void", async (req, reply) => {
+    const existing = await queryOne(
+      "SELECT account_id, amount, is_scheduled, voided_at FROM transactions WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    if (!existing) return reply.code(404).send({ error: "not found" });
+    if (existing.voided_at) return { ok: true, alreadyVoided: true };
+    await query(
+      "UPDATE transactions SET voided_at = NOW() WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    if (!existing.is_scheduled) {
+      await adjustManualAccountBalance(req.user.id, existing.account_id, -Number(existing.amount));
+    }
+    return { ok: true };
+  });
+
+  app.post("/:id/unvoid", async (req, reply) => {
+    const existing = await queryOne(
+      "SELECT account_id, amount, is_scheduled, voided_at FROM transactions WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    if (!existing) return reply.code(404).send({ error: "not found" });
+    if (!existing.voided_at) return { ok: true, alreadyLive: true };
+    await query(
+      "UPDATE transactions SET voided_at = NULL WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    if (!existing.is_scheduled) {
+      await adjustManualAccountBalance(req.user.id, existing.account_id, Number(existing.amount));
+    }
+    return { ok: true };
+  });
+
+  // ── Payee memorization ────────────────────────────────────────────
+  // Returns the most-recent non-voided category + account used for a
+  // merchant substring so the new-txn form can prefill on blur.
+  app.get("/payee-hint", async (req) => {
+    const q = String(req.query.merchant || "").trim();
+    if (q.length < 2) return { hit: null };
+    const rows = await query(
+      `SELECT category, account_id AS accountId, amount, merchant
+       FROM transactions
+       WHERE user_id = ? AND voided_at IS NULL AND merchant LIKE ?
+       ORDER BY date DESC, id DESC
+       LIMIT 1`,
+      [req.user.id, `%${q}%`]
+    );
+    return { hit: rows[0] || null };
   });
 
   app.delete("/:id", {
@@ -615,15 +709,18 @@ export default async function (app) {
     // the income/cashflow rollups. Credit purchases get tallied via the
     // credit-usage tracker, not category totals.
     return query(
-      `SELECT t.category, SUM(ABS(t.amount)) AS total, COUNT(*) AS count
+      `SELECT t.category, SUM(ABS(t.amount)) AS total, COUNT(*) AS count,
+              c.group_name AS groupName
        FROM transactions t
        LEFT JOIN accounts a ON a.id = t.account_id
+       LEFT JOIN categories c ON c.user_id = t.user_id AND c.name = t.category
        WHERE t.user_id = ? AND t.amount < 0
          AND (a.type IS NULL OR a.type <> 'credit')
          AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
          AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
+         AND t.voided_at IS NULL
          ${dateClause}
-       GROUP BY t.category ORDER BY total DESC`,
+       GROUP BY t.category, c.group_name ORDER BY total DESC`,
       params
     );
   });
@@ -656,6 +753,7 @@ export default async function (app) {
          AND (a.type IS NULL OR a.type <> 'credit')
          AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
          AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
+         AND t.voided_at IS NULL
          ${dateClause}
        GROUP BY month ORDER BY month`,
       params
@@ -749,10 +847,39 @@ export default async function (app) {
   // ── Manage merchant rules ──────────────────────────────────────
   app.get("/merchant-rules", async (req) => {
     return query(
-      `SELECT id, merchant, category, created_at AS createdAt
+      `SELECT id, merchant, category, display_name AS displayName, created_at AS createdAt
        FROM merchant_rules WHERE user_id = ? ORDER BY merchant`,
       [req.user.id]
     );
+  });
+
+  // Set/clear the display_name override on a merchant rule (Quicken "payee
+  // rename"). A rule row without a category isn't allowed by the schema, so
+  // if the user only wants a display rename with no categorization change,
+  // we require the row to already exist.
+  app.patch("/merchant-rules/:id", async (req, reply) => {
+    const b = req.body || {};
+    const owned = await queryOne(
+      "SELECT id FROM merchant_rules WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    if (!owned) return reply.code(404).send({ error: "not found" });
+    const displayName = b.display_name === "" || b.display_name === null
+      ? null : (b.display_name ? String(b.display_name).slice(0, 255) : undefined);
+    if (displayName === undefined && b.category === undefined) {
+      return reply.code(400).send({ error: "nothing to update" });
+    }
+    await query(
+      `UPDATE merchant_rules SET
+         category = COALESCE(?, category),
+         display_name = IF(?, ?, display_name)
+       WHERE id = ? AND user_id = ?`,
+      [b.category ?? null,
+       displayName !== undefined ? 1 : 0,
+       displayName ?? null,
+       req.params.id, req.user.id]
+    );
+    return { ok: true };
   });
 
   app.delete("/merchant-rules/:id", async (req) => {
@@ -781,7 +908,7 @@ export default async function (app) {
               a.name AS accountName
        FROM transactions t
        LEFT JOIN accounts a ON a.id = t.account_id
-       WHERE t.user_id = ?
+       WHERE t.user_id = ? AND t.voided_at IS NULL
        ORDER BY t.date DESC, t.id DESC`,
       [req.user.id]
     );
@@ -898,15 +1025,45 @@ export default async function (app) {
       );
       if (!boundAccount) return reply.code(400).send({ error: "account not found" });
     }
-    let imported = 0, skipped = 0, balanceDelta = 0;
+    // Dedupe pre-flight: for each parsed row, check if the target
+    // account already has a matching row within ±3 days at the same
+    // amount. If it does, skip the insert by default. The client can
+    // set `allow_duplicates=1` to override — restoring the old
+    // behaviour if the user knows this is a fresh account.
+    const allowDupes = req.body?.allow_duplicates === true
+      || req.body?.allow_duplicates === "1"
+      || req.body?.allow_duplicates === "true";
+    let imported = 0, skipped = 0, duplicates = 0, balanceDelta = 0;
+    const dupRows = [];
     for (const row of parsed) {
       if (!row.date || !row.merchant || !Number.isFinite(row.amount)) { skipped++; continue; }
+      if (!allowDupes && accountId) {
+        const existing = await queryOne(
+          `SELECT id, date, merchant, amount FROM transactions
+           WHERE user_id = ? AND account_id = ?
+             AND ABS(amount - ?) < 0.01
+             AND date BETWEEN DATE_SUB(?, INTERVAL 3 DAY) AND DATE_ADD(?, INTERVAL 3 DAY)
+             AND voided_at IS NULL
+           LIMIT 1`,
+          [req.user.id, accountId, row.amount, row.date, row.date]
+        );
+        if (existing) {
+          duplicates++;
+          if (dupRows.length < 20) dupRows.push({
+            date: row.date, merchant: row.merchant, amount: row.amount,
+            existingId: existing.id,
+          });
+          continue;
+        }
+      }
       try {
         await query(
-          `INSERT INTO transactions (user_id, account_id, date, merchant, category, amount, note)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO transactions
+             (user_id, account_id, date, merchant, category, amount, note, check_number)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           [req.user.id, accountId || null, row.date, row.merchant,
-           row.category || "Other", row.amount, row.note || null]
+           row.category || "Other", row.amount, row.note || null,
+           row.checkNumber || null]
         );
         imported++;
         balanceDelta += Number(row.amount);
@@ -920,6 +1077,107 @@ export default async function (app) {
     if (boundAccount && !boundAccount.plaid_item_id && balanceDelta !== 0) {
       await adjustManualAccountBalance(req.user.id, accountId, balanceDelta);
     }
-    return { ok: true, format, imported, skipped };
+    return { ok: true, format, imported, skipped, duplicates, sampleDuplicates: dupRows };
+  });
+
+  // ── Saved register views ──────────────────────────────────────────
+  // Persist a filter/sort/flag combo the user can re-apply from a dropdown.
+  // The `config` blob is treated as opaque JSON by the server — the client
+  // is the sole author of its shape.
+  app.get("/saved-views", async (req) => {
+    const rows = await query(
+      "SELECT id, name, config FROM saved_views WHERE user_id = ? ORDER BY name",
+      [req.user.id]
+    );
+    for (const r of rows) {
+      try { r.config = JSON.parse(r.config); } catch { r.config = {}; }
+    }
+    return rows;
+  });
+
+  app.post("/saved-views", async (req, reply) => {
+    const b = req.body || {};
+    if (!b.name || !b.config) return reply.code(400).send({ error: "name and config required" });
+    const cfg = JSON.stringify(b.config);
+    if (cfg.length > 16 * 1024) return reply.code(413).send({ error: "config too large" });
+    const r = await query(
+      "INSERT INTO saved_views (user_id, name, config) VALUES (?, ?, ?)",
+      [req.user.id, String(b.name).slice(0, 64), cfg]
+    );
+    return { id: r.insertId };
+  });
+
+  app.delete("/saved-views/:id", async (req, reply) => {
+    const r = await query(
+      "DELETE FROM saved_views WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    if (!r.affectedRows) return reply.code(404).send({ error: "not found" });
+    return { ok: true };
+  });
+
+  // ── Split templates (Stage B) ─────────────────────────────────────
+  // Manual-entry helpers for common recurring split shapes (paycheck →
+  // 60% checking / 40% savings). Template + lines. `kind` = "percent"
+  // means every line's percent sums to ~100; "fixed" means each line
+  // has an absolute amount and the template applies as-is.
+  app.get("/split-templates", async (req) => {
+    const tpls = await query(
+      "SELECT id, name, kind FROM split_templates WHERE user_id = ? ORDER BY name",
+      [req.user.id]
+    );
+    if (!tpls.length) return [];
+    const lines = await query(
+      `SELECT stl.template_id AS templateId, stl.id, stl.category,
+              stl.amount, stl.percent, stl.note, stl.sort_order AS sortOrder
+       FROM split_template_lines stl
+       JOIN split_templates st ON st.id = stl.template_id
+       WHERE st.user_id = ?
+       ORDER BY stl.template_id, stl.sort_order, stl.id`,
+      [req.user.id]
+    );
+    const byTpl = new Map();
+    for (const l of lines) {
+      if (!byTpl.has(l.templateId)) byTpl.set(l.templateId, []);
+      byTpl.get(l.templateId).push(l);
+    }
+    for (const t of tpls) t.lines = byTpl.get(t.id) || [];
+    return tpls;
+  });
+
+  app.post("/split-templates", async (req, reply) => {
+    const b = req.body || {};
+    if (!b.name || !Array.isArray(b.lines) || b.lines.length < 2) {
+      return reply.code(400).send({ error: "name and >=2 lines required" });
+    }
+    const kind = b.kind === "fixed" ? "fixed" : "percent";
+    const r = await query(
+      "INSERT INTO split_templates (user_id, name, kind) VALUES (?, ?, ?)",
+      [req.user.id, String(b.name).slice(0, 64), kind]
+    );
+    for (let i = 0; i < b.lines.length; i++) {
+      const l = b.lines[i];
+      await query(
+        `INSERT INTO split_template_lines
+           (template_id, category, amount, percent, note, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [r.insertId,
+         String(l.category || "Other").slice(0, 64),
+         kind === "fixed" && Number.isFinite(Number(l.amount)) ? Number(l.amount) : null,
+         kind === "percent" && Number.isFinite(Number(l.percent)) ? Number(l.percent) : null,
+         l.note ? String(l.note).slice(0, 255) : null,
+         i]
+      );
+    }
+    return { id: r.insertId };
+  });
+
+  app.delete("/split-templates/:id", async (req, reply) => {
+    const r = await query(
+      "DELETE FROM split_templates WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    if (!r.affectedRows) return reply.code(404).send({ error: "not found" });
+    return { ok: true };
   });
 }

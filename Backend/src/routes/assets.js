@@ -38,17 +38,22 @@ export default async function (app) {
 
   app.get("/", async (req) => {
     const rows = await query(
-      `SELECT id, name, kind, acquired_date AS acquiredDate,
-              acquired_value AS acquiredValue,
-              current_value AS currentValue,
-              salvage_value AS salvageValue,
-              useful_life_years AS usefulLifeYears,
-              depreciation_method AS depreciationMethod,
-              declining_rate AS decliningRate,
-              notes, created_at AS createdAt
-       FROM assets
-       WHERE user_id = ? AND archived_at IS NULL
-       ORDER BY current_value DESC`,
+      `SELECT a.id, a.name, a.kind, a.acquired_date AS acquiredDate,
+              a.acquired_value AS acquiredValue,
+              a.current_value AS currentValue,
+              a.salvage_value AS salvageValue,
+              a.useful_life_years AS usefulLifeYears,
+              a.depreciation_method AS depreciationMethod,
+              a.declining_rate AS decliningRate,
+              a.notes, a.created_at AS createdAt,
+              a.loan_account_id AS loanAccountId,
+              la.name AS loanAccountName,
+              la.balance AS loanAccountBalance,
+              la.institution AS loanAccountInstitution
+       FROM assets a
+       LEFT JOIN accounts la ON la.id = a.loan_account_id AND la.user_id = a.user_id
+       WHERE a.user_id = ? AND a.archived_at IS NULL
+       ORDER BY a.current_value DESC`,
       [req.user.id]
     );
     // Aggregate damage/repair impact per asset (positive = value lost).
@@ -75,8 +80,25 @@ export default async function (app) {
         acquired_date: r.acquiredDate,
       });
       r.projectedValue = Number(Math.max(0, baseProjection - r.damageTotal).toFixed(2));
+      // Loan balances on credit/loan accounts are stored negative — the
+      // "amount you still owe" is the absolute value. Net position on this
+      // asset = current_value − amount_owed.
+      const owed = r.loanAccountId ? Math.abs(Number(r.loanAccountBalance) || 0) : 0;
+      r.loanBalance = owed;
+      r.netPosition = Number((Number(r.currentValue) - owed).toFixed(2));
     }
     return rows;
+  });
+
+  // Loan-type accounts the user can link an asset to (mortgage, car loan, etc).
+  app.get("/eligible-loans", async (req) => {
+    return query(
+      `SELECT id, name, balance, institution
+       FROM accounts
+       WHERE user_id = ? AND type = 'loan'
+       ORDER BY name`,
+      [req.user.id]
+    );
   });
 
   // ── Damage / impairment events ─────────────────────────────────────
@@ -151,11 +173,22 @@ export default async function (app) {
     const method = ALLOWED_METHODS.has(b.depreciation_method) ? b.depreciation_method : "none";
     const acquired = Number(b.acquired_value);
     const current = Number(b.current_value ?? acquired);
+    // Only accept a loan_account_id that belongs to the caller and is
+    // actually a loan-type account. Silently drop any other value.
+    let loanAccountId = null;
+    if (b.loan_account_id) {
+      const acct = await queryOne(
+        "SELECT id FROM accounts WHERE id = ? AND user_id = ? AND type = 'loan'",
+        [b.loan_account_id, req.user.id]
+      );
+      if (acct) loanAccountId = acct.id;
+    }
     const r = await query(
       `INSERT INTO assets
          (user_id, name, kind, acquired_date, acquired_value, current_value,
-          salvage_value, useful_life_years, depreciation_method, declining_rate, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          salvage_value, useful_life_years, depreciation_method, declining_rate, notes,
+          loan_account_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         req.user.id,
         String(b.name).slice(0, 128),
@@ -165,6 +198,7 @@ export default async function (app) {
         method,
         Math.max(0, Math.min(99, Number(b.declining_rate) || 20)),
         b.notes ? String(b.notes).slice(0, 500) : null,
+        loanAccountId,
       ]
     );
     return queryOne("SELECT * FROM assets WHERE id = ?", [r.insertId]);
@@ -177,6 +211,16 @@ export default async function (app) {
     const b = req.body || {};
     const kind   = b.kind && ALLOWED_KINDS.has(b.kind) ? b.kind : null;
     const method = b.depreciation_method && ALLOWED_METHODS.has(b.depreciation_method) ? b.depreciation_method : null;
+    // loan_account_id: undefined = no change, null = unlink, number = validate + link.
+    let loanAccountId = undefined;
+    if (b.loan_account_id === null) loanAccountId = null;
+    else if (b.loan_account_id !== undefined) {
+      const acct = await queryOne(
+        "SELECT id FROM accounts WHERE id = ? AND user_id = ? AND type = 'loan'",
+        [b.loan_account_id, req.user.id]
+      );
+      loanAccountId = acct ? acct.id : null;
+    }
     await query(
       `UPDATE assets SET
          name = COALESCE(?, name),
@@ -188,7 +232,8 @@ export default async function (app) {
          useful_life_years = COALESCE(?, useful_life_years),
          depreciation_method = COALESCE(?, depreciation_method),
          declining_rate = COALESCE(?, declining_rate),
-         notes = COALESCE(?, notes)
+         notes = COALESCE(?, notes),
+         loan_account_id = IF(?, ?, loan_account_id)
        WHERE id = ? AND user_id = ?`,
       [
         b.name ?? null, kind,
@@ -200,6 +245,8 @@ export default async function (app) {
         method,
         b.declining_rate !== undefined ? Number(b.declining_rate) : null,
         b.notes ?? null,
+        loanAccountId !== undefined ? 1 : 0,
+        loanAccountId ?? null,
         req.params.id, req.user.id,
       ]
     );

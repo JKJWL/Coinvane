@@ -42,7 +42,8 @@ export default async function (app) {
     const txns = await query(
       `SELECT t.date, t.merchant, t.category, t.amount, a.name AS accountName
        FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
-       WHERE t.user_id = ? ORDER BY t.date DESC, t.id DESC LIMIT 500`, [userId]
+       WHERE t.user_id = ? AND t.voided_at IS NULL
+       ORDER BY t.date DESC, t.id DESC LIMIT 500`, [userId]
     );
     const notes = await query(
       `SELECT title, content FROM notes WHERE user_id = ? ORDER BY id`, [userId]
@@ -175,7 +176,8 @@ export default async function (app) {
        WHERE t.user_id = ? AND t.date >= ? AND t.date < ?
          AND (a.type IS NULL OR a.type <> 'credit')
          AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
-         AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)`,
+         AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
+         AND t.voided_at IS NULL`,
       [userId, from, to]
     );
     const cats = await query(
@@ -184,6 +186,7 @@ export default async function (app) {
        WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date < ?
          AND (a.type IS NULL OR a.type <> 'credit')
          AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+         AND t.voided_at IS NULL
        GROUP BY category ORDER BY total DESC`,
       [userId, from, to]
     );
@@ -193,6 +196,7 @@ export default async function (app) {
        WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date < ?
          AND (a.type IS NULL OR a.type <> 'credit')
          AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+         AND t.voided_at IS NULL
        GROUP BY merchant ORDER BY total DESC LIMIT 15`,
       [userId, from, to]
     );
@@ -253,6 +257,7 @@ export default async function (app) {
        WHERE t.user_id = ? AND t.amount < 0 AND YEAR(t.date) = ?
          AND (a.type IS NULL OR a.type <> 'credit')
          AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+         AND t.voided_at IS NULL
        GROUP BY category`,
       [req.user.id, y]
     );
@@ -308,6 +313,7 @@ export default async function (app) {
        WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ?
          AND (a.type IS NULL OR a.type <> 'credit')
          AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+         AND t.voided_at IS NULL
        GROUP BY category`,
       [req.user.id, monthStart]
     );
@@ -356,6 +362,7 @@ export default async function (app) {
          AND YEAR(t.date) = ?
          AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
          AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
+         AND t.voided_at IS NULL
          AND (c.tax_schedule IS NOT NULL OR t.is_deductible = 1)
        ORDER BY schedule, t.category, t.date`,
       [req.user.id, year]
@@ -496,6 +503,185 @@ export default async function (app) {
       doc.fillColor("#0f172a").text(
         `${(l.name || "").slice(0, 24).padEnd(24)}   ${(l.loan_type || "other").padEnd(12)}   ${fmt(l.current_balance).padStart(10)} / ${fmt(l.principal).padStart(10)}   ${Number(l.apr).toFixed(2)}% APR   ${paidOff}% paid`
       );
+    }
+    doc.end();
+    return reply;
+  });
+
+  // ── Loan amortization PDF (Stage B) ───────────────────────────────
+  // Month-by-month schedule for a single loan. Uses standard fixed-
+  // payment amortization (interest = balance × rate/12, principal =
+  // payment − interest). Extra payment optional. Capped at 720 months
+  // to match the LoanCard client-side cap.
+  app.get("/amortization.pdf", async (req, reply) => {
+    const PDFDocument = (await import("pdfkit")).default;
+    const loanId = Number(req.query?.loan_id);
+    if (!loanId) return reply.code(400).send({ error: "loan_id required" });
+    const loan = await queryOne(
+      `SELECT id, name, principal, current_balance, apr, term_months,
+              extra_payment, escrow_tax, escrow_insurance, escrow_pmi, escrow_other
+       FROM loans WHERE id = ? AND user_id = ?`,
+      [loanId, req.user.id]
+    );
+    if (!loan) return reply.code(404).send({ error: "loan not found" });
+
+    const balance0 = Number(loan.current_balance || loan.principal);
+    const monthlyRate = (Number(loan.apr) / 100) / 12;
+    const term = Number(loan.term_months) || 360;
+    // Standard mortgage formula. If APR is 0, straight-line principal.
+    const pmt = monthlyRate > 0
+      ? balance0 * (monthlyRate * Math.pow(1 + monthlyRate, term)) / (Math.pow(1 + monthlyRate, term) - 1)
+      : balance0 / term;
+    const extra = Number(loan.extra_payment) || 0;
+    const escrow = Number(loan.escrow_tax || 0) + Number(loan.escrow_insurance || 0)
+      + Number(loan.escrow_pmi || 0) + Number(loan.escrow_other || 0);
+
+    const rows = [];
+    let bal = balance0;
+    let totalInterest = 0;
+    for (let m = 1; m <= 720 && bal > 0.01; m++) {
+      const interest = bal * monthlyRate;
+      let principal = pmt + extra - interest;
+      if (principal > bal) principal = bal;
+      bal -= principal;
+      totalInterest += interest;
+      rows.push({ m, interest, principal, escrow, bal });
+      if (bal <= 0.01) break;
+    }
+
+    const fmt = (n) => "$" + Number(n || 0).toFixed(2);
+    reply
+      .header("Content-Type", "application/pdf")
+      .header("Content-Disposition", `attachment; filename="coinvane-amort-${loan.name.replace(/\W+/g, "-").slice(0, 24)}.pdf"`);
+    const doc = new PDFDocument({ size: "LETTER", margin: 40 });
+    reply.send(doc);
+    doc.fontSize(20).fillColor("#7c3aed").text("Amortization Schedule");
+    doc.fontSize(10).fillColor("#64748b").text(loan.name);
+    doc.moveDown(0.4);
+    doc.fontSize(9).fillColor("#334155")
+      .text(`Balance: ${fmt(balance0)} · APR ${Number(loan.apr).toFixed(2)}% · Payment ${fmt(pmt)}${extra > 0 ? ` + ${fmt(extra)} extra` : ""}${escrow > 0 ? ` + ${fmt(escrow)} escrow` : ""}`)
+      .text(`Total interest paid: ${fmt(totalInterest)} · Payoff in ${rows.length} months`);
+    doc.moveDown(0.6);
+    const cols = { m: 40, int: 110, prin: 200, esc: 300, bal: 400 };
+    doc.fontSize(8).fillColor("#0f172a");
+    doc.text("Month", cols.m, doc.y, { continued: true });
+    doc.text("Interest", cols.int, doc.y - doc.currentLineHeight(), { continued: true });
+    doc.text("Principal", cols.prin, doc.y - doc.currentLineHeight(), { continued: true });
+    if (escrow > 0) doc.text("Escrow", cols.esc, doc.y - doc.currentLineHeight(), { continued: true });
+    doc.text("Balance", cols.bal, doc.y - doc.currentLineHeight());
+    doc.moveTo(40, doc.y + 2).lineTo(560, doc.y + 2).strokeColor("#94a3b8").stroke();
+    doc.moveDown(0.3);
+    for (const r of rows) {
+      const y = doc.y;
+      doc.text(String(r.m), cols.m, y, { width: 60 });
+      doc.text(fmt(r.interest), cols.int, y, { width: 80 });
+      doc.text(fmt(r.principal), cols.prin, y, { width: 90 });
+      if (escrow > 0) doc.text(fmt(r.escrow), cols.esc, y, { width: 90 });
+      doc.text(fmt(r.bal), cols.bal, y, { width: 100 });
+      if (doc.y > 720) doc.addPage();
+    }
+    doc.end();
+    return reply;
+  });
+
+  // ── Plain register PDF (Stage 4a) ─────────────────────────────────
+  // Bare, print-friendly account register — no Coinvane branding, no
+  // decoration, no summary. Just the columns Quicken's classic Ctrl+P
+  // gave you: date · check# · merchant · category · amount · balance.
+  // Respects the same filter surface as the register: account, date
+  // range, category, cleared status.
+  app.get("/register.pdf", async (req, reply) => {
+    const PDFDocument = (await import("pdfkit")).default;
+    const userId = req.user.id;
+    const { accountId, from, to, category, cleared } = req.query || {};
+    const where = ["t.user_id = ?"];
+    const params = [userId];
+    if (accountId) { where.push("t.account_id = ?"); params.push(accountId); }
+    if (from)      { where.push("t.date >= ?"); params.push(from); }
+    if (to)        { where.push("t.date <= ?"); params.push(to); }
+    if (category)  { where.push("t.category = ?"); params.push(category); }
+    if (cleared === "cleared")    where.push("t.cleared = 1 AND t.reconciliation_id IS NULL");
+    if (cleared === "uncleared")  where.push("(t.cleared = 0 OR t.cleared IS NULL)");
+    if (cleared === "reconciled") where.push("t.reconciliation_id IS NOT NULL");
+    where.push("t.voided_at IS NULL");
+    where.push("(t.is_scheduled = 0 OR t.is_scheduled IS NULL)");
+    const rows = await query(
+      `SELECT t.date, t.check_number AS checkNumber, t.merchant, t.category,
+              t.amount, t.cleared, t.reconciliation_id AS reconciliationId,
+              a.name AS accountName
+       FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
+       WHERE ${where.join(" AND ")}
+       ORDER BY t.date ASC, t.id ASC
+       LIMIT 2000`,
+      params
+    );
+    // Running balance is only meaningful when scoped to a single account,
+    // otherwise the number would jump between accounts. Compute from the
+    // account's current balance minus everything after the visible range.
+    let openingBalance = 0;
+    let showBalance = false;
+    if (accountId) {
+      const acc = await queryOne(
+        "SELECT name, balance FROM accounts WHERE id = ? AND user_id = ?",
+        [accountId, userId]
+      );
+      if (acc) {
+        const rest = await queryOne(
+          `SELECT COALESCE(SUM(amount), 0) AS delta
+           FROM transactions
+           WHERE user_id = ? AND account_id = ? AND voided_at IS NULL
+             AND (is_scheduled = 0 OR is_scheduled IS NULL)
+             AND (id > (SELECT COALESCE(MAX(id), 0) FROM transactions
+                        WHERE user_id = ? AND account_id = ?
+                          AND date <= (SELECT MAX(date) FROM transactions
+                                       WHERE user_id = ? AND account_id = ?)))`,
+          [userId, accountId, userId, accountId, userId, accountId]
+        );
+        openingBalance = Number(acc.balance) - Number(rest?.delta || 0)
+          - rows.reduce((s, r) => s + Number(r.amount), 0);
+        showBalance = true;
+      }
+    }
+
+    const fmt = (n) => (Number(n) >= 0 ? "+" : "−") + "$" + Math.abs(Number(n || 0)).toFixed(2);
+    reply
+      .header("Content-Type", "application/pdf")
+      .header("Content-Disposition", `attachment; filename="coinvane-register.pdf"`);
+    const doc = new PDFDocument({ size: "LETTER", margin: 40 });
+    reply.send(doc);
+
+    doc.fontSize(14).fillColor("#0f172a").text("Account Register");
+    doc.fontSize(9).fillColor("#64748b").text(
+      `${from || "start"} → ${to || "today"}${category ? " · " + category : ""}`
+    );
+    doc.moveDown(0.5);
+
+    // Column layout
+    const cols = { date: 40, chk: 100, payee: 150, cat: 310, amt: 430, bal: 500 };
+    doc.fontSize(8).fillColor("#334155");
+    doc.text("Date",     cols.date,  doc.y, { continued: true });
+    doc.text("Chk#",     cols.chk,   doc.y - doc.currentLineHeight(), { continued: true });
+    doc.text("Payee",    cols.payee, doc.y - doc.currentLineHeight(), { continued: true });
+    doc.text("Category", cols.cat,   doc.y - doc.currentLineHeight(), { continued: true });
+    doc.text("Amount",   cols.amt,   doc.y - doc.currentLineHeight(), { continued: true });
+    if (showBalance) doc.text("Balance", cols.bal, doc.y - doc.currentLineHeight());
+    else doc.text("");
+    doc.moveTo(40, doc.y + 2).lineTo(560, doc.y + 2).strokeColor("#94a3b8").stroke();
+    doc.moveDown(0.3);
+
+    doc.fontSize(8).fillColor("#0f172a");
+    let running = openingBalance;
+    for (const r of rows) {
+      running += Number(r.amount);
+      const status = r.reconciliationId ? "R" : (r.cleared ? "c" : " ");
+      const y = doc.y;
+      doc.text(String(r.date).slice(0, 10), cols.date, y, { width: 55 });
+      doc.text((r.checkNumber || "") + status, cols.chk, y, { width: 40 });
+      doc.text((r.merchant || "").slice(0, 32), cols.payee, y, { width: 155 });
+      doc.text((r.category || "").slice(0, 20), cols.cat, y, { width: 115 });
+      doc.text(fmt(r.amount), cols.amt, y, { width: 65 });
+      if (showBalance) doc.text(fmt(running), cols.bal, y, { width: 60 });
+      if (doc.y > 720) { doc.addPage(); }
     }
     doc.end();
     return reply;
