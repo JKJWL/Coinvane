@@ -184,21 +184,62 @@ function parseFloatSafe(s) {
 export function parseOfx(raw) {
   const out = [];
   const s = String(raw || "");
-  const blockRe = /<STMTTRN>([\s\S]*?)<\/STMTTRN>/gi;
-  const scalar = (block, tag) => {
-    const re = new RegExp(`<${tag}>([^<\\r\\n]+)`, "i");
-    const m = block.match(re);
-    return m ? m[1].trim() : null;
+  // Case-normalised copy for O(1) uppercase indexOf while keeping the
+  // original for value extraction. OFX tags are conventionally uppercase
+  // but real bank exports mix cases, so we search on the upper copy.
+  const S = s.toUpperCase();
+  // Scan for <STMTTRN>...</STMTTRN> blocks with indexOf instead of a
+  // lazy-quantifier regex. The former regex `/<STMTTRN>([\s\S]*?)<\/STMTTRN>/gi`
+  // exhibited quadratic backtracking on inputs with a lone opening tag
+  // followed by long strings without a matching close (CodeQL
+  // js/polynomial-redos). indexOf pairs the tags in a single linear pass.
+  const OPEN = "<STMTTRN>";
+  const CLOSE = "</STMTTRN>";
+  // Bounded field extractor — reads up to the first `<`, `\r`, or `\n`
+  // after the tag. Also indexOf-based so we don't reintroduce a
+  // catastrophic regex.
+  const scalar = (block, upperBlock, tag) => {
+    const openTag = `<${tag}>`;
+    const at = upperBlock.indexOf(openTag);
+    if (at === -1) return null;
+    const start = at + openTag.length;
+    // Find the earliest terminator among <, \r, \n.
+    let stop = block.length;
+    for (let i = start; i < block.length; i++) {
+      const c = block.charCodeAt(i);
+      if (c === 0x3c /* < */ || c === 0x0d /* \r */ || c === 0x0a /* \n */) {
+        stop = i; break;
+      }
+    }
+    const raw = block.slice(start, stop).trim();
+    return raw || null;
   };
-  let mBlock;
-  while ((mBlock = blockRe.exec(s)) !== null) {
-    const block = mBlock[1];
-    const dt = scalar(block, "DTPOSTED");
-    const amt = scalar(block, "TRNAMT");
-    const nameA = scalar(block, "NAME");
-    const nameB = block.match(/<PAYEE>[\s\S]*?<NAME>([^<\r\n]+)/i)?.[1]?.trim() || null;
-    const memo = scalar(block, "MEMO");
-    const trnType = scalar(block, "TRNTYPE");
+  let idx = 0;
+  while (true) {
+    const start = S.indexOf(OPEN, idx);
+    if (start === -1) break;
+    const contentStart = start + OPEN.length;
+    const end = S.indexOf(CLOSE, contentStart);
+    if (end === -1) break;
+    const block = s.slice(contentStart, end);
+    const upperBlock = S.slice(contentStart, end);
+    idx = end + CLOSE.length;
+
+    const dt = scalar(block, upperBlock, "DTPOSTED");
+    const amt = scalar(block, upperBlock, "TRNAMT");
+    const nameA = scalar(block, upperBlock, "NAME");
+    // <PAYEE>...<NAME>… form. Find <PAYEE> then look for the next
+    // <NAME> inside the payee subtree. Same indexOf pattern to keep
+    // the whole pass linear.
+    let nameB = null;
+    const payeeAt = upperBlock.indexOf("<PAYEE>");
+    if (payeeAt !== -1) {
+      const inner = block.slice(payeeAt);
+      const innerUp = upperBlock.slice(payeeAt);
+      nameB = scalar(inner, innerUp, "NAME");
+    }
+    const memo = scalar(block, upperBlock, "MEMO");
+    const trnType = scalar(block, upperBlock, "TRNTYPE");
     const date = parseOfxDate(dt);
     const amount = parseFloatSafe(amt);
     if (!date || amount === null) continue;
