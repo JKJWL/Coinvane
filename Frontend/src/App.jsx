@@ -10187,17 +10187,46 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
     if (!file) return;
     setImportingQuicken(true);
     try {
-      const text = await file.text();
       const acctId = quickenAccountId ? Number(quickenAccountId) : null;
-      const r = await api.importQuicken(text, acctId);
-      // If dupes were detected, prompt to import them anyway.
+      // .mny is a binary Jet DB — text() would mangle it. Send base64
+      // for those and let the backend dispatch to parseMny.
+      const isMny = /\.mny$/i.test(file.name);
+      // Password prompt for .mny only. Empty string = "no password, use
+      // sunriise's backdoor". Cancelling the prompt aborts the import
+      // (returns null) so the user can bail if they didn't mean to
+      // pick a .mny file.
+      let mnyPassword = null;
+      if (isMny) {
+        const pw = window.prompt(
+          "Microsoft Money file — enter the file password if you remember it, or leave blank and sunriise will attempt to unlock it. Cancel to abort.",
+          ""
+        );
+        if (pw === null) { setImportingQuicken(false); return; }
+        mnyPassword = pw;
+      }
+      const importOnce = async (allowDupes) => {
+        if (isMny) {
+          const buf = await file.arrayBuffer();
+          // Chunk the base64 conversion in 32k-byte slices — one big
+          // fromCharCode.apply would stack-overflow on multi-MB files.
+          const bytes = new Uint8Array(buf);
+          let bin = "";
+          for (let i = 0; i < bytes.length; i += 0x8000) {
+            bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+          }
+          return api.importMny(btoa(bin), acctId, allowDupes, mnyPassword);
+        }
+        const text = await file.text();
+        return api.importQuicken(text, acctId, allowDupes);
+      };
+      const r = await importOnce(false);
       let extra = "";
       if (r.duplicates > 0) {
         const importAnyway = window.confirm(
           `${r.duplicates} row${r.duplicates === 1 ? " looks" : "s look"} like duplicate${r.duplicates === 1 ? "" : "s"} of existing transactions in this account (same amount within ±3 days). Import them anyway?\n\nOK = import all\nCancel = keep skipped`
         );
         if (importAnyway) {
-          const r2 = await api.importQuicken(text, acctId, true);
+          const r2 = await importOnce(true);
           extra = ` · +${r2.imported - r.imported} dupes imported`;
         } else {
           extra = ` · ${r.duplicates} dupes skipped`;
@@ -10467,13 +10496,13 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
           On import, the account column is matched to your existing accounts by name; unknown names import as manual rows.
         </div>
 
-        {/* ── Quicken / Mint migration ── */}
+        {/* ── Quicken / MS Money / Mint migration ── */}
         <div className={`border-t ${theme.border} pt-3 mt-3 space-y-2`}>
           <div className="flex items-center justify-between flex-wrap gap-2">
             <div>
-              <div className="text-sm font-semibold">Import from Quicken / Mint / bank export</div>
+              <div className="text-sm font-semibold">Import from Quicken / MS Money / Mint / bank export</div>
               <div className={`text-xs ${theme.textSubtle}`}>
-                Accepts .QIF, .OFX, or .QFX. Bind imported rows to a specific account.
+                Accepts .QIF, .OFX, .QFX, or .MNY (Microsoft Money). Password-locked .mny files are unlocked automatically via sunriise. Bind imported rows to a specific account.
               </div>
             </div>
           </div>
@@ -10489,10 +10518,10 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
               disabled={importingQuicken}
               onClick={() => quickenInputRef.current?.click()}
               className={`text-sm font-medium ${theme.surface} border ${theme.border} px-3 py-2 rounded-xl disabled:opacity-60`}>
-              {importingQuicken ? "Importing…" : "Import QIF / OFX / QFX"}
+              {importingQuicken ? "Importing…" : "Import QIF / OFX / QFX / MNY"}
             </motion.button>
             <input ref={quickenInputRef} type="file"
-              accept=".qif,.ofx,.qfx,application/x-ofx,text/plain"
+              accept=".qif,.ofx,.qfx,.mny,application/x-ofx,application/x-msmoney,text/plain"
               className="hidden"
               onChange={e => { handleQuickenFile(e.target.files?.[0]); e.target.value = ""; }} />
           </div>

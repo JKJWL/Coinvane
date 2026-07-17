@@ -263,6 +263,16 @@ export const api = {
       content, account_id: accountId || null,
       allow_duplicates: allowDuplicates ? "1" : undefined,
     }),
+  // Binary .mny path: base64 the raw bytes because JSON can't carry them
+  // without corruption. Server dispatches to parseMny when content_b64
+  // is set instead of content. Optional password is forwarded to
+  // sunriise when the file is password-protected.
+  importMny: (contentB64, accountId, allowDuplicates = false, password = null) =>
+    request("POST", "/transactions/import/quicken", {
+      content_b64: contentB64, account_id: accountId || null,
+      allow_duplicates: allowDuplicates ? "1" : undefined,
+      mny_password: password || undefined,
+    }),
   exportRegisterPDF: (params = {}) => {
     const q = new URLSearchParams(
       Object.fromEntries(Object.entries(params).filter(([, v]) => v))

@@ -1,9 +1,46 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+
+# ─── Stage 1: build sunriise ─────────────────────────────────────────
+# sunriise is the community tool that unlocks password-protected
+# Microsoft Money (.mny) databases. We build it from source rather than
+# downloading a release JAR because release URLs on the fork rot and
+# we want reproducible builds. Cloning shallow (--depth 1) keeps the
+# checkout small.
+#
+# The output we care about is the "jar-with-dependencies" produced by
+# the maven-assembly-plugin — that jar bundles sunriise + Jackcess (the
+# Java library that reads Jet databases) + everything transitive so we
+# can invoke it with a single `java -jar` line at runtime.
+FROM alpine:3.20 AS sunriise-builder
+RUN apk add --no-cache git maven openjdk17
+WORKDIR /src
+RUN git clone --depth 1 https://github.com/hleofxquotes/sunriise.git .
+# Maven's assembly plugin builds the fat jar. -DskipTests because
+# sunriise's tests reference sample .mny files we don't have and would
+# fail the build. -q keeps the log manageable.
+RUN mvn -q -DskipTests -Passembly package \
+  || mvn -q -DskipTests package
+# Whichever target ran, find the fat jar. There's exactly one file
+# matching this pattern in a healthy build.
+RUN find /src -type f \( -name '*-jar-with-dependencies.jar' -o -name '*-shaded.jar' \) \
+      -exec cp {} /sunriise.jar \; \
+  && test -f /sunriise.jar
+
+# ─── Stage 2: runtime ────────────────────────────────────────────────
 FROM node:20-alpine
 WORKDIR /app
-RUN apk add --no-cache python3 make g++ && ln -sf python3 /usr/bin/python
+# python3/make/g++: node-gyp for a couple of native deps at install time.
+# mdbtools: reads tables out of unencrypted Jet databases — used on the
+#   output of sunriise once it strips the .mny encryption.
+# openjdk17-jre-headless: needed at runtime to invoke the sunriise jar.
+RUN apk add --no-cache python3 make g++ mdbtools openjdk17-jre-headless \
+  && ln -sf python3 /usr/bin/python
+COPY --from=sunriise-builder /sunriise.jar /opt/sunriise.jar
 COPY package*.json ./
 RUN npm install --omit=dev
 COPY src ./src
+# Path the mny-import module reads from. Exposed as an env var so an
+# operator can point at a different jar without rebuilding.
+ENV SUNRIISE_JAR=/opt/sunriise.jar
 EXPOSE 4000
 CMD ["node", "src/server.js"]

@@ -2,6 +2,7 @@
 import { query, queryOne } from "../db.js";
 import { runRulesForTrigger } from "../automation-engine.js";
 import { parseAny } from "../quicken-import.js";
+import { parseMny, isMnyBuffer } from "../mny-import.js";
 import { promises as fs } from "fs";
 import path from "path";
 
@@ -998,23 +999,65 @@ export default async function (app) {
   // balance adjustment matches what actually happened in the source
   // system. Sends back { format, imported, skipped } like CSV import.
   app.post("/import/quicken", {
-    bodyLimit: 5 * 1024 * 1024,
+    // Bumped from 5 MB → 20 MB because .mny (Jet DB) files run large.
+    // QIF/OFX still stay well under the old cap.
+    bodyLimit: 20 * 1024 * 1024,
     config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
   }, async (req, reply) => {
     const raw = typeof req.body === "string"
       ? req.body
       : req.body?.content || "";
+    // Binary payloads (currently .mny) come in as base64 in `content_b64`
+    // because JSON can't carry raw bytes without corruption. The frontend
+    // chooses this path when the file's extension is .mny or when the
+    // magic bytes look like Jet.
+    const rawB64 = req.body?.content_b64 || null;
     const accountId = Number(req.body?.account_id) || null;
-    if (!raw || raw.length < 5) {
+    if (!raw && !rawB64) {
       return reply.code(400).send({ error: "Empty import body" });
     }
-    // Guard against binary + oversize junk sooner than the bodyLimit trips.
-    if (raw.length > 5 * 1024 * 1024) {
-      return reply.code(400).send({ error: "File too large (5 MB max)" });
+    if (raw && raw.length > 20 * 1024 * 1024) {
+      return reply.code(400).send({ error: "File too large (20 MB max)" });
     }
-    const { format, transactions: parsed } = parseAny(raw);
+
+    let format;
+    let parsed;
+    if (rawB64) {
+      let buf;
+      try { buf = Buffer.from(rawB64, "base64"); }
+      catch { return reply.code(400).send({ error: "Invalid base64 payload" }); }
+      if (buf.length > 20 * 1024 * 1024) {
+        return reply.code(400).send({ error: "File too large (20 MB max)" });
+      }
+      if (!isMnyBuffer(buf)) {
+        return reply.code(400).send({
+          error: "This does not look like a Microsoft Money (.mny) database. Expected a Jet DB header.",
+        });
+      }
+      try {
+        // Optional password — sunriise doesn't strictly need it but
+        // some Money exports respond better when it's supplied. Trim
+        // and cap length so a malicious client can't stuff a huge
+        // string into java's argv.
+        const pw = req.body?.mny_password
+          ? String(req.body.mny_password).slice(0, 128) : null;
+        const result = await parseMny(buf, pw);
+        format = result.format;
+        parsed = result.transactions;
+      } catch (e) {
+        // parseMny throws a human-oriented message when the file is
+        // password-locked or mdbtools is missing. Preserve it verbatim.
+        return reply.code(400).send({ error: e.message || "MNY parse failed" });
+      }
+    } else {
+      const result = parseAny(raw);
+      format = result.format;
+      parsed = result.transactions;
+    }
     if (format === "unknown") {
-      return reply.code(400).send({ error: "Unrecognized format — expected QIF, OFX, or QFX" });
+      return reply.code(400).send({
+        error: "Unrecognized format — expected QIF (Quicken / MS Money), OFX, QFX, or MNY.",
+      });
     }
     // Validate the account belongs to the user (if supplied).
     let boundAccount = null;
