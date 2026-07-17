@@ -25,13 +25,13 @@ Run the helper script once from the repo root:
 Backend/scripts/build-sunriise.sh
 ```
 
-The script spins up a throwaway Maven/JDK container, clones any active
-sunriise fork you point it at (via `SUNRIISE_REPO` env var, default
-matches the most-forked mirror), runs `mvn package`, and drops the
+The script spins up a throwaway Maven/JDK container, clones the
+sunriise fork (defaults to <https://github.com/clmsoft/sunriise>, the
+currently-maintained mirror), runs `mvn package`, and drops the
 resulting fat jar at `Backend/vendor/sunriise.jar`. From then on
 `docker compose build backend` includes it automatically.
 
-If the default repo URL is dead, edit the script or override:
+If the default repo URL is dead in the future, override it:
 
 ```bash
 SUNRIISE_REPO=https://github.com/<some-fork>/sunriise.git \

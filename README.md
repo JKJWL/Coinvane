@@ -61,8 +61,15 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 - **Split transactions** — carve one transaction into multiple category slices (e.g. a Costco run split across Groceries / Household / Fuel). Child rows inherit the merchant + date; the parent becomes a container.
 - **Receipt attachments** — attach one image (PNG or JPG, ≤5MB) per transaction from the detail sheet, view or reprint later. Uploads are rate-limited (3 per transaction per 5 min, 50 per user per 30 min); a new upload replaces the old file to conserve disk. A pink image marker appears next to any transaction that has a receipt, and the transaction list has a **Has receipt** sort that groups them at the top.
 - **Reconciliation** — Quicken-style statement match on any cash or credit account. Enter the statement date + ending balance, tick off transactions until the running difference hits zero, then finalize to lock the pass. Reconciled transactions are frozen with a `reconciliation_id` so a later pass can't re-tick them.
+- **Running balance** — when the transaction list is filtered to a single account, each row shows the post-transaction balance underneath the amount. Quicken-parity register view.
+- **Check numbers** — dedicated `Chk#` field on manual entry, surfaced next to every row it's set on. Imported QIF `N` codes populate it automatically.
+- **Flag colours + saved views** — 7-colour flag palette on any transaction (review, dispute, tax follow-up, whatever) with matching filter chips. Save your current filter/sort/flag/clearing combo as a named view and re-apply it in one click.
+- **Void transactions** — a state distinct from delete. Voided rows stay visible with a strikethrough but drop out of budgets, cashflow, by-category, net-worth, tax summary, reports, and notifications. Reversible with one click.
+- **Payee memorization** — on the manual-entry form, tabbing out of the merchant field prefills the category and account based on your most recent matching transaction. Silent if you've already picked something different.
+- **Merchant display renames** — rename a raw merchant string ("SQ *ACME COFFEE") everywhere it appears without affecting categorization. Merchant rules remain the source of truth for how transactions get categorized.
+- **Global keyboard shortcuts (desktop)** — `n` jumps to Transactions and opens the new-txn sheet, `/` focuses search, `[` / `]` shift months on the dashboard KPIs. Ignored while typing in a form field.
 - **CSV import / export** — full transaction roundtrip from the Settings → Data section. CSV columns: `date, merchant, category, amount, account, note, pending`. On import, accounts are matched by name; unknown names fall back to manual rows.
-- **QIF / OFX / QFX import** — dedicated migration path for Quicken, Mint, or any bank export that only speaks the old formats. Auto-detects the format from the file, binds every imported row to a chosen account, and shifts the manual balance to match.
+- **QIF / OFX / QFX / MNY import** — migration path for Quicken, Microsoft Money, Mint, or any bank export in one of these formats. Auto-detects the format from the file, binds every imported row to a chosen account, and shifts the manual balance to match. Suspected duplicates against existing rows in the target account (±3 days, same amount) are skipped by default with a prompt to import them anyway. See [Microsoft Money import](#microsoft-money-import) for the native `.mny` path.
 
 ### Budgets
 - **Master period** — one reset rhythm drives every budget AND the credit-usage tracker. Pick a cadence on the Income card (weekly, bi-weekly, semi-monthly, monthly, yearly, or every N days from a date) and "this week's groceries", "this week's income", and "this week's allocation total" all line up exactly. The "Weekly" option's reset day follows your global *Week starts on* setting (any day of the week, set in Settings → Appearance).
@@ -82,7 +89,8 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 - **Link to a bank account** — when linked, the goal's saved amount is the linked account's live balance, no manual contributions needed (and they're explicitly refused server-side to keep the source of truth single)
 - **Loan tracker** — a second section under Goals for mortgages, auto loans, student loans, credit-card balances you're paying down. Principal, rate, term, minimum + optional extra payment. Interactive amortization with an extra-payment slider that recomputes payoff date and total interest live.
 - **Mortgage escrow breakdown (PITI)** — separate monthly amounts for property tax, homeowners insurance, PMI, and other escrow. Loan cards render a proportional stacked bar and full PITI monthly total when any escrow is set.
-- **Unified debt simulator** — one extra $/mo slider applied across every active loan, with snowball-style cascading of each cleared debt's minimum onto the current target. Toggle Avalanche vs Snowball to see the target flip and the "months / interest saved" headline update live.
+- **Unified debt simulator** — one extra $/mo slider applied across every active loan, with snowball-style cascading of each cleared debt's minimum onto the current target. Toggle Avalanche vs Snowball to see the target flip and the "months / interest saved" headline update live. If any debt's minimum doesn't cover its interest, the simulator surfaces a rose banner instead of running to the 60-year cap.
+- **Amortization PDF per loan** — every loan card exposes an "Amort PDF" button that downloads a month-by-month schedule with interest / principal / escrow / balance columns. Includes a full-payment summary line (total interest, months to payoff) at the top.
 - **Themed delete confirmation** instead of the native browser dialog
 
 ### Bills
@@ -91,20 +99,23 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 - **Manual fallback** — mark paid / unpaid / skip on any cycle, edit variance, adjust the expected amount when your electric bill jumps for the summer.
 - **Rolling 3-cycle nudge** — if your actual paid amount drifts from the template three cycles in a row, the UI suggests updating the template so future forecasts are accurate.
 - **Variance tracking** — see how far each cycle came in over or under expected.
+- **Due-date reminders** — every open bill cycle with a due date within your configured N-day window (default 3) fires an in-app notification. Toggle + threshold in Settings → Notifications.
 
 ### Net worth & cashflow
 - **Net Worth chart** with ALL / MTD / YTD / 1M / 3M / 1Y toggle (defaults to ALL — mobile gradient hero + desktop full chart)
 - **Spending pulse** — compact monthly category breakdown card
 - **Cashflow forecast** — dashed extension on the monthly cashflow chart projecting the next few months from recurring income + bill templates. Toggle it on/off with the Sparkles button (preference persists across devices); overlay a one-off adjustment (e.g. "expecting a $1,200 refund next month") without creating a real transaction.
+- **Cashflow low-balance alert** — daily projection over the next 30 days summing scheduled transactions + open bill outflows against your non-credit-account balance. Fires a notification if the projected low point dips below your configured minimum. Configurable in Settings → Notifications.
 - **Desktop KPI fullscreen** — click any of the three KPI cards (Cashflow / Spending by Category / Net Worth) on desktop to center-fullscreen it. Spending by Category card has its own filters + sort options matching the Net Worth chart.
 
 ### Investments
 - **Holdings, gains/losses** — brokerage syncing via Plaid
 - **Lot tracking + cost basis** — each holding is expandable into per-purchase lots (acquired date, quantity, cost-per-share). Sell any lot with a quantity + price; the app records the realized gain, decrements the lot, and flags **wash sales** when the same security was purchased within ±30 days of the loss. Realized YTD is exposed on its own KPI card for Schedule D prep.
+- **Dividend + interest auto-categorization** — Plaid's `INCOME_DIVIDENDS` / `INCOME_INTEREST_EARNED` categories (plus merchant patterns like `dividend`, `intrst`, `coupon`) are recognized during sync and labelled **Interest & Dividends**. Coinvane ensures a matching Schedule B category exists on your account so the year-end tax PDF picks it up automatically.
 
 ### Notifications & per-user settings
-- **Per-type toggles** — large transactions, income received ("Congrats You Got Paid!"), approaching budget limit, budget exceeded, goal milestones. Each independently on/offable.
-- **Configurable thresholds** — large-transaction $ amount, income $ amount, and budget-warning percentage are all editable in Settings.
+- **Per-type toggles** — large transactions, income received ("Congrats You Got Paid!"), approaching budget limit, budget exceeded, goal milestones, bill reminders, cashflow low-balance. Each independently on/offable.
+- **Configurable thresholds** — large-transaction $ amount, income $ amount, budget-warning percentage, bill-reminder days-before, cashflow minimum-balance are all editable in Settings.
 - **Email frequency** — instant / daily / weekly (with a weekly send-day picker). Daily and instant are functionally identical until the engine runs more than once a day.
 - **Privacy mode** — blurs dollar amounts on the dominant surfaces (hero net worth, KPI cards, account balances, transaction amounts). Hover/focus reveals.
 - **Sticky save bar** — Settings and the Admin panel share one save UX: a sticky top bar appears only when something is dirty, plus a floating "Save Changes?" ribbon on the right edge once you've scrolled past it.
@@ -120,8 +131,10 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 - **Per-user test email** — owner-only Mail icon next to each Members row sends a sample digest (with a "this is a test" banner) to verify SMTP delivery to that user without logging in as them.
 
 ### Assets & valuables
-- **Non-account holdings** — vehicles, boats, jewelry, art, collectibles, property. Track acquired value, current value, and (optionally) a depreciation curve. All roll into net worth alongside your bank accounts.
+- **Non-account holdings** — vehicles, boats, jewelry, art, collectibles, property. Track acquired value, current value, and (optionally) a depreciation curve. All roll into net worth alongside your bank accounts and appear in the sidebar under an Assets group.
 - **Three depreciation methods** — `none` (you maintain the value manually), `straight-line` (drops evenly from acquired to salvage over N years), `declining-balance` (X% of remaining value each year). "Refresh depreciation" snaps the current value to today's projected number in one click.
+- **Damage / repair log** — record dents, hail, scratches, or repairs against any asset. Damage rows subtract from current value; repairs add value back. Every event is kept and reversible. The refresh-depreciation button respects the log so a projection re-snap never erases a real-world dent.
+- **Loan link** — pair a car loan (or any loan-type account) with the asset it backs. The asset row shows the linked account, remaining balance, and per-asset net position (asset value − amount owed). Net-worth math is unchanged (both sides were already counted); this makes the relationship visible. Linkable from both directions — creating a loan account offers a "backing asset" picker, and the asset form offers a "loan on this asset" picker.
 
 ### Tax reporting
 - **IRS Schedule tagging on categories** — map each category to Schedule A (itemized), B (interest/dividends), C (business), D (capital gains), or E (rental/royalty). Every transaction in that category rolls into the year-end tax summary.
@@ -131,17 +144,57 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 ### Custom reports
 - **Pivot builder in Settings → Data** — pick 1-2 dimensions (category / merchant / account / month / year), a measure (sum / count / average), a side (expense / income / all), an optional date range, and credit-card include/exclude. Save configurations as one-click chips.
 
+### Categories & groups
+- **IRS Schedule per category** — map any category to Schedule A/B/C/D/E and the year-end tax PDF rolls the totals up for you.
+- **Optional group name** — roll multiple categories into one line on the byCategory pie ("Groceries" + "Restaurants" → "Food"). Display-only: budgets, merchant rules, and category storage remain keyed on the leaf name. A `Categories / Groups` toggle appears on the pie whenever any group exists.
+- **Interest & Dividends** — auto-created with Schedule B tagging the first time Plaid reports a dividend or interest transaction on your accounts.
+
+### Split templates
+- **Named split shapes** — save any manual split as a template ("Paycheck 60/40"). Choose percent (rescales to any future parent amount) or fixed (absolute amounts). Apply from a dropdown at the top of the split panel; on-save prompt walks through naming and kind.
+- **Manual-entry helper**, not an automation — for irregular transactions where a Plaid-triggered rule would misfire.
+
+### Microsoft Money import
+
+Coinvane accepts native `.mny` (Microsoft Money) database files in addition to the QIF Money exports. Two paths depending on your file:
+
+- **Unencrypted `.mny`** — decrypted or password-cleared files import directly. The backend uses `mdbtools` (an Alpine package baked into the backend image) to read the underlying Jet tables — `TRN` (transactions), plus `PAY` / `CAT` for merchant + category lookups. Column names are probed across Money 99 → Sunset since the schema shifted between versions.
+- **Password-protected `.mny`** — most Money files are locked. Coinvane can call `sunriise` (a community Apache-licensed Java tool that strips the password using the Sunset-era backdoor) transparently, but only if you've vendored its fat jar into the backend image. The frontend will prompt for the password when you select the file — leaving it blank tells sunriise to use the backdoor, which is usually the right choice.
+
+Installing sunriise is optional and only needed if you have locked `.mny` files. From the repo root:
+
+```bash
+Backend/scripts/build-sunriise.sh
+```
+
+The script spins up a throwaway Maven container, clones sunriise from <https://github.com/clmsoft/sunriise> (the currently-maintained mirror), runs `mvn package`, and drops the resulting fat jar at `Backend/vendor/sunriise.jar`. Rebuild the backend image afterwards to bake the jar in:
+
+```bash
+docker compose build backend && docker compose up -d backend
+```
+
+If the default `SUNRIISE_REPO` URL 404s in the future, override with `SUNRIISE_REPO=<url> Backend/scripts/build-sunriise.sh`. You can also drop a pre-built fat jar at `Backend/vendor/sunriise.jar` manually and skip the script entirely.
+
+If sunriise is not installed and you upload an encrypted `.mny`, the import returns a clear error rather than crashing — unencrypted `.mny` and other formats keep working.
+
+**Licensing:** sunriise is Apache 2.0, compatible with Coinvane's AGPL v3 (Apache 2.0 → AGPL is a permitted one-way combination). Vendoring the jar does not affect Coinvane's licence.
+
+**What's imported:** transactions with date, merchant, category, amount, note, and check number. Investment records (`!Type:Invst`) are skipped — those belong in the [lot tracker](#investments), not the transaction ledger. Money's split lines (S / E / $ codes) fan out into individual transaction rows; any residual amount stays on the parent.
+
 ### Misc
 - **Notes** — free-form notes, content encrypted at rest
 - **Mobile PWA** — install to iPhone home screen, full-screen, frosted iOS-style nav, Dynamic Island safe
 - **Multi-device** — dark mode, theme, and every per-user setting follow you across devices
 - **Google SSO** — no passwords stored; locked to an email allowlist so only you can sign in
-- **PDF report dropdown** — Settings → Data → *Export report (PDF)* opens a menu with 5 branded reports, all server-side rendered (no headless browser):
+- **PDF report dropdown** — Settings → Data → *Export report (PDF)* opens a menu with 7 branded reports, all server-side rendered (no headless browser):
   1. **Full report** — cover + summary + accounts + budgets + goals + last 500 transactions + decrypted notes
   2. **Monthly** — single-month income / expense / cashflow / category breakdown
   3. **Category YoY** — year-over-year per-category comparison
   4. **Budgets** — every budget + spend history for the current and past periods
   5. **Bills & Loans** — recurring bill cycles + loan amortization progress
+  6. **Tax summary (year-end)** — deductible transactions grouped by IRS Schedule with per-category totals
+  7. **Register (plain print)** — bare, black-and-white transaction register with running balance when scoped to a single account. Filter surface honours the same account / date / category / clearing options as the on-screen register.
+
+  Loan cards also expose a per-loan **Amortization PDF** button that produces the month-by-month schedule for that specific loan.
 
 ---
 
@@ -611,9 +664,10 @@ coinvane/
 │   │   ├── plaid-client.js        # Plaid SDK init
 │   │   ├── plaid-webhook-verify.js
 │   │   ├── queue.js               # BullMQ queue/job helpers
-│   │   ├── sync.js                # Plaid sync orchestration
+│   │   ├── sync.js                # Plaid sync orchestration (+ dividend/interest auto-categorization)
 │   │   ├── mailer.js              # SMTP / Nodemailer + notification-digest template
-│   │   ├── quicken-import.js      # QIF / OFX / QFX parsers for Quicken / Mint migration
+│   │   ├── quicken-import.js      # QIF / OFX / QFX parsers with MS Money split-record support
+│   │   ├── mny-import.js          # Native .mny reader (mdbtools + optional sunriise unlock)
 │   │   └── routes/
 │   │       ├── auth.js            # Google SSO, /me, members, role updates, test-email
 │   │       ├── accounts.js
@@ -629,8 +683,11 @@ coinvane/
 │   │       ├── reconciliations.js # Quicken-style statement match (draft/locked passes)
 │   │       ├── tax.js             # Year-end IRS Schedule roll-up
 │   │       ├── reports.js         # Custom pivot builder + saved reports
-│   │       ├── assets.js          # Vehicles / valuables + depreciation
-│   │       └── export.js          # PDF dropdown: full / monthly / yoy / budgets / bills-loans / tax-summary
+│   │       ├── assets.js          # Vehicles / valuables + depreciation + damage log + loan link
+│   │       └── export.js          # PDF dropdown: full / monthly / yoy / budgets / bills-loans / tax-summary / register / amortization
+│   ├── vendor/                    # Optional runtime dependencies (sunriise.jar for encrypted .mny)
+│   ├── scripts/
+│   │   └── build-sunriise.sh      # One-shot vendored build of sunriise via a maven container
 │   ├── Dockerfile
 │   └── package.json
 ├── Frontend/

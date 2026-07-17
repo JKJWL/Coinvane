@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-SUNRIISE_REPO="${SUNRIISE_REPO:-https://github.com/hleofxquotes/sunriise.git}"
+SUNRIISE_REPO="${SUNRIISE_REPO:-https://github.com/clmsoft/sunriise.git}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENDOR_DIR="$(cd "$SCRIPT_DIR/../vendor" && pwd)"
 OUT_JAR="$VENDOR_DIR/sunriise.jar"
