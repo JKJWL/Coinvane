@@ -782,8 +782,14 @@ function MoreMenu({ tabs, activeTab, setTab, theme, darkMode }) {
 }
 
 // ─── Sidebar Account Group ────────────────────────────────────────────────────
-function SidebarGroup({ type, label, icon: Icon, accounts, theme }) {
-  const visible = accounts.filter(a => a.type === type);
+function SidebarGroup({ type, label, icon: Icon, accounts, theme, items }) {
+  // Two calling patterns:
+  //   (accounts, type) — filter accounts by type. Used for cash/credit/etc.
+  //   (items)          — render the supplied items as-is with the shape
+  //                      { id, name, institution?, balance }. Used for
+  //                      assets (car / boat / valuables) which live in
+  //                      a separate table but share the sidebar layout.
+  const visible = items ? items : accounts.filter(a => a.type === type);
   if (!visible.length) return null;
   const total = visible.reduce((s, a) => s + Number(a.balance), 0);
   return (
@@ -10542,7 +10548,7 @@ function Shell({ user, onLogout, refreshUser }) {
   const [darkMode, setDarkModeLocal] = useState(!!user?.dark_mode);
   const [syncing, setSyncing] = useState(false);
   const toast = useToast();
-  const { refreshAll, loading, summary, accounts } = useData();
+  const { refreshAll, loading, summary, accounts, assets } = useData();
   const theme = darkMode ? DARK : LIGHT;
 
   // Trigger a Plaid sync from the header. Enqueues a worker job; data
@@ -10754,6 +10760,14 @@ function Shell({ user, onLogout, refreshUser }) {
           <SidebarGroup type="credit"     label="Credit Cards" icon={CreditCard}  accounts={accounts} theme={theme} />
           <SidebarGroup type="investment" label="Investments"  icon={TrendingUp}  accounts={accounts} theme={theme} />
           <SidebarGroup type="loan"       label="Loans"        icon={Building2}   accounts={accounts} theme={theme} />
+          <SidebarGroup label="Assets" icon={Car} theme={theme}
+            items={(assets || []).map(a => ({
+              id: a.id, name: a.name,
+              // Use the asset kind as the "institution" subtitle so the
+              // sidebar row looks like an account row.
+              institution: (ASSET_KINDS.find(k => k.code === a.kind) || {}).label || "Asset",
+              balance: Number(a.currentValue) || 0,
+            }))} />
           <div className="mt-auto">
             <PlaidLinkButton onSuccess={refreshAll} full />
           </div>

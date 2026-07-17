@@ -13,6 +13,7 @@ export function DataProvider({ children, enabled }) {
   const [categories, setCategories] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [holdings, setHoldings] = useState([]);
+  const [assets, setAssets] = useState([]);
   const [summary, setSummary] = useState(null);
   const [investSummary, setInvestSummary] = useState(null);
   const [cashflow, setCashflow] = useState([]);
@@ -25,18 +26,19 @@ export function DataProvider({ children, enabled }) {
     if (!enabled) return;
     setLoading(true);
     try {
-      const [acc, txn, bud, gol, not, cat, ntf, hld, sum, isum, cf, bc, trk, sug] = await Promise.all([
+      const [acc, txn, bud, gol, not, cat, ntf, hld, sum, isum, cf, bc, trk, sug, ast] = await Promise.all([
         api.getAccounts(), api.getTransactions({ limit: 200 }), api.getBudgets(),
         api.getGoals(), api.getNotes(), api.getCategories(), api.getNotifications(),
         api.getHoldings(), api.getAccountSummary(), api.getInvestmentSummary(),
         api.getCashflow(), api.getByCategory(),
         api.getBudgetTrackers().catch(() => ({ income: null, credit: null, zeroBudget: null })),
         api.getBudgetSuggestions().catch(() => []),
+        api.listAssets().catch(() => []),
       ]);
       setAccounts(acc); setTransactions(txn); setBudgets(bud); setGoals(gol);
       setNotes(not); setCategories(cat); setNotifications(ntf); setHoldings(hld);
       setSummary(sum); setInvestSummary(isum); setCashflow(cf); setByCategory(bc);
-      setTrackers(trk); setBudgetSuggestions(sug);
+      setTrackers(trk); setBudgetSuggestions(sug); setAssets(ast);
     } finally {
       setLoading(false);
     }
@@ -46,12 +48,12 @@ export function DataProvider({ children, enabled }) {
 
   const value = {
     accounts, transactions, budgets, goals, notes, categories, notifications,
-    holdings, summary, investSummary, cashflow, byCategory,
+    holdings, assets, summary, investSummary, cashflow, byCategory,
     trackers, budgetSuggestions,
     loading,
     refreshAll,
     setAccounts, setTransactions, setBudgets, setGoals, setNotes,
-    setCategories, setNotifications, setHoldings,
+    setCategories, setNotifications, setHoldings, setAssets,
   };
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
