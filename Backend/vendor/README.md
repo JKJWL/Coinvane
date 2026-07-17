@@ -1,47 +1,34 @@
 # Vendored optional dependencies
 
-This directory is where you drop artifacts the backend can *optionally*
-use but that we don't want to depend on a live network fetch at Docker
-build time.
+This directory is where you drop optional runtime artifacts the backend
+can use but that we don't want to build inside every Docker image.
 
 ## `sunriise.jar` (optional — enables encrypted `.mny` import)
 
 Coinvane can import Microsoft Money `.mny` files via the built-in
-`mdbtools`. That covers files with no password. For password-protected
-files you need `sunriise`, a community Java tool that strips the
-password before extraction. sunriise is Apache 2.0-licensed and
-compatible with Coinvane's AGPL v3 license.
+`mdbtools` package. That covers files with no password. For
+password-protected files you need `sunriise`, a community Java tool
+that strips the password before extraction.
 
-**If `vendor/sunriise.jar` is not present, the backend builds fine and
-`.mny` import still works on unencrypted files**; encrypted files
-will return an actionable error at import time telling the user to
-unlock externally.
-
-### Building the jar
-
-Run the helper script once from the repo root:
+**How to add it:** drop the sunriise fat jar (jar-with-dependencies)
+into this directory as `sunriise.jar`, then rebuild the backend
+image:
 
 ```bash
-Backend/scripts/build-sunriise.sh
+docker compose build backend && docker compose up -d backend
 ```
 
-The script spins up a throwaway Maven/JDK container, clones the
-sunriise fork (defaults to <https://github.com/clmsoft/sunriise>, the
-currently-maintained mirror), runs `mvn package`, and drops the
-resulting fat jar at `Backend/vendor/sunriise.jar`. From then on
-`docker compose build backend` includes it automatically.
+The Dockerfile copies `vendor/sunriise.jar` into `/opt/sunriise.jar`
+and the MNY importer picks it up automatically. If you skip this step
+the backend still builds and unencrypted `.mny` files still import;
+encrypted ones return an actionable error at import time.
 
-If the default repo URL is dead in the future, override it:
-
-```bash
-SUNRIISE_REPO=https://github.com/<some-fork>/sunriise.git \
-  Backend/scripts/build-sunriise.sh
-```
+Get the jar from any sunriise release page (as of writing,
+<https://github.com/clmsoft/sunriise>). Any recent fat jar from a
+maintained fork should work.
 
 ### License note
 
-sunriise ships under Apache 2.0. When you vendor its jar you inherit
-that license for the file itself. It does **not** relicense Coinvane —
+sunriise ships under **Apache 2.0**. Vendoring the jar inherits that
+license for the file itself. It does **not** relicense Coinvane —
 Apache 2.0 → AGPL v3 is a permitted one-way combination.
-</content>
-</invoke>

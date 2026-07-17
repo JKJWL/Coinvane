@@ -158,21 +158,16 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 Coinvane accepts native `.mny` (Microsoft Money) database files in addition to the QIF Money exports. Two paths depending on your file:
 
 - **Unencrypted `.mny`** — decrypted or password-cleared files import directly. The backend uses `mdbtools` (an Alpine package baked into the backend image) to read the underlying Jet tables — `TRN` (transactions), plus `PAY` / `CAT` for merchant + category lookups. Column names are probed across Money 99 → Sunset since the schema shifted between versions.
-- **Password-protected `.mny`** — most Money files are locked. Coinvane can call `sunriise` (a community Apache-licensed Java tool that strips the password using the Sunset-era backdoor) transparently, but only if you've vendored its fat jar into the backend image. The frontend will prompt for the password when you select the file — leaving it blank tells sunriise to use the backdoor, which is usually the right choice.
+- **Password-protected `.mny`** — most Money files are locked. Coinvane can call `sunriise` (a community Apache-licensed Java tool that strips the password using the Sunset-era backdoor) transparently, but only if you've dropped its fat jar into the backend image at `Backend/vendor/sunriise.jar`. The frontend prompts for the password when you select the file — leaving it blank tells sunriise to use the backdoor, which is usually the right choice.
 
-Installing sunriise is optional and only needed if you have locked `.mny` files. From the repo root:
+Installing sunriise is optional and only needed if you have locked `.mny` files:
 
-```bash
-Backend/scripts/build-sunriise.sh
-```
-
-The script spins up a throwaway Maven container, clones sunriise from <https://github.com/clmsoft/sunriise> (the currently-maintained mirror), runs `mvn package`, and drops the resulting fat jar at `Backend/vendor/sunriise.jar`. Rebuild the backend image afterwards to bake the jar in:
-
-```bash
-docker compose build backend && docker compose up -d backend
-```
-
-If the default `SUNRIISE_REPO` URL 404s in the future, override with `SUNRIISE_REPO=<url> Backend/scripts/build-sunriise.sh`. You can also drop a pre-built fat jar at `Backend/vendor/sunriise.jar` manually and skip the script entirely.
+1. Grab a sunriise fat jar (jar-with-dependencies) from a maintained fork — as of writing, <https://github.com/clmsoft/sunriise> has releases.
+2. Drop it in as `Backend/vendor/sunriise.jar`.
+3. Rebuild the backend image to bake it in:
+   ```bash
+   docker compose build backend && docker compose up -d backend
+   ```
 
 If sunriise is not installed and you upload an encrypted `.mny`, the import returns a clear error rather than crashing — unencrypted `.mny` and other formats keep working.
 
@@ -686,8 +681,6 @@ coinvane/
 │   │       ├── assets.js          # Vehicles / valuables + depreciation + damage log + loan link
 │   │       └── export.js          # PDF dropdown: full / monthly / yoy / budgets / bills-loans / tax-summary / register / amortization
 │   ├── vendor/                    # Optional runtime dependencies (sunriise.jar for encrypted .mny)
-│   ├── scripts/
-│   │   └── build-sunriise.sh      # One-shot vendored build of sunriise via a maven container
 │   ├── Dockerfile
 │   └── package.json
 ├── Frontend/
