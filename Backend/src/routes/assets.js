@@ -4,7 +4,7 @@ import { query, queryOne } from "../db.js";
 const ALLOWED_KINDS = new Set([
   "vehicle", "boat", "jewelry", "art", "collectible", "property", "other",
 ]);
-const ALLOWED_METHODS = new Set(["none", "straight_line", "declining_balance"]);
+const ALLOWED_METHODS = new Set(["none", "straight_line", "declining_balance", "appreciating"]);
 
 // Compute the "should-be" value today per the depreciation curve.
 // Called from GET / to surface the projected value even if the user
@@ -29,6 +29,15 @@ export function projectDepreciatedValue(asset, atDate = new Date()) {
     if (!(rate > 0 && rate < 1)) return acquired;
     const val = acquired * Math.pow(1 - rate, yearsElapsed);
     return Math.max(salvage, val);
+  }
+  // Appreciating: opposite of declining_balance. Real estate, art,
+  // collectibles. `declining_rate` is repurposed as annual growth %
+  // to keep the storage shape identical. Compounds monthly-equivalent
+  // via Math.pow so short holding periods track correctly.
+  if (method === "appreciating") {
+    const rate = Number(asset.declining_rate || 5) / 100;
+    if (!(rate > 0)) return acquired;
+    return acquired * Math.pow(1 + rate, yearsElapsed);
   }
   return acquired;
 }

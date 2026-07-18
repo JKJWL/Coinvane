@@ -1,25 +1,45 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { query, queryOne } from "../db.js";
 
+// Whitelist of subtypes that carry meaningful tax + reporting semantics.
+// null / any other value falls back to plain type behaviour. Storage is
+// still just a VARCHAR so an operator can shove a custom subtype in via
+// SQL if they want — but the app treats anything unrecognised as generic.
+//   retirement — 401k / IRA / Roth / SEP / 403b; tax-advantaged.
+//   hsa        — Health Savings Account; triple-tax-advantaged.
+//   529        — education savings; state deduction, tax-free growth.
+//   heloc      — home equity line of credit; revolving credit against a
+//                property, distinct from a term loan.
+//   property   — real estate as an account-shaped bucket rather than
+//                the assets table (for people who want it in the
+//                accounts sidebar).
+const VALID_SUBTYPES = new Set(["retirement", "hsa", "529", "heloc", "property"]);
+function validSubtype(v) {
+  if (!v) return null;
+  return VALID_SUBTYPES.has(String(v)) ? String(v) : null;
+}
+
 export default async function (app) {
   app.addHook("preHandler", app.authenticate);
 
   app.get("/", async (req) => {
     return query(
       `SELECT id, name, type, subtype, balance, limit_amount AS limitAmount,
-              institution, last_sync_at AS lastSyncAt, plaid_item_id AS plaidItemId
+              institution, last_sync_at AS lastSyncAt, plaid_item_id AS plaidItemId,
+              is_business AS isBusiness
        FROM accounts WHERE user_id = ? ORDER BY type, name`,
       [req.user.id]
     );
   });
 
   app.post("/", async (req, reply) => {
-    const { name, type, subtype, balance, institution, link_asset_id } = req.body || {};
+    const { name, type, subtype, balance, institution, link_asset_id, is_business } = req.body || {};
     if (!name || !type) return reply.code(400).send({ error: "name and type required" });
     const r = await query(
-      `INSERT INTO accounts (user_id, name, type, subtype, balance, institution)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [req.user.id, name, type, subtype || null, balance || 0, institution || null]
+      `INSERT INTO accounts (user_id, name, type, subtype, balance, institution, is_business)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [req.user.id, name, type, validSubtype(subtype) || (subtype ? String(subtype).slice(0, 32) : null),
+        balance || 0, institution || null, is_business ? 1 : 0]
     );
     // Reverse-link: creating a loan account and pointing it at an asset the
     // user already owns updates that asset's loan_account_id.
@@ -33,11 +53,22 @@ export default async function (app) {
   });
 
   app.patch("/:id", async (req, reply) => {
-    const { name, balance } = req.body || {};
+    const { name, balance, subtype, is_business } = req.body || {};
+    // subtype: undefined = no change; null/"" = clear; else validate/store.
+    let subtypeVal = undefined;
+    if (subtype === null || subtype === "") subtypeVal = null;
+    else if (subtype !== undefined) subtypeVal = validSubtype(subtype) || String(subtype).slice(0, 32);
     await query(
-      `UPDATE accounts SET name = COALESCE(?, name), balance = COALESCE(?, balance)
+      `UPDATE accounts SET
+         name = COALESCE(?, name),
+         balance = COALESCE(?, balance),
+         subtype = IF(?, ?, subtype),
+         is_business = COALESCE(?, is_business)
        WHERE id = ? AND user_id = ?`,
-      [name ?? null, balance ?? null, req.params.id, req.user.id]
+      [name ?? null, balance ?? null,
+       subtypeVal !== undefined ? 1 : 0, subtypeVal ?? null,
+       is_business === undefined ? null : (is_business ? 1 : 0),
+       req.params.id, req.user.id]
     );
     return queryOne("SELECT * FROM accounts WHERE id = ?", [req.params.id]);
   });

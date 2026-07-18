@@ -5,6 +5,7 @@ import { parseAny } from "../quicken-import.js";
 import { parseMny, isMnyBuffer } from "../mny-import.js";
 import { promises as fs } from "fs";
 import path from "path";
+import crypto from "node:crypto";
 
 // Receipt attachments live on disk, one file per transaction. The path is
 // stored in DB but the file is authoritative. A DB row without a matching
@@ -616,6 +617,53 @@ export default async function (app) {
       await adjustManualAccountBalance(req.user.id, existing.account_id, delta);
     }
     return queryOne("SELECT * FROM transactions WHERE id = ?", [req.params.id]);
+  });
+
+  // ── Explicit transfer ─────────────────────────────────────────────
+  // Quicken/Money parity: one action moves money between two of your
+  // own accounts. We create both legs atomically, stamp them with a
+  // shared transfer_group_id, and mark both as is_transfer so they
+  // drop out of income / cashflow / by-category the same way an
+  // auto-detected pair does. Manual accounts get their balances shifted
+  // by adjustManualAccountBalance; Plaid-linked accounts don't.
+  app.post("/transfer", async (req, reply) => {
+    const b = req.body || {};
+    const fromId = Number(b.from_account_id);
+    const toId   = Number(b.to_account_id);
+    const amount = Math.abs(Number(b.amount));
+    const date   = b.date;
+    if (!fromId || !toId) return reply.code(400).send({ error: "from_account_id and to_account_id required" });
+    if (fromId === toId)  return reply.code(400).send({ error: "cannot transfer to the same account" });
+    if (!(amount > 0))    return reply.code(400).send({ error: "positive amount required" });
+    if (!date)            return reply.code(400).send({ error: "date required" });
+    const [fromAcct, toAcct] = await Promise.all([
+      queryOne("SELECT id, name, plaid_item_id FROM accounts WHERE id = ? AND user_id = ?", [fromId, req.user.id]),
+      queryOne("SELECT id, name, plaid_item_id FROM accounts WHERE id = ? AND user_id = ?", [toId,   req.user.id]),
+    ]);
+    if (!fromAcct || !toAcct) return reply.code(400).send({ error: "one or both accounts not found" });
+    const groupId = crypto.randomUUID
+      ? crypto.randomUUID()
+      : `t-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const note = b.note ? String(b.note).slice(0, 500) : null;
+    // Outgoing leg on the source, incoming on the target.
+    const outR = await query(
+      `INSERT INTO transactions
+         (user_id, account_id, date, merchant, category, amount, note,
+          is_transfer, transfer_group_id)
+       VALUES (?, ?, ?, ?, 'Transfer', ?, ?, 1, ?)`,
+      [req.user.id, fromId, date, `Transfer to ${toAcct.name}`, -amount, note, groupId]
+    );
+    const inR = await query(
+      `INSERT INTO transactions
+         (user_id, account_id, date, merchant, category, amount, note,
+          is_transfer, transfer_group_id)
+       VALUES (?, ?, ?, ?, 'Transfer', ?, ?, 1, ?)`,
+      [req.user.id, toId, date, `Transfer from ${fromAcct.name}`, amount, note, groupId]
+    );
+    // Balance side-effects for manual accounts only.
+    await adjustManualAccountBalance(req.user.id, fromId, -amount);
+    await adjustManualAccountBalance(req.user.id, toId, amount);
+    return { ok: true, transfer_group_id: groupId, outgoing_id: outR.insertId, incoming_id: inR.insertId };
   });
 
   // ── Void / unvoid ──────────────────────────────────────────────────

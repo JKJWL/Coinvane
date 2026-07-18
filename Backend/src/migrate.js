@@ -591,6 +591,27 @@ const SCHEMA = [
   // key off the leaf category name. Nullable so existing rows are
   // ungrouped by default.
   `ALTER TABLE categories ADD COLUMN IF NOT EXISTS group_name VARCHAR(64) NULL`,
+  // True subcategories — a category can reference another as its parent.
+  // Storage-hierarchical; the byCategory pie and budgets still key off
+  // leaf name for aggregation, but the frontend picker groups children
+  // under their parent so ("Auto:Fuel" + "Auto:Insurance" + "Auto:Repair")
+  // read cleanly.
+  `ALTER TABLE categories ADD COLUMN IF NOT EXISTS parent_id INT NULL`,
+
+  // ── Stage C: account subtypes + business flag ────────────────────
+  // subtype was already a VARCHAR(32) — we just start filling it with a
+  // whitelist (retirement / hsa / 529 / heloc / property / business).
+  // is_business flags an account as being for a sole prop / freelance
+  // Schedule C business, so its transactions can be surfaced separately
+  // on the tax summary.
+  `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS is_business BOOLEAN DEFAULT FALSE`,
+
+  // ── Stage C: property appreciation ───────────────────────────────
+  // Existing depreciation_method / declining_rate can now describe
+  // upward growth via a new enum value. We can't ALTER ENUM in place
+  // with IF NOT EXISTS, so this lives in SOFT_SCHEMA below wrapped in
+  // try/catch. The rate reuses declining_rate — positive means annual
+  // growth percentage.
 
   // Split templates — named recurring split shapes ("Paycheck 60/40").
   // Rows in split_template_lines hold each leg; sum of leg amounts /
@@ -808,6 +829,18 @@ const SOFT_SCHEMA = [
   `ALTER TABLE assets ADD INDEX idx_loan_account (loan_account_id)`,
   `ALTER TABLE assets ADD CONSTRAINT fk_assets_loan_account
      FOREIGN KEY (loan_account_id) REFERENCES accounts(id) ON DELETE SET NULL`,
+  // Stage C: extend the depreciation_method ENUM to include
+  // "appreciating" (positive growth). Applied via MODIFY COLUMN because
+  // ALTER ENUM doesn't support IF NOT EXISTS. Errors swallowed on fresh
+  // DBs where the CREATE TABLE hasn't yet been amended.
+  `ALTER TABLE assets MODIFY COLUMN depreciation_method
+     ENUM('none','straight_line','declining_balance','appreciating')
+     NOT NULL DEFAULT 'none'`,
+  // Categories → self-FK for subcategories. Fresh DBs where the
+  // CREATE TABLE already includes this will fail silently.
+  `ALTER TABLE categories ADD INDEX idx_parent (parent_id)`,
+  `ALTER TABLE categories ADD CONSTRAINT fk_categories_parent
+     FOREIGN KEY (parent_id) REFERENCES categories(id) ON DELETE SET NULL`,
 ];
 
 async function run() {

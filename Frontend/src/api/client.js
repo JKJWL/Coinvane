@@ -84,6 +84,7 @@ export const api = {
   classifyTransaction: (id, classification) =>
     request("PATCH", `/transactions/${id}/classify`, { classification }),
   // Manual split. body: { splits: [{ category, amount, note? }, ...] }
+  transferBetweenAccounts: (data) => request("POST", "/transactions/transfer", data),
   splitTransaction: (id, splits) =>
     request("POST", `/transactions/${id}/split`, { splits }),
   // Receipt attachments. Upload uses multipart (bespoke — request() only

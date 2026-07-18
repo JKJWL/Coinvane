@@ -1732,6 +1732,14 @@ function TaxCategoriesPanel({ theme, darkMode, toast }) {
     } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
     finally { setSavingId(null); }
   };
+  const setParent = async (cat, parentId) => {
+    setSavingId(cat.id);
+    try {
+      await api.updateCategory(cat.id, { parent_id: parentId || null });
+      setCats(prev => prev.map(c => c.id === cat.id ? { ...c, parentId: parentId || null } : c));
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    finally { setSavingId(null); }
+  };
 
   return (
     <div className={`${theme.surface} border ${theme.border} rounded-2xl p-5 space-y-3`}>
@@ -1754,11 +1762,23 @@ function TaxCategoriesPanel({ theme, darkMode, toast }) {
           {cats.map(c => (
             <div key={c.id} className="flex items-center gap-2 px-3 py-2">
               <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: c.color }} />
-              <div className="flex-1 text-sm font-medium truncate">{c.name}</div>
+              <div className={`flex-1 text-sm font-medium truncate ${c.parentId ? "pl-3" : ""}`}>
+                {c.parentId && <span className={theme.textSubtle}>↳ </span>}
+                {c.name}
+              </div>
+              <select value={c.parentId || ""} disabled={savingId === c.id}
+                onChange={e => setParent(c, Number(e.target.value) || null)}
+                title="Parent category (makes this a subcategory)"
+                className={`text-xs px-2 py-1 rounded-lg ${theme.inputBg} border ${theme.border} focus:outline-none focus:border-violet-500 max-w-[8rem]`}>
+                <option value="">no parent</option>
+                {cats.filter(x => x.id !== c.id && !x.parentId).map(x => (
+                  <option key={x.id} value={x.id}>↳ {x.name}</option>
+                ))}
+              </select>
               <input placeholder="Group"
                 defaultValue={c.groupName || ""}
                 onBlur={e => { const v = e.target.value.trim(); if (v !== (c.groupName || "")) setGroup(c, v); }}
-                className={`w-24 text-xs px-2 py-1 rounded-lg ${theme.inputBg} border ${theme.border} focus:outline-none focus:border-violet-500`} />
+                className={`w-20 text-xs px-2 py-1 rounded-lg ${theme.inputBg} border ${theme.border} focus:outline-none focus:border-violet-500`} />
               <select value={c.taxSchedule || ""} disabled={savingId === c.id}
                 onChange={e => setSchedule(c, e.target.value)}
                 className={`text-xs px-2 py-1 rounded-lg ${theme.inputBg} border ${theme.border} focus:outline-none focus:border-violet-500`}>
@@ -2266,12 +2286,13 @@ function AssetFormSheet({ open, onClose, editing, theme, darkMode, toast, onSave
           </div>
         </div>
         <div>
-          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Depreciation method</label>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Value curve</label>
           <select value={form.depreciation_method}
             onChange={e => setForm({ ...form, depreciation_method: e.target.value })} className={inputCls}>
             <option value="none">None — value stays put until I change it</option>
-            <option value="straight_line">Straight-line — drops evenly to salvage over N years</option>
-            <option value="declining_balance">Declining balance — X% off the remaining value each year</option>
+            <option value="straight_line">Depreciate straight-line — drops evenly to salvage over N years</option>
+            <option value="declining_balance">Depreciate declining balance — X% off the remaining value each year</option>
+            <option value="appreciating">Appreciate — grows X% per year (real estate, art, collectibles)</option>
           </select>
         </div>
         {form.depreciation_method === "straight_line" && (
@@ -2299,6 +2320,17 @@ function AssetFormSheet({ open, onClose, editing, theme, darkMode, toast, onSave
               <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Salvage value</label>
               <input type="number" step="0.01" value={form.salvage_value}
                 onChange={e => setForm({ ...form, salvage_value: e.target.value })} className={inputCls} />
+            </div>
+          </div>
+        )}
+        {form.depreciation_method === "appreciating" && (
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Growth rate (% per year)</label>
+            <input type="number" step="0.5" value={form.declining_rate}
+              onChange={e => setForm({ ...form, declining_rate: e.target.value })}
+              placeholder="5" className={inputCls} />
+            <div className={`text-[10px] ${theme.textSubtle} mt-1`}>
+              National residential real estate has averaged ~3–5% nominal per year over the last century; art and collectibles are much noisier.
             </div>
           </div>
         )}
@@ -2725,7 +2757,7 @@ function AccountsTab({ theme, darkMode, toast }) {
   const [items, setItems] = useState([]);
   const [removingId, setRemovingId] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
-  const [addForm, setAddForm] = useState({ name: "", type: "cash", subtype: "", balance: "", institution: "", link_asset_id: "" });
+  const [addForm, setAddForm] = useState({ name: "", type: "cash", subtype: "", balance: "", institution: "", link_asset_id: "", is_business: false });
   const [adding, setAdding] = useState(false);
   const [reconAccount, setReconAccount] = useState(null);
   const [linkableAssets, setLinkableAssets] = useState([]);
@@ -2773,12 +2805,13 @@ function AccountsTab({ theme, darkMode, toast }) {
         subtype: addForm.subtype.trim() || undefined,
         balance: Number(addForm.balance) || 0,
         institution: addForm.institution.trim() || undefined,
+        is_business: !!addForm.is_business,
         link_asset_id: addForm.type === "loan" && addForm.link_asset_id
           ? Number(addForm.link_asset_id) : undefined,
       });
       toast?.("Account added", "success");
       setShowAdd(false);
-      setAddForm({ name: "", type: "cash", subtype: "", balance: "", institution: "", link_asset_id: "" });
+      setAddForm({ name: "", type: "cash", subtype: "", balance: "", institution: "", link_asset_id: "", is_business: false });
       refreshAll();
     } catch (e) {
       toast?.("Failed: " + (e.message || ""), "error");
@@ -2957,6 +2990,39 @@ function AccountsTab({ theme, darkMode, toast }) {
                 placeholder="0.00" className={inputCls} />
             </div>
           </div>
+          {/* Subtype dropdown appears only when the base type supports one.
+              Retirement / HSA / 529 for investments; HELOC for credit;
+              property for cash-shaped or investment (owner-occupied /
+              rental). Type = loan doesn't get a subtype in this form. */}
+          {(addForm.type === "investment" || addForm.type === "credit"
+            || addForm.type === "cash") && (
+            <div>
+              <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>
+                Subtype (optional)
+              </label>
+              <select value={addForm.subtype}
+                onChange={e => setAddForm({ ...addForm, subtype: e.target.value })} className={inputCls}>
+                <option value="">— none —</option>
+                {addForm.type === "investment" && (<>
+                  <option value="retirement">Retirement (401k / IRA / Roth / SEP / 403b)</option>
+                  <option value="hsa">HSA — health savings</option>
+                  <option value="529">529 — education savings</option>
+                  <option value="property">Real estate / property</option>
+                </>)}
+                {addForm.type === "credit" && <option value="heloc">HELOC — home equity line of credit</option>}
+                {addForm.type === "cash" && <option value="property">Real estate / property</option>}
+              </select>
+              <div className={`text-[10px] ${theme.textSubtle} mt-1`}>
+                Retirement / HSA / 529 carry tax-advantaged treatment; HELOC + property are display + reporting labels.
+              </div>
+            </div>
+          )}
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={!!addForm.is_business}
+              onChange={e => setAddForm({ ...addForm, is_business: e.target.checked })}
+              className="w-4 h-4 accent-violet-500" />
+            <span>Business account (Schedule C activity)</span>
+          </label>
           {addForm.type === "loan" && (
             <div>
               <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>
@@ -3006,10 +3072,107 @@ function AccountsTab({ theme, darkMode, toast }) {
 }
 
 // ─── Transactions Tab ─────────────────────────────────────────────────────────
+// ─── Transfer Sheet ───────────────────────────────────────────────────────────
+// One action moves money between two of the user's own accounts. Creates
+// paired transactions atomically on the server. Manual account balances
+// are updated by the API; Plaid-linked ones are untouched.
+function TransferSheet({ open, onClose, accounts, theme, darkMode, toast, onSaved }) {
+  const [form, setForm] = useState(() => ({
+    from_account_id: "", to_account_id: "", amount: "",
+    date: new Date().toISOString().slice(0, 10), note: "",
+  }));
+  const [saving, setSaving] = useState(false);
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
+  useEffect(() => {
+    if (!open) return;
+    setForm({
+      from_account_id: "", to_account_id: "", amount: "",
+      date: new Date().toISOString().slice(0, 10), note: "",
+    });
+  }, [open]);
+  const save = async () => {
+    if (!form.from_account_id || !form.to_account_id) { toast?.("Pick both accounts", "error"); return; }
+    if (form.from_account_id === form.to_account_id) { toast?.("From and To must differ", "error"); return; }
+    const amt = Number(form.amount);
+    if (!(amt > 0)) { toast?.("Positive amount required", "error"); return; }
+    setSaving(true);
+    try {
+      await api.transferBetweenAccounts({
+        from_account_id: Number(form.from_account_id),
+        to_account_id: Number(form.to_account_id),
+        amount: amt,
+        date: form.date,
+        note: form.note.trim() || undefined,
+      });
+      toast?.(`Transferred ${fmt(amt)}`, "success");
+      onSaved?.();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    finally { setSaving(false); }
+  };
+  return (
+    <Sheet open={open} onClose={onClose} title="Transfer between accounts" theme={theme}>
+      <div className="space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>From</label>
+            <select value={form.from_account_id}
+              onChange={e => setForm({ ...form, from_account_id: e.target.value })} className={inputCls}>
+              <option value="">— pick —</option>
+              {accounts.map(a => (
+                <option key={a.id} value={a.id}>{a.name}{a.institution ? ` · ${a.institution}` : ""}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>To</label>
+            <select value={form.to_account_id}
+              onChange={e => setForm({ ...form, to_account_id: e.target.value })} className={inputCls}>
+              <option value="">— pick —</option>
+              {accounts.map(a => (
+                <option key={a.id} value={a.id}>{a.name}{a.institution ? ` · ${a.institution}` : ""}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Amount</label>
+            <input type="number" step="0.01" min="0" value={form.amount}
+              onChange={e => setForm({ ...form, amount: e.target.value })}
+              placeholder="0.00" className={inputCls} />
+          </div>
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Date</label>
+            <input type="date" value={form.date}
+              onChange={e => setForm({ ...form, date: e.target.value })} className={inputCls} />
+          </div>
+        </div>
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Note (optional)</label>
+          <input value={form.note} onChange={e => setForm({ ...form, note: e.target.value })}
+            placeholder="e.g. Rent · quarterly savings top-up" className={inputCls} />
+        </div>
+        <div className={`text-[11px] ${theme.textSubtle}`}>
+          Creates two paired transactions marked <em>Transfer</em>. Both drop out of income / cashflow / by-category totals. Manual account balances shift automatically; Plaid-linked ones stay pinned to the bank's value.
+        </div>
+        <div className="flex gap-2 pt-2">
+          <button type="button" onClick={onClose}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.textSubtle}`}>Cancel</button>
+          <button type="button" onClick={save} disabled={saving}
+            className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-60">
+            {saving ? "Transferring…" : "Transfer"}
+          </button>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
 function TransactionsTab({ theme, darkMode, toast }) {
   const { transactions, accounts, categories, budgets, refreshAll } = useData();
   const [search, setSearch] = useState("");
   const [showAdd, setShowAdd] = useState(false);
+  const [showTransfer, setShowTransfer] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [catFilter, setCatFilter] = useState("");      // category filter
   const [acctFilter, setAcctFilter] = useState("all"); // account filter (id | "all")
@@ -3374,6 +3537,11 @@ function TransactionsTab({ theme, darkMode, toast }) {
               {activeFilterCount}
             </span>
           )}
+        </motion.button>
+        <motion.button whileTap={{ scale: 0.94 }} onClick={() => setShowTransfer(true)}
+          title="Transfer between accounts"
+          className={`p-2.5 rounded-xl border ${theme.border} ${theme.surface} ${theme.hover} flex-shrink-0`}>
+          <ArrowUpRight className={`w-5 h-5 ${theme.textSubtle}`} />
         </motion.button>
         <motion.button whileTap={{ scale: 0.94 }} onClick={() => setShowAdd(true)}
           className="bg-violet-500 hover:bg-violet-600 text-white p-2.5 rounded-xl shadow-sm shadow-violet-500/30 flex-shrink-0">
@@ -3773,6 +3941,11 @@ function TransactionsTab({ theme, darkMode, toast }) {
           </div>
         </form>
       </Sheet>
+
+      {/* Transfer between accounts sheet */}
+      <TransferSheet open={showTransfer} onClose={() => setShowTransfer(false)}
+        accounts={accounts} theme={theme} darkMode={darkMode} toast={toast}
+        onSaved={() => { setShowTransfer(false); refreshAll(); }} />
 
       {/* Transaction detail / delete sheet */}
       <Sheet open={!!detail} onClose={() => {
@@ -8606,16 +8779,19 @@ function LotsPanel({ securityId, accountId, theme, darkMode, toast }) {
 
 function LotFormSheet({ open, onClose, securityId, accountId, theme, darkMode, toast, onSaved }) {
   const [form, setForm] = useState({ acquired_date: new Date().toISOString().slice(0, 10),
-    quantity: "", cost_basis_per_share: "", notes: "" });
+    quantity: "", cost_basis_per_share: "", notes: "", reinvest: false });
   const [saving, setSaving] = useState(false);
   useEffect(() => {
     if (open) setForm({ acquired_date: new Date().toISOString().slice(0, 10),
-      quantity: "", cost_basis_per_share: "", notes: "" });
+      quantity: "", cost_basis_per_share: "", notes: "", reinvest: false });
   }, [open]);
   const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
   const save = async () => {
     if (!(Number(form.quantity) > 0) || !(Number(form.cost_basis_per_share) >= 0)) {
       toast?.("Quantity and cost basis are required", "error"); return;
+    }
+    if (form.reinvest && !accountId) {
+      toast?.("Reinvest requires the brokerage account so the dividend txn can be recorded", "error"); return;
     }
     setSaving(true);
     try {
@@ -8625,8 +8801,9 @@ function LotFormSheet({ open, onClose, securityId, accountId, theme, darkMode, t
         cost_basis_per_share: Number(form.cost_basis_per_share),
         account_id: accountId || null,
         notes: form.notes || null,
+        reinvest: !!form.reinvest,
       });
-      toast?.("Lot added", "success");
+      toast?.(form.reinvest ? "Reinvested dividend + lot recorded" : "Lot added", "success");
       onSaved();
     } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
     finally { setSaving(false); }
@@ -8656,12 +8833,23 @@ function LotFormSheet({ open, onClose, securityId, accountId, theme, darkMode, t
           <input value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })}
             placeholder="e.g. 401k rollover" className={inputCls} />
         </div>
+        <label className="flex items-start gap-2 text-sm">
+          <input type="checkbox" checked={!!form.reinvest}
+            onChange={e => setForm({ ...form, reinvest: e.target.checked })}
+            className="w-4 h-4 accent-violet-500 mt-0.5" />
+          <div className="flex-1">
+            <div>Reinvested dividend / distribution</div>
+            <div className={`text-[10px] ${theme.textSubtle}`}>
+              Also records an <em>Interest &amp; Dividends</em> income transaction on this account (quantity × price) so the money lands on Schedule B automatically.
+            </div>
+          </div>
+        </label>
         <div className="flex gap-2 pt-2">
           <button type="button" onClick={onClose}
             className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.textSubtle}`}>Cancel</button>
           <button type="button" onClick={save} disabled={saving}
             className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-60">
-            {saving ? "Saving…" : "Add lot"}
+            {saving ? "Saving…" : form.reinvest ? "Record reinvest" : "Add lot"}
           </button>
         </div>
       </div>

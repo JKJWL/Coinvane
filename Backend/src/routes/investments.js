@@ -93,25 +93,54 @@ export default async function (app) {
   });
 
   // Create a new purchase lot.
+  //
+  // If `reinvest: true` is set, the request represents a reinvested
+  // dividend / cap gain distribution: we ALSO insert a matching
+  // "Interest & Dividends" income transaction on the linked account so
+  // the money shows up on the tax rollup. The paired rows share nothing
+  // structurally (the ledger doesn't need to know they came from one
+  // event) but Coinvane guarantees they're inserted together.
   app.post("/lots/:securityId", async (req, reply) => {
     const secId = Number(req.params.securityId);
-    const { acquired_date, quantity, cost_basis_per_share, method, notes, account_id } = req.body || {};
+    const { acquired_date, quantity, cost_basis_per_share, method, notes, account_id, reinvest } = req.body || {};
     if (!acquired_date || !(Number(quantity) > 0) || !(Number(cost_basis_per_share) >= 0)) {
       return reply.code(400).send({ error: "acquired_date, quantity > 0, cost_basis_per_share required" });
     }
-    const sec = await queryOne("SELECT id FROM securities WHERE id = ?", [secId]);
+    const sec = await queryOne("SELECT ticker, name FROM securities WHERE id = ?", [secId]);
     if (!sec) return reply.code(404).send({ error: "security not found" });
     const chosenMethod = ["fifo", "lifo", "specific"].includes(method) ? method : "specific";
     const q = Number(quantity);
+    const price = Number(cost_basis_per_share);
     const r = await query(
       `INSERT INTO holding_lots
          (user_id, security_id, account_id, acquired_date, original_quantity,
           remaining_quantity, cost_basis_per_share, method, notes)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [req.user.id, secId, account_id || null, acquired_date, q, q,
-       Number(cost_basis_per_share), chosenMethod,
+       price, chosenMethod,
        notes ? String(notes).slice(0, 255) : null]
     );
+    // Reinvest → also record a paired dividend income transaction so
+    // the money shows on cashflow and Schedule B. Ensure the Interest
+    // & Dividends category row exists (with Schedule B tagging) as we
+    // do in sync.js.
+    if (reinvest && account_id) {
+      const amt = q * price;
+      await query(
+        `INSERT IGNORE INTO categories (user_id, name, color, icon, custom, tax_schedule)
+         VALUES (?, 'Interest & Dividends', '#10b981', 'TrendingUp', TRUE, 'B')`,
+        [req.user.id]
+      );
+      await query(
+        `INSERT INTO transactions
+           (user_id, account_id, date, merchant, category, amount, note)
+         VALUES (?, ?, ?, ?, 'Interest & Dividends', ?, ?)`,
+        [req.user.id, account_id, acquired_date,
+         `Reinvested dividend · ${sec.ticker || sec.name || "security"}`,
+         amt,
+         `Auto-linked to lot #${r.insertId}`]
+      );
+    }
     return queryOne("SELECT * FROM holding_lots WHERE id = ?", [r.insertId]);
   });
 
