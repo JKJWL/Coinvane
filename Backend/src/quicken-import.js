@@ -51,8 +51,11 @@ export function detectFormat(raw) {
 
 // ── QIF ────────────────────────────────────────────────────────────
 // Handles Quicken, MS Money, and Mint exports. Money-specific quirks:
-//   !Account blocks that precede a fresh Type block (skipped, records
-//     that follow still parse into the ledger)
+//   !Account blocks name each account before its transactions. We PARSE
+//     these (N = account name, T = account type) and stamp every
+//     subsequent record with the current account until another !Account
+//     block appears. This is what makes multi-account QIF files
+//     importable as a coherent set.
 //   Split lines using S/E/$ codes (S = child category, E = child memo,
 //     $ = child amount). Each split gets its own transaction row so the
 //     detail survives round-trip.
@@ -62,24 +65,38 @@ export function parseQif(raw) {
   const out = [];
   const lines = String(raw || "").split(/\r?\n/);
   let current = null;
-  let skipBlock = false;  // true while inside !Type:Invst
+  let skipBlock = false;         // true while inside !Type:Invst
+  let inAccountBlock = false;    // true while collecting an !Account header
+  let acctDraft = null;          // fields being collected inside !Account
+  let currentAccountName = null; // stamped onto every txn until reassigned
+  let currentAccountType = null;
   for (const line of lines) {
     if (!line) continue;
     if (QIF_INVEST_TYPES.test(line)) { skipBlock = true;  continue; }
     if (QIF_TYPE_LINE.test(line))    { skipBlock = false; continue; }
-    if (QIF_ACCOUNT_LINE.test(line)) { skipBlock = true;  continue; }
+    if (QIF_ACCOUNT_LINE.test(line)) { inAccountBlock = true; acctDraft = {}; continue; }
     if (line === "^") {
+      if (inAccountBlock) {
+        currentAccountName = acctDraft?.name || null;
+        currentAccountType = acctDraft?.type || null;
+        inAccountBlock = false; acctDraft = null;
+        continue;
+      }
       if (!skipBlock && current) {
-        const normalized = normalizeQifRecord(current);
+        const normalized = normalizeQifRecord(current, currentAccountName);
         if (normalized) out.push(...normalized);
       }
       current = null;
-      // An !Account block's end also arrives as "^"; once we've consumed
-      // it we're ready for real records again.
-      if (skipBlock && !current) skipBlock = false;
       continue;
     }
     if (skipBlock) continue;
+    if (inAccountBlock) {
+      const code = line[0];
+      const val = line.slice(1);
+      if (code === "N") acctDraft.name = val.trim();
+      else if (code === "T") acctDraft.type = val.trim();
+      continue;
+    }
     if (!current) current = { splits: [] };
     const code = line[0];
     const val = line.slice(1);
@@ -110,7 +127,7 @@ export function parseQif(raw) {
   return out;
 }
 
-function normalizeQifRecord(r) {
+function normalizeQifRecord(r, accountName) {
   if (!r) return null;
   const date = parseQifDate(r.date);
   const parentAmount = parseFloatSafe(r.amount);
@@ -124,6 +141,7 @@ function normalizeQifRecord(r) {
     amount: parentAmount,
     note: r.memo ? r.memo.trim().slice(0, 500) : null,
     checkNumber: r.checkNum ? r.checkNum.trim().slice(0, 32) : null,
+    fileAccount: accountName ? String(accountName).slice(0, 128) : null,
   };
 
   // Money splits with usable amounts become their own rows; parent stays
@@ -142,6 +160,7 @@ function normalizeQifRecord(r) {
     amount: parseFloatSafe(s.amount),
     note: s.memo ? String(s.memo).trim().slice(0, 500) : base.note,
     checkNumber: base.checkNumber,
+    fileAccount: base.fileAccount,
   }));
   // If the parent amount is fully accounted for by the splits we drop
   // it. Otherwise we keep the parent so the residual survives.
@@ -214,6 +233,31 @@ export function parseOfx(raw) {
     const raw = block.slice(start, stop).trim();
     return raw || null;
   };
+  // Track the most recent <ACCTID> seen — every STMTTRN belongs to the
+  // enclosing statement's account. In practice ACCTID appears inside
+  // <BANKACCTFROM> or <CCACCTFROM> before the STMTTRN block, so a
+  // simple last-seen scan matches valid OFX structure.
+  const acctScan = (uptoIdx) => {
+    // Find the last <ACCTID>value</ACCTID> or <ACCTID>value before this
+    // position. Bounded, linear scan.
+    const tag = "<ACCTID>";
+    let at = -1;
+    let pos = 0;
+    while (pos < uptoIdx) {
+      const next = S.indexOf(tag, pos);
+      if (next === -1 || next >= uptoIdx) break;
+      at = next; pos = next + tag.length;
+    }
+    if (at === -1) return null;
+    const start = at + tag.length;
+    let stop = s.length;
+    for (let i = start; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      if (c === 0x3c || c === 0x0d || c === 0x0a) { stop = i; break; }
+    }
+    return s.slice(start, stop).trim() || null;
+  };
+
   let idx = 0;
   while (true) {
     const start = S.indexOf(OPEN, idx);
@@ -223,6 +267,7 @@ export function parseOfx(raw) {
     if (end === -1) break;
     const block = s.slice(contentStart, end);
     const upperBlock = S.slice(contentStart, end);
+    const fileAccount = acctScan(start);
     idx = end + CLOSE.length;
 
     const dt = scalar(block, upperBlock, "DTPOSTED");
@@ -254,6 +299,7 @@ export function parseOfx(raw) {
       category,
       amount,
       note: memo ? memo.slice(0, 500) : null,
+      fileAccount: fileAccount ? fileAccount.slice(0, 128) : null,
     });
   }
   return out;

@@ -258,20 +258,26 @@ export const api = {
   // CSV / PDF — non-JSON download endpoints
   exportTransactionsCSV: () => downloadAuthed("/transactions/export.csv", "coinvane-transactions.csv"),
   importTransactionsCSV: (csv) => request("POST", "/transactions/import.csv", { csv }),
-  importQuicken: (content, accountId, allowDuplicates = false) =>
+  importQuicken: (content, opts = {}) =>
     request("POST", "/transactions/import/quicken", {
-      content, account_id: accountId || null,
-      allow_duplicates: allowDuplicates ? "1" : undefined,
+      content,
+      account_id: opts.accountId || null,
+      account_mapping: opts.accountMapping || undefined,
+      preview_only: opts.previewOnly ? "1" : undefined,
+      allow_duplicates: opts.allowDuplicates ? "1" : undefined,
     }),
   // Binary .mny path: base64 the raw bytes because JSON can't carry them
   // without corruption. Server dispatches to parseMny when content_b64
   // is set instead of content. Optional password is forwarded to
   // sunriise when the file is password-protected.
-  importMny: (contentB64, accountId, allowDuplicates = false, password = null) =>
+  importMny: (contentB64, opts = {}) =>
     request("POST", "/transactions/import/quicken", {
-      content_b64: contentB64, account_id: accountId || null,
-      allow_duplicates: allowDuplicates ? "1" : undefined,
-      mny_password: password || undefined,
+      content_b64: contentB64,
+      account_id: opts.accountId || null,
+      account_mapping: opts.accountMapping || undefined,
+      preview_only: opts.previewOnly ? "1" : undefined,
+      allow_duplicates: opts.allowDuplicates ? "1" : undefined,
+      mny_password: opts.password || undefined,
     }),
   exportRegisterPDF: (params = {}) => {
     const q = new URLSearchParams(

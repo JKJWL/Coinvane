@@ -158,6 +158,85 @@ async function unlockWithSunriise(inputPath, password) {
 }
 
 /**
+ * Pull the column list for a given table from `mdb-schema`. Returns an
+ * array of raw column names in declaration order. Empty array on any
+ * failure — callers already treat "no schema" as "table not usable".
+ */
+async function tableColumns(mdbPath, tableName) {
+  try {
+    // mdb-schema emits CREATE TABLE DDL. Parse column names out of the
+    // parenthesised block. -T narrows to a single table so we don't
+    // pull the entire schema on every probe.
+    const ddl = await run("mdb-schema", ["-T", tableName, mdbPath]);
+    const paren = ddl.match(/\(([\s\S]+)\)/);
+    if (!paren) return [];
+    return paren[1]
+      .split(/\r?\n/)
+      .map(l => l.trim())
+      .filter(l => l && !/^\s*(PRIMARY|UNIQUE|KEY|CONSTRAINT|CHECK|FOREIGN)/i.test(l))
+      // Column names come first in each line, followed by the type.
+      // mdb-schema quotes them with square brackets in some builds.
+      .map(l => (l.match(/^\[?([A-Za-z_][A-Za-z0-9_]*)\]?/) || [])[1])
+      .filter(Boolean);
+  } catch { return []; }
+}
+
+/**
+ * Given the columns of a Money-ish table, pick the columns that look
+ * like the fields we care about. Uses simple prefix / substring rules
+ * so we're resilient across Money 99 / 2001 / 2002 / 2004 / 2005 /
+ * Deluxe / Sunset schema drift.
+ */
+function detectColumns(cols) {
+  // Case-insensitive comparisons throughout. `first(pattern)` returns
+  // the first matching real column name so the caller can look it up
+  // in a row.
+  const first = (test) => cols.find(c => test(c.toLowerCase())) || null;
+  return {
+    date:      first(c => c === "dt" || c === "dtenter" || c === "dtposted"
+                       || c === "dtactual" || c.startsWith("dt")),
+    amount:    first(c => c === "amt" || c === "amount"
+                       || c === "damt" || c.startsWith("amt")),
+    payeeFk:   first(c => c === "lhpay" || c === "hpay"
+                       || c.includes("pay")),
+    catFk:     first(c => c === "lhcat" || c === "hcat"
+                       || c.includes("cat")),
+    acctFk:    first(c => c === "hacct" || c === "lhacct"
+                       || c === "htobj" || c === "lfrom"
+                       || (c.includes("acct") && !c.includes("subacct"))
+                       || (c.startsWith("l") && c.includes("acct"))),
+    memo:      first(c => c === "szmemo" || c === "memo"
+                       || c === "szname"),
+    check:     first(c => c === "lchk" || c === "chk"
+                       || c === "check" || c === "checknum"),
+  };
+}
+
+/**
+ * Read one of the lookup tables (payees / categories / accounts) and
+ * return an id → name Map. Column detection mirrors detectColumns so
+ * a Money variant that renamed `szName` to `szFull` still works.
+ */
+async function readLookup(mdbPath, tableName) {
+  const cols = await tableColumns(mdbPath, tableName);
+  if (cols.length === 0) return new Map();
+  const idCol = cols.find(c => /^h/i.test(c) && !/^szh/i.test(c))
+    || cols.find(c => /^l?h[a-z]+$/i.test(c))
+    || cols.find(c => /_id$/i.test(c))
+    || cols[0];
+  const nameCol = cols.find(c => /^(szfull|szname|name|szdesc)$/i.test(c))
+    || cols.find(c => /^sz/i.test(c))
+    || cols[1] || cols[0];
+  const csv = await run("mdb-export", [mdbPath, tableName]).catch(() => "");
+  const map = new Map();
+  for (const r of parseCsv(csv)) {
+    const id = r[idCol]; const name = r[nameCol];
+    if (id !== undefined && id !== "" && name) map.set(String(id), name);
+  }
+  return map;
+}
+
+/**
  * Parse a .mny buffer. Returns { format: "mny", transactions: [...] }
  * on success. Throws with a helpful message on unreadable files.
  * Writes the buffer to a temp file because mdbtools reads from disk
@@ -196,64 +275,85 @@ export async function parseMny(buf, password = null) {
         throw e;
       }
     }
-    // Try TRN first (Money 2000+ transaction table), fall back to any
-    // "TRN%"-prefixed table if the schema is atypical.
-    const trnTable = tables.includes("TRN")
-      ? "TRN"
-      : tables.find(t => /^TRN($|_)/i.test(t));
-    if (!trnTable) {
+
+    // ── Candidate transaction tables ──────────────────────────────
+    // Money variants have used TRN, TRN_TXN, TRANSACTION, TRAN, plus
+    // subdivided splits into TRN_SPLIT / TRN2. We probe every table
+    // that looks like a plausible transaction store and merge results,
+    // skipping investment records (TRN_INV) which belong in the lot
+    // tracker rather than the transaction ledger.
+    const candidates = tables.filter(t =>
+         /^TRN($|[_A-Z])/i.test(t)
+      || /^TRANSACTION/i.test(t)
+      || /^TRAN(?![S])/i.test(t)
+    ).filter(t => !/INV/i.test(t));
+    if (candidates.length === 0) {
       throw new Error(
-        "Could not find a transaction table in this .mny file. Expected 'TRN' but saw: " + tables.join(", ")
+        "Could not find a transaction table in this .mny file. Saw: " + tables.join(", ")
       );
     }
-    // Payee + category lookup — Money stores merchant/category as FKs,
-    // not inline strings. Absence of either table is non-fatal; we just
-    // fall back to blank for those columns.
-    const payTable = tables.includes("PAY") ? "PAY" : null;
-    const catTable = tables.includes("CAT") ? "CAT" : null;
-    const [trnCsv, payCsv, catCsv] = await Promise.all([
-      run("mdb-export", ["-D", "%Y-%m-%d", workingPath, trnTable]),
-      payTable ? run("mdb-export", [workingPath, payTable]).catch(() => "") : Promise.resolve(""),
-      catTable ? run("mdb-export", [workingPath, catTable]).catch(() => "") : Promise.resolve(""),
+
+    // ── Lookup tables ─────────────────────────────────────────────
+    // Payees, categories, accounts — each optional. Table name variants
+    // covered here span every Money release we've seen.
+    const payTable  = tables.find(t => /^(PAY|PAYEE)($|E?)/i.test(t)) || null;
+    const catTable  = tables.find(t => /^(CAT|CATEGORY)($|_)/i.test(t)) || null;
+    const acctTable = tables.find(t => /^(ACCT|ACCOUNT)($|_)/i.test(t)) || null;
+
+    const [payees, cats, accts] = await Promise.all([
+      payTable  ? readLookup(workingPath, payTable)  : Promise.resolve(new Map()),
+      catTable  ? readLookup(workingPath, catTable)  : Promise.resolve(new Map()),
+      acctTable ? readLookup(workingPath, acctTable) : Promise.resolve(new Map()),
     ]);
 
-    const trn = parseCsv(trnCsv);
-    const payees = new Map();
-    for (const p of parseCsv(payCsv)) {
-      const id = p.hpay || p.pay_id || p.id;
-      const name = p.szFull || p.szName || p.name;
-      if (id && name) payees.set(String(id), name);
-    }
-    const cats = new Map();
-    for (const c of parseCsv(catCsv)) {
-      const id = c.hcat || c.cat_id || c.id;
-      const name = c.szFull || c.szName || c.name;
-      if (id && name) cats.set(String(id), name);
-    }
-
-    // Column names vary by Money version. Probe common variants.
-    const pick = (row, ...keys) => {
-      for (const k of keys) if (row[k] !== undefined && row[k] !== "") return row[k];
-      return null;
-    };
     const transactions = [];
-    for (const r of trn) {
-      const date = normalizeDate(pick(r, "dt", "dtEnter", "dtPosted"));
-      const amount = toNumber(pick(r, "amt", "amount"));
-      if (!date || amount === null) continue;
-      const payeeId = pick(r, "lHpay", "hpay");
-      const catId = pick(r, "lHcat", "hcat");
-      const merchant = (payeeId && payees.get(String(payeeId))) ||
-        pick(r, "szMemo") || "Unknown";
-      const category = (catId && cats.get(String(catId))) || "Other";
-      transactions.push({
-        date,
-        merchant: String(merchant).slice(0, 255),
-        category: String(category).replace(/^\[.*\]$/, "Transfer").slice(0, 64) || "Other",
-        amount,
-        note: pick(r, "szMemo") ? String(pick(r, "szMemo")).slice(0, 500) : null,
-        checkNumber: pick(r, "lchk", "lChk", "check") || null,
-      });
+    const perTableSummary = [];
+    for (const table of candidates) {
+      const cols = await tableColumns(workingPath, table);
+      const map = detectColumns(cols);
+      // A usable transaction table has at minimum a date column and an
+      // amount column. Anything missing those is an unrelated table
+      // (a lookup or a config) that just happens to match the name.
+      if (!map.date || !map.amount) {
+        perTableSummary.push(`${table}(skipped: missing date/amount)`);
+        continue;
+      }
+      const csv = await run(
+        "mdb-export", ["-D", "%Y-%m-%d", workingPath, table]
+      ).catch(() => "");
+      const rows = parseCsv(csv);
+      let kept = 0;
+      for (const r of rows) {
+        const date = normalizeDate(r[map.date]);
+        const amount = toNumber(r[map.amount]);
+        if (!date || amount === null) continue;
+        const payeeId = map.payeeFk ? r[map.payeeFk] : null;
+        const catId   = map.catFk   ? r[map.catFk]   : null;
+        const acctId  = map.acctFk  ? r[map.acctFk]  : null;
+        const memo    = map.memo    ? r[map.memo]    : null;
+        const chk     = map.check   ? r[map.check]   : null;
+        const merchant = (payeeId && payees.get(String(payeeId)))
+          || memo || "Unknown";
+        const category = (catId && cats.get(String(catId))) || "Other";
+        const fileAccount = (acctId && accts.get(String(acctId))) || null;
+        transactions.push({
+          date,
+          merchant: String(merchant).slice(0, 255),
+          category: String(category).replace(/^\[.*\]$/, "Transfer").slice(0, 64) || "Other",
+          amount,
+          note: memo ? String(memo).slice(0, 500) : null,
+          checkNumber: chk ? String(chk).slice(0, 32) : null,
+          fileAccount: fileAccount ? String(fileAccount).slice(0, 128) : null,
+        });
+        kept++;
+      }
+      perTableSummary.push(`${table}(${kept})`);
+    }
+    if (transactions.length === 0) {
+      throw new Error(
+        "Found transaction tables in the .mny file but no rows had a usable date + amount. Tables tried: "
+        + perTableSummary.join(", ")
+      );
     }
     return { format: "mny", transactions };
   } finally {

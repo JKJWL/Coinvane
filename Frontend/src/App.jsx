@@ -1921,6 +1921,131 @@ function AssetsPanel({ theme, darkMode, toast, onChange }) {
   );
 }
 
+// ─── Import Preview Sheet ─────────────────────────────────────────────────────
+// After a QIF/OFX/QFX/MNY file's preview_only pass, this sheet lists each
+// account the file names and asks the user what to do with it: attach the
+// transactions to an existing account, create a new one (name prefilled,
+// editable), or skip those transactions entirely. Confirming submits the
+// mapping to the backend for the real import.
+function ImportPreviewSheet({ open, preview, accounts, theme, darkMode, onClose, onConfirm }) {
+  const [decisions, setDecisions] = useState({});
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
+
+  useEffect(() => {
+    if (!open || !preview?.accounts) return;
+    // Seed defaults: for every named file-account, pre-select "create new"
+    // with the file's name as the prefilled account name. Unnamed buckets
+    // default to skip because the user hasn't been told what those are
+    // yet — they can flip to "existing" or "create" from the sheet.
+    const seed = {};
+    for (const a of preview.accounts) {
+      const key = a.name || "__unnamed__";
+      seed[key] = a.name
+        ? { action: "create", name: a.name, type: "cash" }
+        : { action: "skip" };
+    }
+    setDecisions(seed);
+  }, [open, preview]);
+
+  if (!open || !preview) return null;
+  const list = preview.accounts || [];
+
+  const update = (key, patch) => {
+    setDecisions(d => ({ ...d, [key]: { ...(d[key] || {}), ...patch } }));
+  };
+
+  const readyToSubmit = list.every(a => {
+    const key = a.name || "__unnamed__";
+    const d = decisions[key];
+    if (!d) return false;
+    if (d.action === "create") return !!d.name?.trim();
+    if (d.action === "existing") return !!d.account_id;
+    return true;
+  });
+
+  return (
+    <Sheet open={open} onClose={onClose}
+      title={`Import ${preview.format?.toUpperCase() || ""} — map ${list.length} account${list.length === 1 ? "" : "s"}`}
+      theme={theme}>
+      <div className="space-y-4">
+        <div className={`text-xs ${theme.textSubtle}`}>
+          {preview.totalTxns} transaction{preview.totalTxns === 1 ? "" : "s"} across {list.length} account{list.length === 1 ? "" : "s"}. Choose what to do with each.
+        </div>
+        {list.map((a) => {
+          const key = a.name || "__unnamed__";
+          const d = decisions[key] || {};
+          return (
+            <div key={key} className={`border ${theme.border} rounded-xl p-3 space-y-2`}>
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-semibold truncate">
+                    {a.name || <span className={theme.textSubtle}>(unnamed / no account in file)</span>}
+                  </div>
+                  <div className={`text-[10px] ${theme.textSubtle}`}>
+                    {a.txnCount} txn · {a.firstDate} → {a.lastDate}
+                    {a.sampleMerchants?.length > 0 && (
+                      <> · e.g. {a.sampleMerchants.slice(0, 3).join(", ")}</>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div className={`flex items-center gap-1 p-0.5 rounded-full ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+                {["create", "existing", "skip"].map(action => (
+                  <button key={action} type="button"
+                    onClick={() => update(key, { action })}
+                    className={`flex-1 px-2 py-1 rounded-full text-[11px] font-semibold ${
+                      d.action === action ? "bg-violet-500 text-white" : theme.textMuted
+                    }`}>
+                    {action === "create" ? "Create new" : action === "existing" ? "Map to existing" : "Skip"}
+                  </button>
+                ))}
+              </div>
+              {d.action === "create" && (
+                <div className="grid grid-cols-3 gap-2">
+                  <input className={`col-span-2 ${inputCls}`}
+                    value={d.name || ""} placeholder="Account name"
+                    onChange={e => update(key, { name: e.target.value })} />
+                  <select className={inputCls}
+                    value={d.type || "cash"}
+                    onChange={e => update(key, { type: e.target.value })}>
+                    <option value="cash">Cash</option>
+                    <option value="credit">Credit</option>
+                    <option value="investment">Investment</option>
+                    <option value="loan">Loan</option>
+                  </select>
+                </div>
+              )}
+              {d.action === "existing" && (
+                <select className={inputCls}
+                  value={d.account_id || ""}
+                  onChange={e => update(key, { account_id: Number(e.target.value) || null })}>
+                  <option value="">— pick an account —</option>
+                  {accounts.map(x => (
+                    <option key={x.id} value={x.id}>
+                      {x.name}{x.institution ? ` · ${x.institution}` : ""}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          );
+        })}
+        <div className="flex gap-2 pt-2">
+          <button type="button" onClick={onClose}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.surface} border ${theme.border}`}>
+            Cancel
+          </button>
+          <button type="button" disabled={!readyToSubmit}
+            onClick={() => onConfirm(decisions)}
+            className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-40">
+            Import
+          </button>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
 function AssetDamageSheet({ open, onClose, asset, theme, darkMode, toast, onChanged }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -10082,6 +10207,7 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
   const [importingCsv, setImportingCsv] = useState(false);
   const [importingQuicken, setImportingQuicken] = useState(false);
   const [quickenAccountId, setQuickenAccountId] = useState("");
+  const [importPreview, setImportPreview] = useState(null);
   const quickenInputRef = useRef(null);
   const [saving, setSaving] = useState(false);
   const { accounts, refreshAll } = useData();
@@ -10183,18 +10309,18 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
   // dropdown that binds every imported row to a chosen account (or
   // leaves them account-less for later assignment). Bank exports don't
   // carry account context so this is the only way to tie them in.
+  //
+  // Two paths:
+  //   - User picked an existing account from the dropdown → bind every
+  //     row to that account (legacy fast path).
+  //   - User left "auto-detect" → run preview_only=1, open the mapping
+  //     sheet with per-file-account choices, then send the mapping.
   const handleQuickenFile = async (file) => {
     if (!file) return;
     setImportingQuicken(true);
     try {
       const acctId = quickenAccountId ? Number(quickenAccountId) : null;
-      // .mny is a binary Jet DB — text() would mangle it. Send base64
-      // for those and let the backend dispatch to parseMny.
       const isMny = /\.mny$/i.test(file.name);
-      // Password prompt for .mny only. Empty string = "no password, use
-      // sunriise's backdoor". Cancelling the prompt aborts the import
-      // (returns null) so the user can bail if they didn't mean to
-      // pick a .mny file.
       let mnyPassword = null;
       if (isMny) {
         const pw = window.prompt(
@@ -10204,39 +10330,75 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
         if (pw === null) { setImportingQuicken(false); return; }
         mnyPassword = pw;
       }
-      const importOnce = async (allowDupes) => {
-        if (isMny) {
-          const buf = await file.arrayBuffer();
-          // Chunk the base64 conversion in 32k-byte slices — one big
-          // fromCharCode.apply would stack-overflow on multi-MB files.
-          const bytes = new Uint8Array(buf);
-          let bin = "";
-          for (let i = 0; i < bytes.length; i += 0x8000) {
-            bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-          }
-          return api.importMny(btoa(bin), acctId, allowDupes, mnyPassword);
+      // Prepare the raw payload once; every subsequent call re-uses it.
+      let contentText = null, contentB64 = null;
+      if (isMny) {
+        const buf = await file.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        let bin = "";
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+          bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
         }
-        const text = await file.text();
-        return api.importQuicken(text, acctId, allowDupes);
-      };
-      const r = await importOnce(false);
-      let extra = "";
-      if (r.duplicates > 0) {
-        const importAnyway = window.confirm(
-          `${r.duplicates} row${r.duplicates === 1 ? " looks" : "s look"} like duplicate${r.duplicates === 1 ? "" : "s"} of existing transactions in this account (same amount within ±3 days). Import them anyway?\n\nOK = import all\nCancel = keep skipped`
-        );
-        if (importAnyway) {
-          const r2 = await importOnce(true);
-          extra = ` · +${r2.imported - r.imported} dupes imported`;
-        } else {
-          extra = ` · ${r.duplicates} dupes skipped`;
-        }
+        contentB64 = btoa(bin);
+      } else {
+        contentText = await file.text();
       }
-      toast?.(`Imported ${r.imported} ${r.format.toUpperCase()} txns${extra}`, "success");
-      onUpdate?.();
+      const call = (opts) => isMny
+        ? api.importMny(contentB64, { ...opts, password: mnyPassword })
+        : api.importQuicken(contentText, opts);
+      // Path 1: account already chosen — do the direct import.
+      if (acctId) {
+        await runImportWithDedupe(() => call({ accountId: acctId, allowDuplicates: false }),
+                                  () => call({ accountId: acctId, allowDuplicates: true }));
+        return;
+      }
+      // Path 2: preview → mapping sheet. If the file only names a
+      // single unnamed bucket, we could still ask the user which
+      // existing account to bind it to.
+      const preview = await call({ previewOnly: true });
+      if (!preview.preview || !Array.isArray(preview.accounts) || preview.accounts.length === 0) {
+        // Preview came back empty — nothing to import.
+        toast?.("Nothing to import (0 transactions found)", "warning");
+        return;
+      }
+      setImportPreview({
+        format: preview.format,
+        accounts: preview.accounts,
+        totalTxns: preview.totalTxns,
+        // The mapping sheet fills this in with per-account choices, then
+        // calls submitImportMapping which uses these callbacks.
+        onSubmit: async (mapping) => {
+          await runImportWithDedupe(
+            () => call({ accountMapping: mapping, allowDuplicates: false }),
+            () => call({ accountMapping: mapping, allowDuplicates: true }),
+          );
+        },
+      });
     } catch (e) {
       toast?.("Import failed: " + (e.message || ""), "error");
     } finally { setImportingQuicken(false); }
+  };
+
+  // Shared post-import UX: toast the result, prompt on duplicates.
+  const runImportWithDedupe = async (callWithoutDupes, callWithDupes) => {
+    const r = await callWithoutDupes();
+    let extra = "";
+    if (r.duplicates > 0) {
+      const importAnyway = window.confirm(
+        `${r.duplicates} row${r.duplicates === 1 ? " looks" : "s look"} like duplicate${r.duplicates === 1 ? "" : "s"} of existing transactions (same amount within ±3 days). Import them anyway?\n\nOK = import all\nCancel = keep skipped`
+      );
+      if (importAnyway) {
+        const r2 = await callWithDupes();
+        extra = ` · +${r2.imported - r.imported} dupes imported`;
+      } else {
+        extra = ` · ${r.duplicates} dupes skipped`;
+      }
+    }
+    const acctExtra = (r.createdAccountIds && r.createdAccountIds.length)
+      ? ` · ${r.createdAccountIds.length} account${r.createdAccountIds.length === 1 ? "" : "s"} created`
+      : "";
+    toast?.(`Imported ${r.imported} ${(r.format || "").toUpperCase()} txns${extra}${acctExtra}`, "success");
+    onUpdate?.();
   };
 
   return (
@@ -10502,16 +10664,16 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
             <div>
               <div className="text-sm font-semibold">Import from Quicken / MS Money / Mint / bank export</div>
               <div className={`text-xs ${theme.textSubtle}`}>
-                Accepts .QIF, .OFX, .QFX, or .MNY (Microsoft Money). Password-locked .mny files are unlocked automatically via sunriise. Bind imported rows to a specific account.
+                Accepts .QIF, .OFX, .QFX, or .MNY (Microsoft Money). Password-locked .mny files are unlocked automatically via sunriise. Leave the picker on <em>auto-detect</em> and Coinvane will prompt you per-account for anything the file names.
               </div>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <select value={quickenAccountId} onChange={e => setQuickenAccountId(e.target.value)}
               className={`text-sm ${theme.inputBg} border ${theme.border} px-3 py-2 rounded-xl focus:outline-none focus:border-violet-500`}>
-              <option value="">— account-less (manual) —</option>
+              <option value="">— auto-detect from file —</option>
               {accounts.map(a => (
-                <option key={a.id} value={a.id}>{a.name}</option>
+                <option key={a.id} value={a.id}>Bind everything to: {a.name}</option>
               ))}
             </select>
             <motion.button whileTap={{ scale: 0.97 }} type="button"
@@ -10527,6 +10689,20 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
           </div>
         </div>
       </div>
+
+      <ImportPreviewSheet
+        open={!!importPreview}
+        preview={importPreview}
+        accounts={accounts}
+        theme={theme} darkMode={darkMode}
+        onClose={() => setImportPreview(null)}
+        onConfirm={async (mapping) => {
+          const submit = importPreview.onSubmit;
+          setImportPreview(null);
+          setImportingQuicken(true);
+          try { await submit(mapping); }
+          finally { setImportingQuicken(false); }
+        }} />
 
       {/* ── Tax categories ── */}
       <TaxCategoriesPanel theme={theme} darkMode={darkMode} toast={toast} />

@@ -1059,28 +1059,129 @@ export default async function (app) {
         error: "Unrecognized format — expected QIF (Quicken / MS Money), OFX, QFX, or MNY.",
       });
     }
-    // Validate the account belongs to the user (if supplied).
+
+    // ── File-account summary ─────────────────────────────────────────
+    // Every parser now stamps rows with a `fileAccount` naming the source
+    // account (or null for QIF files without !Account headers). Group
+    // rows by that name so preview + mapping can drive per-account
+    // decisions.
+    const summaryMap = new Map();
+    for (const row of parsed) {
+      const key = row.fileAccount || "__unnamed__";
+      if (!summaryMap.has(key)) {
+        summaryMap.set(key, {
+          name: row.fileAccount || null,
+          txnCount: 0,
+          sampleMerchants: new Set(),
+          firstDate: row.date, lastDate: row.date,
+        });
+      }
+      const bucket = summaryMap.get(key);
+      bucket.txnCount++;
+      if (row.merchant && bucket.sampleMerchants.size < 5) bucket.sampleMerchants.add(row.merchant);
+      if (row.date < bucket.firstDate) bucket.firstDate = row.date;
+      if (row.date > bucket.lastDate)  bucket.lastDate  = row.date;
+    }
+    const summary = [...summaryMap.values()].map(b => ({
+      name: b.name,
+      txnCount: b.txnCount,
+      sampleMerchants: [...b.sampleMerchants],
+      firstDate: b.firstDate, lastDate: b.lastDate,
+    }));
+
+    // ── Preview mode ─────────────────────────────────────────────────
+    // The frontend calls this once to learn what accounts the file
+    // names, then presents its "Create new / Map existing / Skip" UI.
+    const previewOnly = req.body?.preview_only === true
+      || req.body?.preview_only === "1"
+      || req.body?.preview_only === "true";
+    if (previewOnly) {
+      return { format, preview: true, accounts: summary, totalTxns: parsed.length };
+    }
+
+    // ── Resolve each parsed row to a target account_id ───────────────
+    // Precedence:
+    //   1. account_mapping (per-file-account decisions) — the new UI path
+    //   2. account_id (single-account binding) — legacy behaviour
+    //   3. Neither, but the file has fileAccount data — error, force UI
+    //   4. Neither, single-account file — treat as account_id=null
+    const mapping = req.body?.account_mapping;  // { "File Account Name": {action, ...} }
+    const rowAccountFor = new Map();   // fileAccount key → resolved account_id (or "skip")
+    const createdAccountIds = [];
+    if (mapping && typeof mapping === "object") {
+      for (const [key, decision] of Object.entries(mapping)) {
+        if (!decision || typeof decision !== "object") continue;
+        if (decision.action === "existing") {
+          const owned = await queryOne(
+            "SELECT id FROM accounts WHERE id = ? AND user_id = ?",
+            [Number(decision.account_id), req.user.id]
+          );
+          if (owned) rowAccountFor.set(key, owned.id);
+          else rowAccountFor.set(key, "skip");
+        } else if (decision.action === "create") {
+          const name = String(decision.name || key || "Imported").slice(0, 128).trim();
+          const type = ["cash", "credit", "investment", "loan"].includes(decision.type)
+            ? decision.type : "cash";
+          if (!name) { rowAccountFor.set(key, "skip"); continue; }
+          const r = await query(
+            `INSERT INTO accounts (user_id, name, type, balance, institution)
+             VALUES (?, ?, ?, 0, ?)`,
+            [req.user.id, name, type, decision.institution
+              ? String(decision.institution).slice(0, 128) : null]
+          );
+          rowAccountFor.set(key, r.insertId);
+          createdAccountIds.push(r.insertId);
+        } else if (decision.action === "skip") {
+          rowAccountFor.set(key, "skip");
+        }
+      }
+    }
+
+    // Validate the legacy account_id path.
     let boundAccount = null;
-    if (accountId) {
+    if (accountId && !mapping) {
       boundAccount = await queryOne(
         "SELECT id, plaid_item_id FROM accounts WHERE id = ? AND user_id = ?",
         [accountId, req.user.id]
       );
       if (!boundAccount) return reply.code(400).send({ error: "account not found" });
     }
+
+    // If the file has multiple named accounts and the caller passed
+    // neither mapping nor a bound account, refuse — the client should
+    // have asked for preview first.
+    const fileHasNamedAccounts = summary.some(s => s.name);
+    if (!mapping && !accountId && fileHasNamedAccounts) {
+      return reply.code(400).send({
+        error: "This file names multiple accounts. Send preview_only=1 first to build an account_mapping, or bind everything to a single account with account_id.",
+        accounts: summary,
+      });
+    }
+
     // Dedupe pre-flight: for each parsed row, check if the target
     // account already has a matching row within ±3 days at the same
-    // amount. If it does, skip the insert by default. The client can
-    // set `allow_duplicates=1` to override — restoring the old
-    // behaviour if the user knows this is a fresh account.
+    // amount.
     const allowDupes = req.body?.allow_duplicates === true
       || req.body?.allow_duplicates === "1"
       || req.body?.allow_duplicates === "true";
-    let imported = 0, skipped = 0, duplicates = 0, balanceDelta = 0;
+    let imported = 0, skipped = 0, duplicates = 0;
+    // Track per-account balance deltas so we can shift each manual
+    // account's balance in one write at the end.
+    const deltaByAccount = new Map();
     const dupRows = [];
     for (const row of parsed) {
       if (!row.date || !row.merchant || !Number.isFinite(row.amount)) { skipped++; continue; }
-      if (!allowDupes && accountId) {
+      // Resolve target account for this row.
+      let targetAccountId;
+      if (mapping) {
+        const key = row.fileAccount || "__unnamed__";
+        const resolved = rowAccountFor.get(key);
+        if (resolved === "skip" || resolved === undefined) { skipped++; continue; }
+        targetAccountId = resolved;
+      } else {
+        targetAccountId = accountId || null;
+      }
+      if (!allowDupes && targetAccountId) {
         const existing = await queryOne(
           `SELECT id, date, merchant, amount FROM transactions
            WHERE user_id = ? AND account_id = ?
@@ -1088,7 +1189,7 @@ export default async function (app) {
              AND date BETWEEN DATE_SUB(?, INTERVAL 3 DAY) AND DATE_ADD(?, INTERVAL 3 DAY)
              AND voided_at IS NULL
            LIMIT 1`,
-          [req.user.id, accountId, row.amount, row.date, row.date]
+          [req.user.id, targetAccountId, row.amount, row.date, row.date]
         );
         if (existing) {
           duplicates++;
@@ -1104,23 +1205,29 @@ export default async function (app) {
           `INSERT INTO transactions
              (user_id, account_id, date, merchant, category, amount, note, check_number)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [req.user.id, accountId || null, row.date, row.merchant,
+          [req.user.id, targetAccountId || null, row.date, row.merchant,
            row.category || "Other", row.amount, row.note || null,
            row.checkNumber || null]
         );
         imported++;
-        balanceDelta += Number(row.amount);
+        if (targetAccountId) {
+          deltaByAccount.set(targetAccountId,
+            (deltaByAccount.get(targetAccountId) || 0) + Number(row.amount));
+        }
       } catch (e) {
         skipped++;
       }
     }
-    // Manual-account balance is authoritative for manual accounts, so
-    // shift it by the sum of imported amounts. Plaid-linked accounts are
-    // untouched (their balance is pulled fresh from Plaid on next sync).
-    if (boundAccount && !boundAccount.plaid_item_id && balanceDelta !== 0) {
-      await adjustManualAccountBalance(req.user.id, accountId, balanceDelta);
+    // Apply per-account balance shifts. Plaid-linked accounts get
+    // filtered out by adjustManualAccountBalance itself.
+    for (const [id, delta] of deltaByAccount) {
+      if (delta !== 0) await adjustManualAccountBalance(req.user.id, id, delta);
     }
-    return { ok: true, format, imported, skipped, duplicates, sampleDuplicates: dupRows };
+    return {
+      ok: true, format, imported, skipped, duplicates,
+      sampleDuplicates: dupRows,
+      createdAccountIds,
+    };
   });
 
   // ── Saved register views ──────────────────────────────────────────
