@@ -2991,10 +2991,17 @@ function AccountsTab({ theme, darkMode, toast }) {
               </select>
             </div>
             <div>
-              <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>Balance</label>
-              <input type="number" step="0.01" required value={addForm.balance}
+              <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1.5 block`}>
+                {addForm.type === "loan" ? "Amount owed" : "Balance"}
+              </label>
+              <input type="number" step="0.01" min="0" required value={addForm.balance}
                 onChange={e => setAddForm({ ...addForm, balance: e.target.value })}
                 placeholder="0.00" className={inputCls} />
+              {addForm.type === "loan" && (
+                <div className={`text-[10px] ${theme.textSubtle} mt-1`}>
+                  Enter what you owe as a positive number — stored as a negative behind the scenes so it correctly reduces your net worth.
+                </div>
+              )}
             </div>
           </div>
           {/* Subtype dropdown appears only when the base type supports one.
@@ -3095,7 +3102,12 @@ function EditAccountSheet({ open, onClose, account, theme, darkMode, toast, onSa
     if (!open || !account) return;
     setForm({
       name: account.name || "",
-      balance: String(account.balance ?? ""),
+      // Loans store balance as a negative — surface the absolute value
+      // in the input so the user edits "amount owed" as a positive.
+      // On save the backend puts the sign back on.
+      balance: String(account.type === "loan"
+        ? Math.abs(Number(account.balance) || 0)
+        : (account.balance ?? "")),
       subtype: account.subtype || "",
       is_business: !!account.isBusiness,
     });
@@ -3125,12 +3137,14 @@ function EditAccountSheet({ open, onClose, account, theme, darkMode, toast, onSa
           <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className={inputCls} />
         </div>
         <div>
-          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Balance</label>
-          <input type="number" step="0.01" value={form.balance}
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>
+            {isLoan ? "Amount owed" : "Balance"}
+          </label>
+          <input type="number" step="0.01" min={isLoan ? "0" : undefined} value={form.balance}
             onChange={e => setForm({ ...form, balance: e.target.value })} className={inputCls} />
           <div className={`text-[10px] ${theme.textSubtle} mt-1`}>
             {isLoan
-              ? "Loans are stored as a negative number (a $10,000 debt is -10000). Payments recorded through the loan tracker move this toward zero automatically."
+              ? "Type what you owe as a positive number. Coinvane flips the sign to negative behind the scenes so it correctly reduces your net worth."
               : "Editing the balance directly is one-shot — it does NOT post a corresponding transaction. Use the transaction list for anything that should show up in history."}
           </div>
         </div>
@@ -6812,7 +6826,20 @@ function LoansSection({ theme, darkMode, toast }) {
       <LoanPaymentSheet open={!!payingLoan} loan={payingLoan}
         accounts={accounts} theme={theme} darkMode={darkMode} toast={toast}
         onClose={() => setPayingLoan(null)}
-        onSaved={() => { setPayingLoan(null); load(); refreshAll?.(); }} />
+        onSaved={(resp) => {
+          // Optimistically patch the current_balance in local state so
+          // the card updates instantly. The follow-up load() will
+          // reconcile against whatever else changed.
+          if (payingLoan && resp && Number.isFinite(Number(resp.current_balance))) {
+            const newBal = Number(resp.current_balance);
+            setLoans(prev => prev.map(l =>
+              l.id === payingLoan.id ? { ...l, current_balance: newBal } : l
+            ));
+          }
+          setPayingLoan(null);
+          load();
+          refreshAll?.();
+        }} />
     </div>
   );
 }
@@ -6843,12 +6870,24 @@ function LoanPaymentSheet({ open, onClose, loan, accounts, theme, darkMode, toas
     if (!(n > 0)) { toast?.("Enter a positive amount", "error"); return; }
     setSaving(true);
     try {
-      await api.recordLoanPayment(loan.id, n, {
+      const resp = await api.recordLoanPayment(loan.id, n, {
         accountId: accountId ? Number(accountId) : undefined,
         date,
       });
-      toast?.(`Payment of ${fmt(n)} recorded`, "success");
-      onSaved?.();
+      // The backend returns the new current_balance so the caller can
+      // reconcile local state without waiting for the follow-up list
+      // refetch. Toast reads the returned number so the user sees the
+      // outcome even if the sidebar hasn't caught up yet.
+      const newBalance = Number(resp?.current_balance);
+      const before = Number(loan.current_balance || 0);
+      const reduction = Number.isFinite(newBalance) ? (before - newBalance) : n;
+      toast?.(
+        Number.isFinite(newBalance)
+          ? `Payment of ${fmt(reduction)} recorded — balance now ${fmt(newBalance)}`
+          : `Payment of ${fmt(n)} recorded`,
+        "success"
+      );
+      onSaved?.(resp);
     } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
     finally { setSaving(false); }
   };

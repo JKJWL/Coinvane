@@ -35,11 +35,22 @@ export default async function (app) {
   app.post("/", async (req, reply) => {
     const { name, type, subtype, balance, institution, link_asset_id, is_business } = req.body || {};
     if (!name || !type) return reply.code(400).send({ error: "name and type required" });
+    // Loan balances are stored as negatives so the accounts.summary
+    // rollup and net-worth chart subtract them. Users type the amount
+    // owed as a positive number in the form; we flip the sign here so
+    // every caller (bootstrap script, admin API, mobile, desktop)
+    // ends up with the same convention. Credit-card manual entries
+    // stay signed the way the caller sent them because credit stores
+    // negative-when-owed too but users routinely enter a specific
+    // negative for that on purpose.
+    const storedBalance = type === "loan"
+      ? -Math.abs(Number(balance) || 0)
+      : (Number(balance) || 0);
     const r = await query(
       `INSERT INTO accounts (user_id, name, type, subtype, balance, institution, is_business)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [req.user.id, name, type, validSubtype(subtype) || (subtype ? String(subtype).slice(0, 32) : null),
-        balance || 0, institution || null, is_business ? 1 : 0]
+        storedBalance, institution || null, is_business ? 1 : 0]
     );
     // Reverse-link: creating a loan account and pointing it at an asset the
     // user already owns updates that asset's loan_account_id.
@@ -54,10 +65,23 @@ export default async function (app) {
 
   app.patch("/:id", async (req, reply) => {
     const { name, balance, subtype, is_business } = req.body || {};
-    // subtype: undefined = no change; null/"" = clear; else validate/store.
     let subtypeVal = undefined;
     if (subtype === null || subtype === "") subtypeVal = null;
     else if (subtype !== undefined) subtypeVal = validSubtype(subtype) || String(subtype).slice(0, 32);
+    // Look up the account's type so we can enforce the loan-stored-
+    // negative convention on PATCH too. Editing a loan's balance from
+    // the UI shows the user the absolute value; the backend takes it
+    // back to negative on save.
+    let balanceVal = null;
+    if (balance !== undefined && balance !== null) {
+      const existing = await queryOne(
+        "SELECT type FROM accounts WHERE id = ? AND user_id = ?",
+        [req.params.id, req.user.id]
+      );
+      balanceVal = existing?.type === "loan"
+        ? -Math.abs(Number(balance) || 0)
+        : Number(balance);
+    }
     await query(
       `UPDATE accounts SET
          name = COALESCE(?, name),
@@ -65,7 +89,7 @@ export default async function (app) {
          subtype = IF(?, ?, subtype),
          is_business = COALESCE(?, is_business)
        WHERE id = ? AND user_id = ?`,
-      [name ?? null, balance ?? null,
+      [name ?? null, balanceVal,
        subtypeVal !== undefined ? 1 : 0, subtypeVal ?? null,
        is_business === undefined ? null : (is_business ? 1 : 0),
        req.params.id, req.user.id]
