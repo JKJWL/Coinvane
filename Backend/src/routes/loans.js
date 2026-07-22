@@ -126,20 +126,33 @@ export default async function (app) {
     return { ok: true };
   });
 
-  // Manual payment: decrement current_balance by amount.
+  // Manual payment. Three things can happen depending on how the loan
+  // is wired up — all of them fire together in one round-trip.
   //
-  // If `account_id` is supplied (payment source — the checking account
-  // the money leaves from), we also post an outflow transaction on that
-  // account so the payment shows on cashflow / budgets / by-category.
-  // The manual-account balance shift happens through adjustManualAccountBalance
-  // in the transactions module, so import that helper here.
+  //   1. The `loans` row's current_balance always decrements by the
+  //      payment amount. This is the tracker-side accounting.
+  //
+  //   2. If the loan has a `linked_account_id` (the loan account that
+  //      mirrors this debt in the Accounts tab), that account's balance
+  //      is moved toward zero by the payment amount too. Loan balances
+  //      are stored negative, so we add +abs(amount). This is what makes
+  //      "Record Payment" visibly reduce the loan on the Accounts tab
+  //      even when you don't pick a payment source. Plaid-linked
+  //      accounts are left alone — their balance comes from the bank.
+  //
+  //   3. If the caller passes an `account_id` (the payment SOURCE —
+  //      the checking account the money leaves from), we also post an
+  //      outflow transaction there and shift its balance, so the
+  //      payment shows on cashflow / budgets / by-category.
+  //
+  // Steps 1 and 2 always run together. Step 3 is opt-in.
   app.post("/:id/payment", async (req, reply) => {
     const amount = Number(req.body?.amount);
     const paymentAccountId = req.body?.account_id ? Number(req.body.account_id) : null;
     const date = req.body?.date || new Date().toISOString().slice(0, 10);
     if (!(amount > 0)) return reply.code(400).send({ error: "amount > 0 required" });
     const loan = await queryOne(
-      "SELECT id, name, current_balance FROM loans WHERE id = ? AND user_id = ? AND archived_at IS NULL",
+      "SELECT id, name, current_balance, linked_account_id FROM loans WHERE id = ? AND user_id = ? AND archived_at IS NULL",
       [req.params.id, req.user.id]
     );
     if (!loan) return reply.code(404).send({ error: "not found" });
@@ -148,10 +161,27 @@ export default async function (app) {
       "UPDATE loans SET current_balance = ? WHERE id = ?",
       [next, loan.id]
     );
-    // Post a ledger transaction if the caller told us where the money
-    // came from. Category "Loan Payment" so it groups predictably;
-    // is_transfer stays 0 because the destination isn't itself an
-    // account we track (a `loans` row is separate from `accounts`).
+
+    // Step 2 — mirror on the linked loan account.
+    let linkedAccountBalance = null;
+    if (loan.linked_account_id) {
+      const linked = await queryOne(
+        "SELECT id, plaid_item_id, type, balance FROM accounts WHERE id = ? AND user_id = ?",
+        [loan.linked_account_id, req.user.id]
+      );
+      if (linked && !linked.plaid_item_id) {
+        // Loan balances are stored negative. A payment reduces the debt,
+        // so it moves the balance toward zero: +abs(amount).
+        await query(
+          "UPDATE accounts SET balance = balance + ? WHERE id = ?",
+          [Math.abs(amount), linked.id]
+        );
+        const post = await queryOne("SELECT balance FROM accounts WHERE id = ?", [linked.id]);
+        linkedAccountBalance = Number(post?.balance);
+      }
+    }
+
+    // Step 3 — payment source outflow.
     if (paymentAccountId) {
       const acct = await queryOne(
         "SELECT id, plaid_item_id FROM accounts WHERE id = ? AND user_id = ?",
@@ -166,7 +196,6 @@ export default async function (app) {
            `Payment · ${loan.name}`, -Math.abs(amount),
            `Applied to loan #${loan.id}`]
         );
-        // Manual account balance decreases (Plaid-linked untouched).
         if (!acct.plaid_item_id) {
           await query(
             "UPDATE accounts SET balance = balance - ? WHERE id = ?",
@@ -175,6 +204,11 @@ export default async function (app) {
         }
       }
     }
-    return { ok: true, current_balance: next };
+    return {
+      ok: true,
+      current_balance: next,
+      linked_account_id: loan.linked_account_id || null,
+      linked_account_balance: linkedAccountBalance,
+    };
   });
 }

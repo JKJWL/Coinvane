@@ -6897,6 +6897,11 @@ function LoanPaymentSheet({ open, onClose, loan, accounts, theme, darkMode, toas
         <div className={`text-xs ${theme.textSubtle}`}>
           Current balance {fmt(Number(loan.current_balance) || 0)} · monthly {fmt(Number(loan.monthly_payment) || 0)}
         </div>
+        {!loan.linked_account_id && accounts.some(a => a.type === "loan") && (
+          <div className={`text-[11px] rounded-xl p-2 ${darkMode ? "bg-amber-500/10 text-amber-300 border border-amber-500/30" : "bg-amber-50 text-amber-700 border border-amber-200"}`}>
+            This loan isn't linked to a loan-type account, so recording a payment won't reduce anything in the Accounts tab. Edit the loan to point it at the matching loan account and future payments will mirror across automatically.
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Amount</label>
@@ -7302,11 +7307,18 @@ function LoanFormSheet({ open, onClose, editing, accounts, theme, darkMode, toas
             className={inputCls} />
         </div>
         <div>
-          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Linked account (optional)</label>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>
+            Linked loan account (optional)
+          </label>
           <select value={form.linked_account_id} onChange={e => setForm({ ...form, linked_account_id: e.target.value })} className={inputCls}>
             <option value="">Not linked</option>
-            {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            {accounts.filter(a => a.type === "loan").map(a => (
+              <option key={a.id} value={a.id}>{a.name}{a.institution ? ` · ${a.institution}` : ""}</option>
+            ))}
           </select>
+          <div className={`text-[10px] ${theme.textSubtle} mt-1`}>
+            Point this at the loan account in your Accounts tab that mirrors this debt. Recording a payment on this tracker will then also reduce that account's balance automatically.
+          </div>
         </div>
         <div>
           <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Notes</label>
