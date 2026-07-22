@@ -120,8 +120,12 @@ export const api = {
   createLoan: (data) => request("POST", "/loans", data),
   updateLoan: (id, data) => request("PATCH", `/loans/${id}`, data),
   deleteLoan: (id) => request("DELETE", `/loans/${id}`),
-  recordLoanPayment: (id, amount) =>
-    request("POST", `/loans/${id}/payment`, { amount }),
+  recordLoanPayment: (id, amount, opts = {}) =>
+    request("POST", `/loans/${id}/payment`, {
+      amount,
+      account_id: opts.accountId || undefined,
+      date: opts.date || undefined,
+    }),
 
   // ── Bills (recurring outgoing obligations) ─────────────────────
   listBills: (historyCount = 0) =>

@@ -41,16 +41,24 @@ function validFlag(v) {
 
 // Update a manual account's balance by the given delta.
 // Plaid-linked accounts are NEVER touched here — their balances come from Plaid sync.
+//
+// Loan accounts flip the sign. Loan balances are stored as negatives
+// (a $10,000 debt is balance = -10000). A loan PAYMENT is an outflow
+// on the user's ledger (amount = -500) but should move the loan
+// balance toward zero — that is, +500 delta to balance. Without the
+// flip, entering a manual payment on a loan account would push the
+// balance further negative, growing the debt in the UI.
 async function adjustManualAccountBalance(userId, accountId, delta) {
   if (!accountId || !delta) return;
   const acc = await queryOne(
-    "SELECT id, plaid_item_id FROM accounts WHERE id = ? AND user_id = ?",
+    "SELECT id, plaid_item_id, type FROM accounts WHERE id = ? AND user_id = ?",
     [accountId, userId]
   );
   if (!acc || acc.plaid_item_id) return; // not ours or Plaid-managed
+  const applied = acc.type === "loan" ? -Number(delta) : Number(delta);
   await query(
     "UPDATE accounts SET balance = balance + ? WHERE id = ?",
-    [delta, accountId]
+    [applied, accountId]
   );
 }
 
@@ -76,10 +84,17 @@ export default async function (app) {
     if (cleared === "reconciled") { where.push("t.reconciliation_id IS NOT NULL"); }
     // Flag colour filter.
     if (flag)                     { where.push("t.flag_color = ?"); params.push(flag); }
-    // Voided rows are hidden from the list unless explicitly asked for.
-    if (includeVoided !== "1" && includeVoided !== "true") {
+    // Voided rows are INCLUDED in the register by default (the frontend
+    // renders them with a strikethrough). Set `hideVoided=1` to
+    // exclude them entirely. Aggregation queries (budgets, cashflow,
+    // tax, etc.) still drop voided rows on their own; those code paths
+    // do not read this endpoint.
+    if (req.query?.hideVoided === "1" || req.query?.hideVoided === "true") {
       where.push("t.voided_at IS NULL");
     }
+    // Legacy: some callers still pass includeVoided; treat it as
+    // opt-in "show voided" (which is now the default), so it's a no-op.
+    void includeVoided;
     // Scheduled rows are excluded from the main list — they show in the
     // dedicated /scheduled endpoint at the top of the Transactions tab.
     // Once adopted (is_scheduled flips to 0) they reappear here naturally.
@@ -126,6 +141,7 @@ export default async function (app) {
               t.check_number AS checkNumber,
               t.voided_at AS voidedAt,
               t.flag_color AS flagColor,
+              t.exclude_from_budget_income AS excludeFromBudgetIncome,
               t.paystub_json AS paystubJson,
               a.name AS accountName, a.id AS accountId, a.plaid_item_id AS plaidItemId,
               mr.display_name AS merchantDisplayName
@@ -579,7 +595,7 @@ export default async function (app) {
 
   app.patch("/:id", async (req) => {
     const { merchant, category, amount, note, date, is_deductible,
-            check_number, flag_color } = req.body || {};
+            check_number, flag_color, exclude_from_budget_income } = req.body || {};
     // If amount changes on a manual account txn, adjust balance by the delta.
     // Scheduled rows are excluded (see DELETE handler above).
     const existing = await queryOne(
@@ -588,6 +604,8 @@ export default async function (app) {
     );
     const deductibleBit = is_deductible === undefined
       ? null : (is_deductible ? 1 : 0);
+    const excludeBit = exclude_from_budget_income === undefined
+      ? null : (exclude_from_budget_income ? 1 : 0);
     // Flag: undefined = no change; null or "" = clear; else validate.
     // Check num: undefined = no change; null or "" = clear; else store.
     const flagVal = flag_color === undefined
@@ -602,11 +620,12 @@ export default async function (app) {
          note = COALESCE(?, note),
          date = COALESCE(?, date),
          is_deductible = COALESCE(?, is_deductible),
+         exclude_from_budget_income = COALESCE(?, exclude_from_budget_income),
          flag_color = IF(?, ?, flag_color),
          check_number = IF(?, ?, check_number)
        WHERE id = ? AND user_id = ?`,
       [merchant ?? null, category ?? null, amount ?? null, note ?? null, date ?? null,
-       deductibleBit,
+       deductibleBit, excludeBit,
        flag_color !== undefined ? 1 : 0, flagVal,
        check_number !== undefined ? 1 : 0, checkVal,
        req.params.id, req.user.id]

@@ -39,7 +39,8 @@ async function sumIncomeInWindow(userId, startStr, endStr) {
        AND (a.type IS NULL OR a.type <> 'credit')
        AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
        AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
-       AND t.voided_at IS NULL`,
+       AND t.voided_at IS NULL
+       AND (t.exclude_from_budget_income = 0 OR t.exclude_from_budget_income IS NULL)`,
     [userId, startStr, endStr]
   );
   return Number(row.total) || 0;

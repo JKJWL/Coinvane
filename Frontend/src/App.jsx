@@ -2760,6 +2760,7 @@ function AccountsTab({ theme, darkMode, toast }) {
   const [addForm, setAddForm] = useState({ name: "", type: "cash", subtype: "", balance: "", institution: "", link_asset_id: "", is_business: false });
   const [adding, setAdding] = useState(false);
   const [reconAccount, setReconAccount] = useState(null);
+  const [editingAccount, setEditingAccount] = useState(null);
   const [linkableAssets, setLinkableAssets] = useState([]);
 
   // Assets available to link when creating a loan account (car, boat, etc.
@@ -2931,6 +2932,12 @@ function AccountsTab({ theme, darkMode, toast }) {
                     </button>
                   )}
                   {!a.plaidItemId && (
+                    <button onClick={() => setEditingAccount(a)}
+                      className={`text-xs ${theme.textSubtle} hover:text-violet-500 transition-colors`}>
+                      Edit
+                    </button>
+                  )}
+                  {!a.plaidItemId && (
                     <button onClick={() => removeAccount(a)}
                       className={`text-xs ${theme.textSubtle} hover:text-rose-500 transition-colors`}>
                       Delete
@@ -3067,7 +3074,100 @@ function AccountsTab({ theme, darkMode, toast }) {
       <ReconcileSheet open={!!reconAccount} onClose={() => setReconAccount(null)}
         account={reconAccount} theme={theme} darkMode={darkMode} toast={toast}
         onFinalize={refreshAll} />
+      <EditAccountSheet open={!!editingAccount} account={editingAccount}
+        theme={theme} darkMode={darkMode} toast={toast}
+        onClose={() => setEditingAccount(null)}
+        onSaved={() => { setEditingAccount(null); refreshAll(); }} />
     </div>
+  );
+}
+
+// ─── Edit Account Sheet ──────────────────────────────────────────────────────
+// Manual-account fields the user might realistically want to change after
+// creation. Plaid-linked accounts are excluded from the edit surface
+// (their balance is authoritative from the bank; renaming Plaid rows is
+// a separate concern we don't expose here).
+function EditAccountSheet({ open, onClose, account, theme, darkMode, toast, onSaved }) {
+  const [form, setForm] = useState({ name: "", balance: "", subtype: "", is_business: false });
+  const [saving, setSaving] = useState(false);
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
+  useEffect(() => {
+    if (!open || !account) return;
+    setForm({
+      name: account.name || "",
+      balance: String(account.balance ?? ""),
+      subtype: account.subtype || "",
+      is_business: !!account.isBusiness,
+    });
+  }, [open, account]);
+  if (!open || !account) return null;
+  const isLoan = account.type === "loan";
+  const save = async () => {
+    if (!form.name.trim()) { toast?.("Name required", "error"); return; }
+    setSaving(true);
+    try {
+      await api.updateAccount(account.id, {
+        name: form.name.trim(),
+        balance: form.balance === "" ? undefined : Number(form.balance),
+        subtype: form.subtype === "" ? null : form.subtype,
+        is_business: form.is_business,
+      });
+      toast?.("Account updated", "success");
+      onSaved?.();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    finally { setSaving(false); }
+  };
+  return (
+    <Sheet open={open} onClose={onClose} title={`Edit · ${account.name}`} theme={theme}>
+      <div className="space-y-3">
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Name</label>
+          <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className={inputCls} />
+        </div>
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Balance</label>
+          <input type="number" step="0.01" value={form.balance}
+            onChange={e => setForm({ ...form, balance: e.target.value })} className={inputCls} />
+          <div className={`text-[10px] ${theme.textSubtle} mt-1`}>
+            {isLoan
+              ? "Loans are stored as a negative number (a $10,000 debt is -10000). Payments recorded through the loan tracker move this toward zero automatically."
+              : "Editing the balance directly is one-shot — it does NOT post a corresponding transaction. Use the transaction list for anything that should show up in history."}
+          </div>
+        </div>
+        {/* Subtype dropdown — same contextual set as the create form. */}
+        {(account.type === "investment" || account.type === "credit" || account.type === "cash") && (
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Subtype</label>
+            <select value={form.subtype}
+              onChange={e => setForm({ ...form, subtype: e.target.value })} className={inputCls}>
+              <option value="">— none —</option>
+              {account.type === "investment" && (<>
+                <option value="retirement">Retirement (401k / IRA / Roth / SEP / 403b)</option>
+                <option value="hsa">HSA — health savings</option>
+                <option value="529">529 — education savings</option>
+                <option value="property">Real estate / property</option>
+              </>)}
+              {account.type === "credit" && <option value="heloc">HELOC — home equity line of credit</option>}
+              {account.type === "cash" && <option value="property">Real estate / property</option>}
+            </select>
+          </div>
+        )}
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={!!form.is_business}
+            onChange={e => setForm({ ...form, is_business: e.target.checked })}
+            className="w-4 h-4 accent-violet-500" />
+          <span>Business account (Schedule C activity)</span>
+        </label>
+        <div className="flex gap-2 pt-2">
+          <button type="button" onClick={onClose}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.textSubtle}`}>Cancel</button>
+          <button type="button" onClick={save} disabled={saving}
+            className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-60">
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </Sheet>
   );
 }
 
@@ -4551,6 +4651,33 @@ function TransactionsTab({ theme, darkMode, toast }) {
                   </button>
                 )}
               </div>
+
+              {/* Exclude-from-budget-income toggle — only meaningful on
+                  income (positive, non-transfer) rows. Lets you keep a
+                  transaction like a tax refund or gift in the register
+                  without letting it inflate the zero-based budget's
+                  income bar. */}
+              {Number(detail.amount) > 0 && !detail.isTransfer && (
+                <label className="flex items-start gap-2 text-sm">
+                  <input type="checkbox" checked={!!detail.excludeFromBudgetIncome}
+                    onChange={async e => {
+                      const val = e.target.checked;
+                      try {
+                        await api.updateTransaction(detail.id, { exclude_from_budget_income: val });
+                        setDetail({ ...detail, excludeFromBudgetIncome: val });
+                        refreshAll();
+                        toast?.(val ? "Excluded from budget income" : "Counted in budget income", "success");
+                      } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+                    }}
+                    className="w-4 h-4 accent-violet-500 mt-0.5" />
+                  <div className="flex-1">
+                    <div>Exclude from budget income</div>
+                    <div className={`text-[10px] ${theme.textSubtle}`}>
+                      Keeps this row in the register but drops it out of the master-period income total.
+                    </div>
+                  </div>
+                </label>
+              )}
 
               {/* Flag colour picker — filter your register at a glance */}
               <div>
@@ -6593,7 +6720,7 @@ function projectPayoff(balance, apr, monthlyPayment, extra = 0) {
 }
 
 function LoansSection({ theme, darkMode, toast }) {
-  const { accounts } = useData();
+  const { accounts, refreshAll } = useData();
   const [loans, setLoans] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -6628,17 +6755,7 @@ function LoansSection({ theme, darkMode, toast }) {
     } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
   };
 
-  const recordPayment = async (loan) => {
-    const amt = window.prompt(`Record a payment for ${loan.name}. Amount:`, String(loan.monthly_payment));
-    if (!amt) return;
-    const n = Number(amt);
-    if (!(n > 0)) return toast?.("Enter a positive amount", "error");
-    try {
-      await api.recordLoanPayment(loan.id, n);
-      toast?.("Payment recorded", "success");
-      load();
-    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
-  };
+  const [payingLoan, setPayingLoan] = useState(null);
 
   return (
     <div className="space-y-4">
@@ -6675,7 +6792,7 @@ function LoansSection({ theme, darkMode, toast }) {
             {orderedLoans.map(loan => (
               <LoanCard key={loan.id} loan={loan} theme={theme} darkMode={darkMode}
                 onEdit={() => { setEditing(loan); setShowForm(true); }}
-                onPayment={() => recordPayment(loan)}
+                onPayment={() => setPayingLoan(loan)}
                 onRemove={() => removeLoan(loan)} />
             ))}
           </div>
@@ -6692,7 +6809,88 @@ function LoansSection({ theme, darkMode, toast }) {
         toast={toast}
         onSaved={() => { setShowForm(false); setEditing(null); load(); }}
       />
+      <LoanPaymentSheet open={!!payingLoan} loan={payingLoan}
+        accounts={accounts} theme={theme} darkMode={darkMode} toast={toast}
+        onClose={() => setPayingLoan(null)}
+        onSaved={() => { setPayingLoan(null); load(); refreshAll?.(); }} />
     </div>
+  );
+}
+
+// ─── Loan payment sheet ───────────────────────────────────────────────────────
+// Records a payment against a loan record AND, when a source account is
+// picked, posts a matching outflow transaction on that account. The
+// backend keeps loans + accounts in the two decoupled tables it's had
+// since Stage 2; this sheet just gives the user one action to hit both.
+function LoanPaymentSheet({ open, onClose, loan, accounts, theme, darkMode, toast, onSaved }) {
+  const [amount, setAmount] = useState("");
+  const [accountId, setAccountId] = useState("");
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [saving, setSaving] = useState(false);
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
+  useEffect(() => {
+    if (!open || !loan) return;
+    setAmount(String(loan.monthly_payment || ""));
+    setAccountId("");
+    setDate(new Date().toISOString().slice(0, 10));
+  }, [open, loan]);
+  if (!open || !loan) return null;
+  // Payment sources: cash / checking style accounts. Credit cards + loans
+  // themselves are hidden — you don't pay a loan from another loan.
+  const paymentSources = accounts.filter(a => a.type === "cash" || a.type === "credit");
+  const save = async () => {
+    const n = Number(amount);
+    if (!(n > 0)) { toast?.("Enter a positive amount", "error"); return; }
+    setSaving(true);
+    try {
+      await api.recordLoanPayment(loan.id, n, {
+        accountId: accountId ? Number(accountId) : undefined,
+        date,
+      });
+      toast?.(`Payment of ${fmt(n)} recorded`, "success");
+      onSaved?.();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    finally { setSaving(false); }
+  };
+  return (
+    <Sheet open={open} onClose={onClose} title={`Payment · ${loan.name}`} theme={theme}>
+      <div className="space-y-3">
+        <div className={`text-xs ${theme.textSubtle}`}>
+          Current balance {fmt(Number(loan.current_balance) || 0)} · monthly {fmt(Number(loan.monthly_payment) || 0)}
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Amount</label>
+            <input type="number" step="0.01" min="0" value={amount}
+              onChange={e => setAmount(e.target.value)} className={inputCls} />
+          </div>
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Date</label>
+            <input type="date" value={date} onChange={e => setDate(e.target.value)} className={inputCls} />
+          </div>
+        </div>
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Paid from (optional)</label>
+          <select value={accountId} onChange={e => setAccountId(e.target.value)} className={inputCls}>
+            <option value="">— none — just decrement the loan balance</option>
+            {paymentSources.map(a => (
+              <option key={a.id} value={a.id}>{a.name}{a.institution ? ` · ${a.institution}` : ""}</option>
+            ))}
+          </select>
+          <div className={`text-[10px] ${theme.textSubtle} mt-1`}>
+            Picking an account also posts an outflow transaction there so the payment shows on cashflow + budgets.
+          </div>
+        </div>
+        <div className="flex gap-2 pt-2">
+          <button type="button" onClick={onClose}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${theme.textSubtle}`}>Cancel</button>
+          <button type="button" onClick={save} disabled={saving}
+            className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-60">
+            {saving ? "Recording…" : "Record payment"}
+          </button>
+        </div>
+      </div>
+    </Sheet>
   );
 }
 

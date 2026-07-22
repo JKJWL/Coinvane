@@ -598,6 +598,18 @@ const SCHEMA = [
   // read cleanly.
   `ALTER TABLE categories ADD COLUMN IF NOT EXISTS parent_id INT NULL`,
 
+  // ── Stage C polish: exclude specific income rows from the master
+  // period's income total. Zero-based budget + income tracker still
+  // display the transaction; it just doesn't feed the "income this
+  // period" bar. Useful for tax refunds, gifts, and other one-offs
+  // you'd rather not budget from.
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS exclude_from_budget_income BOOLEAN DEFAULT FALSE`,
+
+  // Loan-record ⇄ payment-source account link. When set, /loans/:id/pay
+  // also posts an outflow transaction on the referenced account so the
+  // payment shows up on cashflow / budgets automatically.
+  `ALTER TABLE loans ADD COLUMN IF NOT EXISTS account_id INT NULL`,
+
   // ── Stage C: account subtypes + business flag ────────────────────
   // subtype was already a VARCHAR(32) — we just start filling it with a
   // whitelist (retirement / hsa / 529 / heloc / property / business).

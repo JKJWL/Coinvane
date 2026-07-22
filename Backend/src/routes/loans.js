@@ -127,11 +127,19 @@ export default async function (app) {
   });
 
   // Manual payment: decrement current_balance by amount.
+  //
+  // If `account_id` is supplied (payment source — the checking account
+  // the money leaves from), we also post an outflow transaction on that
+  // account so the payment shows on cashflow / budgets / by-category.
+  // The manual-account balance shift happens through adjustManualAccountBalance
+  // in the transactions module, so import that helper here.
   app.post("/:id/payment", async (req, reply) => {
     const amount = Number(req.body?.amount);
+    const paymentAccountId = req.body?.account_id ? Number(req.body.account_id) : null;
+    const date = req.body?.date || new Date().toISOString().slice(0, 10);
     if (!(amount > 0)) return reply.code(400).send({ error: "amount > 0 required" });
     const loan = await queryOne(
-      "SELECT id, current_balance FROM loans WHERE id = ? AND user_id = ? AND archived_at IS NULL",
+      "SELECT id, name, current_balance FROM loans WHERE id = ? AND user_id = ? AND archived_at IS NULL",
       [req.params.id, req.user.id]
     );
     if (!loan) return reply.code(404).send({ error: "not found" });
@@ -140,6 +148,33 @@ export default async function (app) {
       "UPDATE loans SET current_balance = ? WHERE id = ?",
       [next, loan.id]
     );
+    // Post a ledger transaction if the caller told us where the money
+    // came from. Category "Loan Payment" so it groups predictably;
+    // is_transfer stays 0 because the destination isn't itself an
+    // account we track (a `loans` row is separate from `accounts`).
+    if (paymentAccountId) {
+      const acct = await queryOne(
+        "SELECT id, plaid_item_id FROM accounts WHERE id = ? AND user_id = ?",
+        [paymentAccountId, req.user.id]
+      );
+      if (acct) {
+        await query(
+          `INSERT INTO transactions
+             (user_id, account_id, date, merchant, category, amount, note)
+           VALUES (?, ?, ?, ?, 'Loan Payment', ?, ?)`,
+          [req.user.id, acct.id, date,
+           `Payment · ${loan.name}`, -Math.abs(amount),
+           `Applied to loan #${loan.id}`]
+        );
+        // Manual account balance decreases (Plaid-linked untouched).
+        if (!acct.plaid_item_id) {
+          await query(
+            "UPDATE accounts SET balance = balance - ? WHERE id = ?",
+            [Math.abs(amount), acct.id]
+          );
+        }
+      }
+    }
     return { ok: true, current_balance: next };
   });
 }
