@@ -67,6 +67,8 @@ function userPayload(u) {
     notify_bill_days_before: Number(u.notify_bill_days_before ?? 3),
     notify_cashflow_enabled: !!u.notify_cashflow_enabled,
     notify_cashflow_min:     Number(u.notify_cashflow_min ?? 0),
+    notify_budget_usage_enabled: !!u.notify_budget_usage_enabled,
+    notify_budget_usage_pct: Number(u.notify_budget_usage_pct ?? 90),
     // Misc prefs
     privacy_mode:    !!u.privacy_mode,
     show_cashflow_forecast: u.show_cashflow_forecast === undefined ? true : !!u.show_cashflow_forecast,
@@ -256,6 +258,7 @@ export default async function (app) {
         notify_budget_exceeded, notify_goal_milestone,
         notify_bill_reminders, notify_bill_days_before,
         notify_cashflow_enabled, notify_cashflow_min,
+        notify_budget_usage_enabled, notify_budget_usage_pct,
         privacy_mode, show_cashflow_forecast, week_start, email_frequency, email_weekday`;
 
   app.get("/me", { preHandler: [app.authenticate] }, async (req) => {
@@ -414,6 +417,8 @@ export default async function (app) {
          notify_bill_days_before = COALESCE(?, notify_bill_days_before),
          notify_cashflow_enabled = COALESCE(?, notify_cashflow_enabled),
          notify_cashflow_min = COALESCE(?, notify_cashflow_min),
+         notify_budget_usage_enabled = COALESCE(?, notify_budget_usage_enabled),
+         notify_budget_usage_pct = COALESCE(?, notify_budget_usage_pct),
          privacy_mode = COALESCE(?, privacy_mode),
          show_cashflow_forecast = COALESCE(?, show_cashflow_forecast),
          week_start = COALESCE(?, week_start),
@@ -429,6 +434,7 @@ export default async function (app) {
         bool(b.notify_budget_exceeded), bool(b.notify_goal_milestone),
         bool(b.notify_bill_reminders),  int(b.notify_bill_days_before, 0, 60),
         bool(b.notify_cashflow_enabled), int(b.notify_cashflow_min, 0, 100_000_000),
+        bool(b.notify_budget_usage_enabled), int(b.notify_budget_usage_pct, 1, 200),
         bool(b.privacy_mode),           bool(b.show_cashflow_forecast),
         int(b.week_start, 0, 6),
         freq,                           int(b.email_weekday, 0, 6),

@@ -611,6 +611,17 @@ const SCHEMA = [
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_cashflow_enabled BOOLEAN DEFAULT FALSE`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_cashflow_min INT DEFAULT 0`,
 
+  //   notify_budget_usage_enabled / notify_budget_usage_pct:
+  //     alert when TOTAL spend across every category budget this period
+  //     crosses `pct` % of the zero-based basis (expected income when set,
+  //     else current income). Distinct from notify_budget_warning which
+  //     fires on individual per-category budgets — this one is the
+  //     overall "you're burning through your income" signal.
+  //     Once-per-period dedup lives in generateNotifications so a
+  //     repeated overshoot doesn't re-notify daily.
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_budget_usage_enabled BOOLEAN DEFAULT FALSE`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_budget_usage_pct INT DEFAULT 90`,
+
   // Optional grouping on categories (Groceries + Restaurants → "Food").
   // Group is display-only: budgets, rules, and by-category totals still
   // key off the leaf category name. Nullable so existing rows are

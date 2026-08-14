@@ -31,6 +31,7 @@ export async function generateNotifications(userId) {
             notify_budget_exceeded, notify_goal_milestone,
             notify_bill_reminders, notify_bill_days_before,
             notify_cashflow_enabled, notify_cashflow_min,
+            notify_budget_usage_enabled, notify_budget_usage_pct,
             notification_email, email_frequency, email_weekday
      FROM users WHERE id = ?`,
     [userId]
@@ -47,6 +48,8 @@ export async function generateNotifications(userId) {
   const billDays     = Math.max(0, Math.min(60, Number(prefs.notify_bill_days_before) || 3));
   const cashflowOn   = prefs.notify_cashflow_enabled === 1 || prefs.notify_cashflow_enabled === true;
   const cashflowMin  = Number(prefs.notify_cashflow_min) || 0;
+  const budgetUsageOn  = prefs.notify_budget_usage_enabled === 1 || prefs.notify_budget_usage_enabled === true;
+  const budgetUsagePct = Math.min(200, Math.max(1, Number(prefs.notify_budget_usage_pct) || 90));
 
   // ── Budget overspend / approaching limit ────────────────────────
   const master = await getMasterPeriod(userId);
@@ -230,6 +233,80 @@ export async function generateNotifications(userId) {
         body: `Low point of $${lowest.toFixed(2)}${lowestDay ? ` on ${lowestDay}` : ""} in the next 30 days.`,
       });
       if (n) created.push(n);
+    }
+  }
+
+  // ── Overall budget usage alert (D9) ─────────────────────────────
+  // Same math as the "Budget usage" bar in the Budgets tab:
+  //   spent  = SUM(ABS(txn amount)) across every non-credit expense
+  //            whose category matches a non-card budget this period.
+  //   basis  = expected income for the period when > 0, else current
+  //            income. Alert fires when spent/basis >= threshold%.
+  //
+  // Dedup lives at title-level via insertNotification (once per day per
+  // exact title) plus we bake the current master-period start into the
+  // title so a fresh period gets a fresh notification chance without
+  // re-firing every day within the same period.
+  if (budgetUsageOn) {
+    const spentRow = await queryOne(
+      `SELECT COALESCE(SUM(ABS(t.amount)), 0) AS total
+       FROM transactions t
+       JOIN budgets b ON b.user_id = t.user_id AND b.category = t.category
+                     AND b.account_id IS NULL
+       LEFT JOIN accounts a ON a.id = t.account_id
+       WHERE t.user_id = ? AND t.amount < 0
+         AND t.date >= ? AND t.date < ?
+         AND (a.type IS NULL OR a.type <> 'credit')
+         AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+         AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
+         AND t.voided_at IS NULL`,
+      [userId, master.startStr, master.endStr]
+    );
+    const spent = Number(spentRow?.total || 0);
+    const incRow = await queryOne(
+      `SELECT COALESCE(SUM(t.amount), 0) AS total
+       FROM transactions t
+       LEFT JOIN accounts a ON a.id = t.account_id
+       WHERE t.user_id = ? AND t.amount > 0
+         AND t.date >= ? AND t.date < ?
+         AND (a.type IS NULL OR a.type <> 'credit')
+         AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+         AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
+         AND t.voided_at IS NULL
+         AND (t.exclude_from_budget_income = 0 OR t.exclude_from_budget_income IS NULL)`,
+      [userId, master.startStr, master.endStr]
+    );
+    const income = Number(incRow?.total || 0);
+    const expRow = await queryOne(
+      `SELECT COALESCE(SUM(t.amount), 0) AS total
+       FROM transactions t
+       LEFT JOIN accounts a ON a.id = t.account_id
+       WHERE t.user_id = ? AND t.amount > 0
+         AND t.date >= ? AND t.date < ?
+         AND t.budget_expected_income = 1
+         AND (a.type IS NULL OR a.type <> 'credit')
+         AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+         AND t.voided_at IS NULL
+         AND (t.exclude_from_budget_income = 0 OR t.exclude_from_budget_income IS NULL)`,
+      [userId, master.startStr, master.endStr]
+    );
+    const expected = Number(expRow?.total || 0);
+    const basis = expected > 0 ? expected : income;
+    if (basis > 0) {
+      const pctUsed = Math.round((spent / basis) * 100);
+      if (pctUsed >= budgetUsagePct) {
+        const n = await insertNotification(userId, {
+          type: "budget_usage_high",
+          icon: "AlertTriangle",
+          color: "rose",
+          // Bake the period start into the title so the once-per-day dedup
+          // (which keys on title) doesn't block a fresh notification when
+          // a new master period starts.
+          title: `Budget usage at ${pctUsed}% of ${expected > 0 ? "expected" : "current"} income (${master.startStr})`,
+          body: `You've spent $${spent.toFixed(2)} of your $${basis.toFixed(2)} basis this period. Threshold was ${budgetUsagePct}%.`,
+        });
+        if (n) created.push(n);
+      }
     }
   }
 

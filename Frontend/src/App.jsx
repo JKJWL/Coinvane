@@ -11027,6 +11027,8 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
     notify_bill_days_before: Number(u.notify_bill_days_before ?? 3),
     notify_cashflow_enabled: !!u.notify_cashflow_enabled,
     notify_cashflow_min:     Number(u.notify_cashflow_min ?? 0),
+    notify_budget_usage_enabled: !!u.notify_budget_usage_enabled,
+    notify_budget_usage_pct: Number(u.notify_budget_usage_pct ?? 90),
     privacy_mode:           !!u.privacy_mode,
     week_start:             Number(u.week_start ?? 0),
     email_frequency:        u.email_frequency || "daily",
@@ -11058,7 +11060,8 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
       // value; the server's COALESCE leaves it alone if null.
       const payload = { ...form };
       for (const k of ["large_txn_threshold", "income_threshold", "budget_warning_pct",
-                       "notify_bill_days_before", "notify_cashflow_min"]) {
+                       "notify_bill_days_before", "notify_cashflow_min",
+                       "notify_budget_usage_pct"]) {
         if (payload[k] === "" || payload[k] === null) delete payload[k];
         else if (payload[k] !== undefined) payload[k] = Number(payload[k]) || 0;
       }
@@ -11378,6 +11381,23 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
               <input type="text" inputMode="numeric" pattern="[0-9]*"
                 className={numCls} value={form.notify_cashflow_min}
                 onChange={e => setForm({ ...form, notify_cashflow_min: e.target.value.replace(/\D/g, "").slice(0, 9) || 0 })} />
+            </div>
+          </NotifRow>
+
+          {/* Overall budget usage threshold — mirrors the "Budget usage"
+              bar on the Budgets tab. Fires once per master period when
+              total spend crosses the given % of the basis. */}
+          <NotifRow
+            theme={theme} darkMode={darkMode} emailOn={emailOn}
+            label="Overall budget usage alert"
+            hint="Email + in-app alert when your total spending crosses this % of expected income (or current income when none is scheduled). Fires once per budget period."
+            checked={form.notify_budget_usage_enabled}
+            onToggle={v => setForm({ ...form, notify_budget_usage_enabled: v })}>
+            <div className="flex items-center gap-2">
+              <span className={`text-xs ${theme.textSubtle}`}>Threshold %</span>
+              <input type="text" inputMode="numeric" pattern="[0-9]*"
+                className={numCls} value={form.notify_budget_usage_pct}
+                onChange={e => setForm({ ...form, notify_budget_usage_pct: e.target.value.replace(/\D/g, "").slice(0, 3) || 90 })} />
             </div>
           </NotifRow>
 
