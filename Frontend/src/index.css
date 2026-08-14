@@ -72,6 +72,22 @@ input, textarea, select {
   font-size: 16px;
 }
 
+/* Mobile overflow fix — mobile Safari/Chrome ignore flex-item shrinking
+   defaults for form controls, so a <select> with a long option label
+   pushes past its container's right edge. Clamping max-width forces
+   the browser to honor the parent's width regardless of intrinsic
+   content width, and truncating the visible text keeps the label from
+   spilling over. Applies universally because the wrappers everywhere
+   use w-full anyway. */
+select, input, textarea {
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+select {
+  text-overflow: ellipsis;
+}
+
 /* Kill the blue/gray tap flash */
 * {
   -webkit-tap-highlight-color: transparent;
