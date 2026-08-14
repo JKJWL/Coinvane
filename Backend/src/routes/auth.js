@@ -70,6 +70,7 @@ function userPayload(u) {
     notify_cashflow_min:     Number(u.notify_cashflow_min ?? 0),
     notify_budget_usage_enabled: !!u.notify_budget_usage_enabled,
     notify_budget_usage_pct: Number(u.notify_budget_usage_pct ?? 90),
+    push_frequency: u.push_frequency || "daily",
     // Misc prefs
     privacy_mode:    !!u.privacy_mode,
     show_cashflow_forecast: u.show_cashflow_forecast === undefined ? true : !!u.show_cashflow_forecast,
@@ -260,6 +261,7 @@ export default async function (app) {
         notify_bill_reminders, notify_bill_days_before,
         notify_cashflow_enabled, notify_cashflow_min,
         notify_budget_usage_enabled, notify_budget_usage_pct,
+        push_frequency,
         privacy_mode, show_cashflow_forecast, week_start, email_frequency, email_weekday`;
 
   app.get("/me", { preHandler: [app.authenticate] }, async (req) => {
@@ -336,6 +338,18 @@ export default async function (app) {
        FROM push_subscriptions WHERE user_id = ? ORDER BY created_at DESC`,
       [req.user.id]
     );
+  });
+
+  // Revoke by ROW ID — the manage-devices UI knows ids but not the
+  // opaque endpoint URLs (they're kept server-side). Scoped to the
+  // caller's user_id so an id-collision attempt just 404s.
+  app.delete("/me/push-subscriptions/:id", { preHandler: [app.authenticate] }, async (req, reply) => {
+    const r = await query(
+      "DELETE FROM push_subscriptions WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    if (!r.affectedRows) return reply.code(404).send({ error: "not found" });
+    return { ok: true };
   });
 
   // ── Clear-all-my-data (D8) ────────────────────────────────────
@@ -457,6 +471,8 @@ export default async function (app) {
     const allowedFreq = ["instant", "daily", "weekly"];
     const freq = b.email_frequency && allowedFreq.includes(b.email_frequency)
       ? b.email_frequency : null;
+    const pushFreq = b.push_frequency && allowedFreq.includes(b.push_frequency)
+      ? b.push_frequency : null;
     await query(
       `UPDATE users SET
          name = COALESCE(?, name),
@@ -483,7 +499,8 @@ export default async function (app) {
          show_cashflow_forecast = COALESCE(?, show_cashflow_forecast),
          week_start = COALESCE(?, week_start),
          email_frequency = COALESCE(?, email_frequency),
-         email_weekday = COALESCE(?, email_weekday)
+         email_weekday = COALESCE(?, email_weekday),
+         push_frequency = COALESCE(?, push_frequency)
        WHERE id = ?`,
       [
         b.name ?? null, b.currency ?? null, b.timezone ?? null,
@@ -498,6 +515,7 @@ export default async function (app) {
         bool(b.privacy_mode),           bool(b.show_cashflow_forecast),
         int(b.week_start, 0, 6),
         freq,                           int(b.email_weekday, 0, 6),
+        pushFreq,
         req.user.id,
       ]
     );

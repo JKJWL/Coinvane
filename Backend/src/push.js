@@ -32,6 +32,34 @@ export function isPushConfigured() { return CONFIGURED; }
 export function getVapidPublicKey() { return PUB; }
 
 /**
+ * Decide whether a push should fire right now given the user's chosen
+ * cadence. Callers pass `context: "inline"` for real-time triggers
+ * (immediately after a Plaid txn arrival) or `"cron"` for the 8AM
+ * batch. Returns true when we should push.
+ *
+ *   instant → fire on either context (inline reflects "the moment it
+ *             happened"; cron catches stragglers if the inline hook
+ *             missed for any reason)
+ *   daily   → cron only
+ *   weekly  → cron only, and only on the configured weekday (0=Sun…6=Sat)
+ *
+ * Mirrors the email_frequency semantics in notification-engine so the
+ * two channels behave identically w.r.t. user expectations.
+ */
+export function shouldPushNow(freq, weekday, context = "cron", now = new Date()) {
+  const f = String(freq || "daily").toLowerCase();
+  if (f === "instant") return true;
+  if (context === "inline") return false;
+  if (f === "weekly") {
+    const dow = now.getDay();
+    const target = ((Number(weekday) || 1) % 7);
+    return dow === target;
+  }
+  // "daily" (default) — fire on cron regardless of weekday.
+  return true;
+}
+
+/**
  * Send a push notification to every subscription belonging to a user.
  * Payload is opaque to the push service (E2E encrypted); the service
  * worker JSON.parses it and calls showNotification(). Silent no-op if

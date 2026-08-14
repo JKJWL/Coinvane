@@ -3,7 +3,7 @@ import { query, queryOne } from "./db.js";
 import { enqueueMail } from "./queue.js";
 import { renderNotificationDigest } from "./mailer.js";
 import { getMasterPeriod, spentForBudgetInWindow } from "./budget-utils.js";
-import { sendPush } from "./push.js";
+import { sendPush, shouldPushNow } from "./push.js";
 
 async function insertNotification(userId, n) {
   const dupe = await queryOne(
@@ -33,7 +33,8 @@ export async function generateNotifications(userId) {
             notify_bill_reminders, notify_bill_days_before,
             notify_cashflow_enabled, notify_cashflow_min,
             notify_budget_usage_enabled, notify_budget_usage_pct,
-            notification_email, email_frequency, email_weekday
+            notification_email, email_frequency, email_weekday,
+            push_frequency
      FROM users WHERE id = ?`,
     [userId]
   ) || {};
@@ -335,11 +336,17 @@ export async function generateNotifications(userId) {
   }
 
   // ── Web Push fanout ──────────────────────────────────────────────
-  // One push per new notification when the user has `notification_push`
-  // on. Silent no-op if VAPID isn't configured or the user has no
-  // registered subscriptions. Stale endpoints self-clean via 410
-  // handling inside sendPush.
-  if (created.length > 0 && prefs.notification_push) {
+  // Fires when the user's push_frequency permits AND they have
+  // notification_push on. Silent no-op if VAPID isn't configured or
+  // the user has no registered subscriptions. Stale endpoints
+  // self-clean via 410 handling inside sendPush. Inline push (from
+  // sync.js right after a Plaid arrival) is a SEPARATE pathway —
+  // see maybePushForInlineEvent below.
+  if (
+    created.length > 0
+    && prefs.notification_push
+    && shouldPushNow(prefs.push_frequency, prefs.email_weekday, "cron")
+  ) {
     for (const n of created) {
       try {
         await sendPush(userId, {
@@ -357,4 +364,74 @@ export async function generateNotifications(userId) {
     }
   }
   return created;
+}
+
+/**
+ * Inline notification hook — called from sync.js right after a Plaid
+ * transaction is inserted. Checks whether this ONE transaction should
+ * trigger an immediate large-txn or income alert per the user's prefs.
+ * If it does, creates the notification row AND pushes it if the user's
+ * push_frequency is "instant". "daily" / "weekly" users don't get
+ * pushed here — the 8AM cron will pick the row up and push under its
+ * cadence rules.
+ *
+ * Silent-fail: sync must never block on notification/push machinery.
+ */
+export async function maybePushForInlineEvent(userId, txn) {
+  try {
+    const prefs = await queryOne(
+      `SELECT notify_large_txn, large_txn_threshold,
+              notify_income, income_threshold,
+              notification_push, push_frequency, email_weekday
+       FROM users WHERE id = ?`,
+      [userId]
+    );
+    if (!prefs) return;
+    const amount = Number(txn.amount);
+    if (!(amount)) return;
+
+    let n = null;
+    // Large outflow — matches the daily check's criteria (< -threshold,
+    // non-transfer, non-scheduled, non-voided). Sync only calls us for
+    // freshly-inserted rows so we don't need those filters here.
+    if (
+      amount < 0
+      && (prefs.notify_large_txn !== 0 && prefs.notify_large_txn !== false)
+      && Math.abs(amount) >= Math.max(1, Number(prefs.large_txn_threshold) || 500)
+    ) {
+      n = await insertNotification(userId, {
+        type: "large_transaction", icon: "TrendingDown", color: "amber",
+        title: `Large transaction: ${txn.merchant || "unknown"}`,
+        body: `$${Math.abs(amount).toFixed(2)} on ${txn.date || "today"}`,
+      });
+    } else if (
+      amount > 0
+      && (prefs.notify_income !== 0 && prefs.notify_income !== false)
+      && amount >= Math.max(1, Number(prefs.income_threshold) || 100)
+    ) {
+      n = await insertNotification(userId, {
+        type: "income_received", icon: "TrendingUp", color: "emerald",
+        title: `Congrats You Got Paid! · ${(txn.merchant || "your account").trim()}`,
+        body: `$${amount.toFixed(2)} on ${txn.date || "today"}`,
+      });
+    }
+    if (!n) return;
+
+    // Push only when the user picked "instant" cadence. Anything else
+    // waits for the daily cron pass — the notification row already
+    // exists in the bell either way.
+    if (
+      prefs.notification_push
+      && shouldPushNow(prefs.push_frequency, prefs.email_weekday, "inline")
+    ) {
+      try {
+        await sendPush(userId, {
+          title: n.title, body: n.body || "",
+          tag: n.type, url: "/",
+        });
+      } catch { /* silent — daily cron catches stragglers */ }
+    }
+  } catch (e) {
+    console.warn(`[notify] inline event failed for user ${userId}:`, e.message);
+  }
 }

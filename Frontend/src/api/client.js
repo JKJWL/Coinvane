@@ -49,6 +49,8 @@ export const api = {
   registerPushSubscription: (sub) => request("POST", "/auth/me/push-subscriptions", sub),
   deletePushSubscription: (endpoint) =>
     request("DELETE", `/auth/me/push-subscriptions?endpoint=${encodeURIComponent(endpoint)}`),
+  deletePushSubscriptionById: (id) =>
+    request("DELETE", `/auth/me/push-subscriptions/${encodeURIComponent(id)}`),
   listPushSubscriptions: () => request("GET", "/auth/me/push-subscriptions"),
 
   // admin

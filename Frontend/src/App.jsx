@@ -10989,6 +10989,99 @@ const WEEK_DAYS = [
   { v: 5, label: "Friday" }, { v: 6, label: "Saturday" },
 ];
 
+// ── Push devices (D11) ────────────────────────────────────────────────
+// Lists every browser/PWA the user has enrolled for push, with a revoke
+// button per row. Endpoint URLs are opaque and not shown — user_agent
+// is the human-readable identifier. Revoke DELETEs the server row so
+// the daily/inline push fanout skips that device; the browser's own
+// PushSubscription is left alone (silently stops receiving). Users on
+// their current device see a "this browser" hint against the row that
+// matches — best-effort match by looking at navigator.userAgent.
+function PushDevicesPanel({ theme, darkMode, toast }) {
+  const [rows, setRows] = useState(null); // null = loading
+  const [busyId, setBusyId] = useState(null);
+  const currentUA = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+  const load = async () => {
+    try { setRows(await api.listPushSubscriptions()); }
+    catch { setRows([]); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const revoke = async (id) => {
+    setBusyId(id);
+    try {
+      // No public endpoint by id — but each row has a unique server-side
+      // id; we surface a delete-by-endpoint API. Backend also accepts a
+      // body-less DELETE that wipes everything. For per-row we need the
+      // endpoint, which isn't returned to the client. So we send a
+      // targeted delete via a new admin-style endpoint... For now,
+      // revoke ONE row by calling the wipe-all endpoint filtered by
+      // the row's id via the manage-devices sub-route.
+      await api.deletePushSubscriptionById(id);
+      toast?.("Device revoked", "success");
+      await load();
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+    finally { setBusyId(null); }
+  };
+
+  if (rows === null) {
+    return <div className={`text-xs ${theme.textSubtle}`}>Loading devices…</div>;
+  }
+  if (rows.length === 0) {
+    return (
+      <div className={`text-xs ${theme.textSubtle} border ${theme.border} rounded-xl px-3 py-2`}>
+        No push devices enrolled yet. Toggle push on above to enroll this browser.
+      </div>
+    );
+  }
+  const uaLabel = (ua) => {
+    if (!ua) return "Unknown device";
+    // Cheap browser/OS identification. Full UA is shown in the tooltip.
+    let browser = "Browser";
+    if (/Edg\//.test(ua)) browser = "Edge";
+    else if (/Chrome\//.test(ua)) browser = "Chrome";
+    else if (/Firefox\//.test(ua)) browser = "Firefox";
+    else if (/Safari\//.test(ua)) browser = "Safari";
+    let os = "";
+    if (/iPhone|iPad|iPod/.test(ua)) os = " on iPhone/iPad";
+    else if (/Android/.test(ua)) os = " on Android";
+    else if (/Windows/.test(ua)) os = " on Windows";
+    else if (/Macintosh|Mac OS/.test(ua)) os = " on macOS";
+    else if (/Linux/.test(ua)) os = " on Linux";
+    return `${browser}${os}`;
+  };
+
+  return (
+    <div className={`border ${theme.border} rounded-xl divide-y ${theme.divide}`}>
+      <div className={`px-3 py-2 text-[10px] font-semibold uppercase tracking-wider ${theme.textSubtle} ${darkMode ? "bg-slate-800" : "bg-slate-50"}`}>
+        Enrolled devices ({rows.length})
+      </div>
+      {rows.map(d => {
+        const isCurrent = d.userAgent && currentUA && d.userAgent.slice(0, 100) === currentUA.slice(0, 100);
+        return (
+          <div key={d.id} className="flex items-center gap-3 px-3 py-2 text-xs">
+            <div className="flex-1 min-w-0">
+              <div className="font-medium truncate" title={d.userAgent || ""}>
+                {uaLabel(d.userAgent)}
+                {isCurrent ? <span className={`ml-2 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${darkMode ? "bg-violet-500/15 text-violet-300" : "bg-violet-50 text-violet-700"}`}>this browser</span> : null}
+              </div>
+              <div className={theme.textSubtle}>
+                Added {new Date(d.createdAt).toLocaleDateString()}
+                {d.lastUsedAt ? ` · last used ${new Date(d.lastUsedAt).toLocaleDateString()}` : " · never used"}
+              </div>
+            </div>
+            <button type="button" disabled={busyId === d.id}
+              onClick={() => revoke(d.id)}
+              className="px-2 py-1 rounded-lg text-[11px] font-semibold text-rose-500 hover:bg-rose-500/10 disabled:opacity-40">
+              {busyId === d.id ? "…" : "Revoke"}
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
   const toast = useToast();
   const fileInputRef = useRef(null);
@@ -11030,6 +11123,7 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
     notify_cashflow_min:     Number(u.notify_cashflow_min ?? 0),
     notify_budget_usage_enabled: !!u.notify_budget_usage_enabled,
     notify_budget_usage_pct: Number(u.notify_budget_usage_pct ?? 90),
+    push_frequency:          u.push_frequency || "daily",
     privacy_mode:           !!u.privacy_mode,
     week_start:             Number(u.week_start ?? 0),
     email_frequency:        u.email_frequency || "daily",
@@ -11480,6 +11574,33 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
           <div className={`${darkMode ? "bg-sky-500/10 border-sky-500/30 text-sky-300" : "bg-sky-50 border-sky-200 text-sky-800"} border rounded-xl px-3 py-2 text-xs`}>
             <b>iPhone/iPad:</b> Add Coinvane to your home screen (Share → Add to Home Screen) before enabling push. iOS only delivers Web Push to installed PWAs.
           </div>
+        )}
+
+        {/* Push cadence — mirrors the email frequency below but applies
+            to lock-screen pushes. Only meaningful when push is on. */}
+        {form.notification_push && (
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium">Push frequency</div>
+              <div className={`text-xs ${theme.textSubtle} mt-0.5`}>
+                When lock-screen alerts should fire. Instant hits the moment a triggering transaction lands; daily batches on the 8AM check; weekly fires only on your chosen weekday.
+              </div>
+            </div>
+            <select className={`${inputCls} max-w-[10rem]`} value={form.push_frequency}
+              onChange={e => setForm({ ...form, push_frequency: e.target.value })}>
+              <option value="instant">As they happen</option>
+              <option value="daily">Once daily</option>
+              <option value="weekly">Weekly</option>
+            </select>
+          </div>
+        )}
+
+        {/* Manage devices — enrolled push subscriptions per browser/PWA.
+            Revoke removes the subscription server-side; the browser side
+            is left alone (it'll silently stop receiving). This is the
+            "sign out this device from push" surface. */}
+        {form.notification_push && (
+          <PushDevicesPanel theme={theme} darkMode={darkMode} toast={toast} />
         )}
         {/* No bottom Save button — the sticky bar at the top of the page is
             the single save action whenever the form is dirty. */}

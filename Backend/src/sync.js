@@ -4,6 +4,7 @@ import { query, queryOne } from "./db.js";
 import { decrypt } from "./crypto.js";
 import { runRulesForTrigger } from "./automation-engine.js";
 import { tryMatchTransactionToBill } from "./bill-utils.js";
+import { maybePushForInlineEvent } from "./notification-engine.js";
 import crypto from "node:crypto";
 
 const PLAID_TO_INTERNAL_TYPE = {
@@ -146,6 +147,15 @@ export async function syncTransactions(userId, itemId, accessToken) {
       if (adoptedId) {
         scheduledAdopted++;
         adoptedIds.add(adoptedId);
+        // Instant-alert path also fires on adoption — a scheduled
+        // paycheck LANDING is exactly when the user wants to know.
+        if (!finalIsTransfer) {
+          try {
+            await maybePushForInlineEvent(userId, {
+              amount: -t.amount, merchant, date: t.date,
+            });
+          } catch { /* silent */ }
+        }
         continue;
       }
     }
@@ -174,6 +184,23 @@ export async function syncTransactions(userId, itemId, accessToken) {
          WHERE user_id = ? AND plaid_transaction_id = ? AND is_transfer = 1`,
         [userId, t.transaction_id]
       );
+    }
+    // Inline "instant" alerts. Non-transfer rows only — a transfer is
+    // just money moving between the user's own accounts, not a "large
+    // purchase" or "you got paid." The helper checks the user's prefs
+    // (large-txn threshold, income threshold, push_frequency=instant)
+    // and no-ops otherwise; the daily cron catches everything else.
+    // Only fires for NEWLY-added rows this sync (skip modifications so
+    // a Plaid amount tweak doesn't re-alert). insertNotification also
+    // has once-per-day-per-title dedup as a second belt.
+    if (!finalIsTransfer && newPlaidIds.has(t.transaction_id)) {
+      try {
+        await maybePushForInlineEvent(userId, {
+          amount:   -t.amount,
+          merchant,
+          date:     t.date,
+        });
+      } catch { /* silent — sync must not block on notification code */ }
     }
     // If we labelled this row Interest & Dividends, make sure the user
     // has a matching category row with tax_schedule=B so it lands in

@@ -622,6 +622,13 @@ const SCHEMA = [
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_budget_usage_enabled BOOLEAN DEFAULT FALSE`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_budget_usage_pct INT DEFAULT 90`,
 
+  // Push cadence mirrors email_frequency. Instant means alerts push the
+  // moment their trigger is detected (inline in sync.js for txn-driven
+  // alerts, immediate for anything else). Daily = fires on the 8AM cron
+  // pass. Weekly = only on the user's email_weekday. Defaults to daily
+  // so upgrading users don't get spammed by an inline hook change.
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS push_frequency VARCHAR(16) DEFAULT 'daily'`,
+
   // Optional grouping on categories (Groceries + Restaurants → "Food").
   // Group is display-only: budgets, rules, and by-category totals still
   // key off the leaf category name. Nullable so existing rows are
