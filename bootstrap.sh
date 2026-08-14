@@ -106,7 +106,12 @@ SMTP_FROM=Coinvane <noreply@${DOMAIN}>
 # configured on the server" if they try to enable push in Settings.
 VAPID_PUBLIC_KEY=
 VAPID_PRIVATE_KEY=
-VAPID_SUBJECT=mailto:admin@${DOMAIN}
+# Instance-wide operator contact — used ONLY by push services (FCM /
+# Apple / Mozilla) to reach whoever runs this server about abuse or
+# delivery issues. End users never see it. Defaults to the app's own
+# URL, which is fine for most self-hosters. If you'd rather a mailbox,
+# change to mailto:something@${DOMAIN}.
+VAPID_SUBJECT=https://${DOMAIN}
 EOF
 
 chmod 600 "$ENV_FILE"
