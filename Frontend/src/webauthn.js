@@ -36,6 +36,18 @@ export function webauthnSupported() {
   return typeof window !== "undefined" && browserSupportsWebAuthn();
 }
 
+// The OS-appropriate name for what unlocks the app. The actual prompt
+// is drawn by the OS — this is just for our UI labels so a Pixel user
+// doesn't read "FaceID" on their screen.
+export function biometricMethodName() {
+  const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+  if (/iPhone|iPad|iPod/.test(ua))     return "FaceID or passcode";
+  if (/Android/.test(ua))               return "fingerprint or screen lock";
+  if (/Macintosh|Mac OS/.test(ua))     return "Touch ID or password";
+  if (/Windows/.test(ua))               return "Windows Hello or PIN";
+  return "biometric or passcode";
+}
+
 /**
  * Enroll this device. Triggers the OS FaceID/TouchID/Windows Hello
  * prompt via startRegistration, then hands the attestation to the

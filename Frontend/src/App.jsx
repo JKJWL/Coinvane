@@ -23,7 +23,7 @@ import { useAuth } from "./hooks/useAuth.js";
 import { DataProvider, useData } from "./context/DateContext.jsx";
 import { api } from "./api/client.js";
 import { enablePush, disablePush, resurrectPushIfEnabled, pushSupported, isIosSafariNotInstalled } from "./push.js";
-import { enrollBiometric, unlockBiometric, webauthnSupported } from "./webauthn.js";
+import { enrollBiometric, unlockBiometric, webauthnSupported, biometricMethodName } from "./webauthn.js";
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
 function fmtCurrency(n, currency = "USD") {
@@ -11186,10 +11186,10 @@ function BiometricLockPanel({ theme, darkMode, toast, user, onUpdate }) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-sm font-semibold flex items-center gap-1.5">
-            <Lock className="w-4 h-4 text-violet-500" /> Require FaceID / TouchID to open
+            <Lock className="w-4 h-4 text-violet-500" /> Require {biometricMethodName()} to open
           </div>
           <div className={`text-xs ${theme.textSubtle} mt-0.5`}>
-            Locks the app after 5 minutes idle or when reopened. Your login stays valid — this only gates who can see your data on this device.
+            Locks the app after 5 minutes idle or when reopened. Your login stays valid — this only gates who can see your data on this device. Works with any unlock method your phone already uses (biometric or passcode).
             {!supported && <> <span className="text-amber-500">Not supported by this browser.</span></>}
           </div>
         </div>
@@ -11201,7 +11201,7 @@ function BiometricLockPanel({ theme, darkMode, toast, user, onUpdate }) {
       {supported && creds.length === 0 && (
         <button type="button" onClick={enroll} disabled={busy}
           className="w-full py-2.5 rounded-xl bg-violet-500 text-white text-sm font-semibold disabled:opacity-60">
-          {busy ? "Enrolling…" : "Enable FaceID / TouchID"}
+          {busy ? "Enrolling…" : `Enable ${biometricMethodName()}`}
         </button>
       )}
 
@@ -12003,7 +12003,7 @@ function LockScreen({ theme, darkMode, onUnlocked, onLogout, userEmail }) {
         </div>
         <button type="button" onClick={doUnlock} disabled={busy}
           className="w-full py-3 rounded-2xl bg-violet-500 text-white font-semibold text-sm shadow-lg shadow-violet-500/30 disabled:opacity-60">
-          {busy ? "Verifying…" : "Unlock with FaceID / TouchID"}
+          {busy ? "Verifying…" : `Unlock with ${biometricMethodName()}`}
         </button>
         {err && <div className="text-xs text-rose-500">{err}</div>}
         <button type="button" onClick={onLogout}
