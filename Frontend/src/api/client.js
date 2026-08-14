@@ -41,6 +41,9 @@ export const api = {
   me: () => request("GET", "/auth/me"),
   updateMe: (data) => request("PATCH", "/auth/me", data),
   sendTestEmail: () => request("POST", "/auth/me/test-email"),
+  // Nuke every user_id-scoped row, revoke every Plaid item, unlink
+  // attachments on disk. The user row stays so sign-in still works.
+  clearMyData: (confirm) => request("POST", "/auth/me/clear-data", { confirm }),
 
   // admin
   listUsers: () => request("GET", "/auth/users"),

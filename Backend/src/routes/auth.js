@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { OAuth2Client } from "google-auth-library";
+import { promises as fs } from "fs";
+import path from "path";
 import { query, queryOne } from "../db.js";
 import { enqueueMail } from "../queue.js";
 import { renderNotificationDigest, isEmailEnabled } from "../mailer.js";
 import { audit } from "../audit.js";
 import { getAllowedEmails } from "../app-settings.js";
+import { plaid } from "../plaid-client.js";
+import { decrypt } from "../crypto.js";
+
+const ATTACHMENTS_ROOT = process.env.ATTACHMENTS_ROOT || "/data/attachments";
 
 // "open" (default): any allowlisted Google account can sign up.
 // "closed": no new users — existing users may still sign in. Use after
@@ -268,6 +274,109 @@ export default async function (app) {
          AND (expires_at IS NULL OR expires_at > NOW())
        ORDER BY id DESC LIMIT 10`
     );
+  });
+
+  // ── Clear-all-my-data (D8) ────────────────────────────────────
+  // Nuclear reset for a user who wants to start fresh (or stop using
+  // the app but wipe their financial footprint). Deletes every
+  // user_id-scoped row across the schema, revokes every Plaid item,
+  // and unlinks every attachment file on disk. The users row itself
+  // stays — this is "clear my data", not "delete my account", so the
+  // user can immediately start over without re-onboarding through the
+  // allowlist.
+  //
+  // Guards:
+  //   - typed email confirmation (case-insensitive, exact match)
+  //   - per-user rate limit: 3 per hour (paranoid; this is destructive)
+  //   - audited as a major event (7-day retention)
+  //   - owner CAN self-wipe (unlike /users/:id which forbids self-delete);
+  //     the owner's role/allowlist stays intact so re-sign-in works
+  app.post("/me/clear-data", {
+    preHandler: [app.authenticate],
+    config: { rateLimit: { max: 3, timeWindow: "1 hour" } },
+  }, async (req, reply) => {
+    const me = await queryOne("SELECT id, email FROM users WHERE id = ?", [req.user.id]);
+    if (!me) return reply.code(404).send({ error: "user not found" });
+    const typed = String(req.body?.confirm || "").trim().toLowerCase();
+    if (!typed || typed !== String(me.email).toLowerCase()) {
+      return reply.code(400).send({ error: "Type your email to confirm" });
+    }
+
+    const userId = me.id;
+
+    // 1. Revoke every Plaid item so tokens can't be reused. Best-effort;
+    //    a Plaid API failure doesn't stop the DB wipe.
+    try {
+      const items = await query(
+        "SELECT access_token_enc FROM plaid_items WHERE user_id = ?", [userId]
+      );
+      for (const it of items) {
+        try { await plaid.itemRemove({ access_token: decrypt(it.access_token_enc) }); }
+        catch (e) { req.log.warn({ err: e.message }, "plaid revoke failed during clear-data"); }
+      }
+    } catch { /* swallow — proceed with DB wipe */ }
+
+    // 2. Wipe attachment files before DB rows so we still have the paths.
+    try {
+      const rows = await query(
+        "SELECT attachment_path FROM transactions WHERE user_id = ? AND attachment_path IS NOT NULL",
+        [userId]
+      );
+      for (const r of rows) {
+        try { await fs.unlink(path.join(ATTACHMENTS_ROOT, r.attachment_path)); } catch { /* file already gone */ }
+      }
+      // Also try to remove the per-user attachments dir (empty after unlinks).
+      try { await fs.rmdir(path.join(ATTACHMENTS_ROOT, String(userId))); } catch { /* non-empty or missing */ }
+    } catch { /* proceed anyway */ }
+
+    // 3. Delete DB rows. Order: children before parents, then anything
+    //    the FK cascade would tidy up on its own. Wrapped in per-table
+    //    try/catch so an older DB missing a table can't stall the sweep.
+    const tables = [
+      "lot_disposals", "holding_lots", "holdings",
+      "bill_cycles", "bills",
+      "split_template_lines", "split_templates",
+      "asset_damage_events", "assets",
+      "reconciliations",
+      "budget_audit",
+      "notifications",
+      "automation_rules",
+      "merchant_rules",
+      "saved_views",
+      "saved_reports",
+      "goals",
+      "notes",
+      "loans",
+      "budgets",
+      "transactions",
+      "categories",
+      "accounts",
+      "plaid_items",
+      "attachment_upload_log",
+    ];
+    for (const t of tables) {
+      try { await query(`DELETE FROM ${t} WHERE user_id = ?`, [userId]); }
+      catch { /* table absent on legacy DBs; keep sweeping */ }
+    }
+
+    // 4. Reset a small handful of user-row preferences so a fresh start
+    //    doesn't inherit stale income-tracker anchors, notification
+    //    counts, cashflow forecast toggles, etc. Keeps role, email,
+    //    google_id, name, picture, currency, timezone, dark_mode.
+    try {
+      await query(
+        `UPDATE users SET
+           income_period = 'monthly', income_period_start = NULL, income_period_days = NULL,
+           credit_period = 'monthly', credit_period_start = NULL, credit_period_days = NULL,
+           last_period_start = NULL,
+           show_cashflow_forecast = 0
+         WHERE id = ?`,
+        [userId]
+      );
+    } catch { /* older schemas may lack some cols */ }
+
+    await audit(userId, "user.clear_data", req, { by: "self" }, { major: true });
+    return { ok: true };
   });
 
   // Coerce a body field to (1 | 0 | null). null means "don't update".

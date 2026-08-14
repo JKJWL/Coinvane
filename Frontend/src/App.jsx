@@ -10994,6 +10994,11 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
   const rootRef = useRef(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, setClearing] = useState(false);
+  // "Clear all my data" — the confirmation form pops open inline so the
+  // user has to type their email before the button is armed.
+  const [clearDataOpen, setClearDataOpen] = useState(false);
+  const [clearDataTyped, setClearDataTyped] = useState("");
+  const [clearingAllData, setClearingAllData] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [importingCsv, setImportingCsv] = useState(false);
   const [importingQuicken, setImportingQuicken] = useState(false);
@@ -11502,17 +11507,83 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
       <CustomReportsPanel theme={theme} darkMode={darkMode} toast={toast} />
 
       {/* ── Danger zone ── */}
-      <div className={`${theme.surface} border ${darkMode ? "border-rose-500/30" : "border-rose-200"} rounded-2xl p-5 space-y-3`}>
+      <div className={`${theme.surface} border ${darkMode ? "border-rose-500/30" : "border-rose-200"} rounded-2xl p-5 space-y-4`}>
         <h3 className={`font-semibold ${darkMode ? "text-rose-400" : "text-rose-600"}`}>Danger zone</h3>
-        <div className={`text-xs ${theme.textSubtle}`}>
-          Clearing merchant rules removes every "always categorize X as Y" rule you've set.
-          App-shipped defaults (none currently) are preserved.
+
+        <div>
+          <div className={`text-xs ${theme.textSubtle} mb-2`}>
+            Clearing merchant rules removes every "always categorize X as Y" rule you've set.
+            App-shipped defaults (none currently) are preserved.
+          </div>
+          <motion.button whileTap={{ scale: 0.97 }} type="button"
+            onClick={() => setConfirmClear(true)}
+            className={`text-sm font-semibold px-3 py-2 rounded-xl ${darkMode ? "bg-rose-500/15 text-rose-300 border border-rose-500/30" : "bg-rose-50 text-rose-700 border border-rose-200"}`}>
+            Clear all merchant rules
+          </motion.button>
         </div>
-        <motion.button whileTap={{ scale: 0.97 }} type="button"
-          onClick={() => setConfirmClear(true)}
-          className={`text-sm font-semibold px-3 py-2 rounded-xl ${darkMode ? "bg-rose-500/15 text-rose-300 border border-rose-500/30" : "bg-rose-50 text-rose-700 border border-rose-200"}`}>
-          Clear all merchant rules
-        </motion.button>
+
+        {/* Clear all data — nuclear. Wipes every user_id-scoped row,
+            revokes Plaid, deletes attachments. Requires typing the
+            user's email to arm. Uses an inline confirm form rather than
+            ConfirmDialog because the typed-email pattern needs the
+            control state to live with the button. */}
+        <div className={`pt-3 border-t ${darkMode ? "border-rose-500/20" : "border-rose-200"}`}>
+          <div className={`text-xs ${theme.textSubtle} mb-2`}>
+            <span className={`font-semibold ${darkMode ? "text-rose-400" : "text-rose-600"}`}>Clear all data</span> — deletes every account,
+            transaction, budget, goal, note, category, holding, bill, loan, saved
+            report, asset, and attachment tied to your login, and revokes every
+            Plaid connection. Your login itself stays so you can start fresh.
+            This cannot be undone.
+          </div>
+          {!clearDataOpen ? (
+            <motion.button whileTap={{ scale: 0.97 }} type="button"
+              onClick={() => { setClearDataOpen(true); setClearDataTyped(""); }}
+              className={`text-sm font-semibold px-3 py-2 rounded-xl ${darkMode ? "bg-rose-500/15 text-rose-300 border border-rose-500/30" : "bg-rose-50 text-rose-700 border border-rose-200"}`}>
+              Clear all data…
+            </motion.button>
+          ) : (
+            <div className={`p-3 rounded-xl border ${darkMode ? "bg-rose-500/5 border-rose-500/30" : "bg-rose-50 border-rose-200"} space-y-2`}>
+              <div className={`text-xs ${darkMode ? "text-rose-300" : "text-rose-700"}`}>
+                Type your email <span className="font-mono font-semibold">{user?.email}</span> to confirm.
+              </div>
+              <input
+                autoFocus
+                type="email"
+                value={clearDataTyped}
+                onChange={e => setClearDataTyped(e.target.value)}
+                placeholder={user?.email || "your@email"}
+                className={`w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-rose-500`} />
+              <div className="flex gap-2">
+                <button type="button" onClick={() => { setClearDataOpen(false); setClearDataTyped(""); }}
+                  disabled={clearingAllData}
+                  className={`flex-1 py-2 rounded-xl text-sm font-medium ${theme.surface} border ${theme.border}`}>
+                  Cancel
+                </button>
+                <motion.button whileTap={{ scale: 0.97 }} type="button"
+                  disabled={clearingAllData || clearDataTyped.trim().toLowerCase() !== String(user?.email || "").toLowerCase()}
+                  onClick={async () => {
+                    setClearingAllData(true);
+                    try {
+                      await api.clearMyData(clearDataTyped.trim());
+                      toast?.("All data cleared", "success");
+                      // Refresh everything so the UI reflects the empty state.
+                      // Any in-flight caches on the client stale-out; a
+                      // localStorage reset would be more thorough, but the
+                      // user might have preferences worth keeping.
+                      refreshAll();
+                      setClearDataOpen(false);
+                      setClearDataTyped("");
+                    } catch (e) {
+                      toast?.("Failed: " + (e.message || ""), "error");
+                    } finally { setClearingAllData(false); }
+                  }}
+                  className={`flex-1 py-2 rounded-xl text-sm font-semibold text-white bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed`}>
+                  {clearingAllData ? "Clearing…" : "Yes — clear my data"}
+                </motion.button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       <ConfirmDialog
