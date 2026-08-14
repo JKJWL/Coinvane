@@ -217,6 +217,10 @@ export const api = {
   // Merchant rule + bulk recategorize (Feature 3)
   recategorizeMerchant: (merchant, category) =>
     request("POST", "/transactions/recategorize-merchant", { merchant, category }),
+  // Merchant-scoped type override. `type` = "income" | "expense" |
+  // "transfer" | null (null clears the rule).
+  reclassifyMerchant: (merchant, type) =>
+    request("POST", "/transactions/reclassify-merchant", { merchant, type }),
   getMerchantRules: () => request("GET", "/transactions/merchant-rules"),
   updateMerchantRule: (id, data) => request("PATCH", `/transactions/merchant-rules/${id}`, data),
   deleteMerchantRule: (id) => request("DELETE", `/transactions/merchant-rules/${id}`),

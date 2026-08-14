@@ -591,6 +591,13 @@ const SCHEMA = [
   // "payee rename"). Categorization still keys off the raw merchant.
   `ALTER TABLE merchant_rules ADD COLUMN IF NOT EXISTS display_name VARCHAR(255) NULL`,
 
+  // Forced type (D3) — when set, sync.js flips is_transfer on every
+  // matching Plaid insert regardless of Plaid's own classification.
+  // Values: 'income', 'expense', 'transfer', or NULL for "don't force".
+  // Persists across syncs so a merchant that Plaid keeps mis-categorising
+  // (frequent false transfer flag on a store) can be settled once.
+  `ALTER TABLE merchant_rules ADD COLUMN IF NOT EXISTS forced_type VARCHAR(16) NULL`,
+
   // ── Stage B: bill reminders + cashflow alert prefs ────────────────
   //   notify_bill_reminders / notify_bill_days_before: reminders fire N
   //     days before every open bill cycle's due_date. Uses the same

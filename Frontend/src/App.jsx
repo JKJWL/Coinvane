@@ -3322,6 +3322,10 @@ function TransactionsTab({ theme, darkMode, toast }) {
   // other side doesn't silently hide everything.
   useEffect(() => { setAcctFilter("all"); }, [side]);
   const [detail, setDetail] = useState(null);
+  // When true, the classify buttons in the detail sheet write a
+  // merchant-scoped rule (forced_type) instead of a per-row override.
+  const [applyToMerchant, setApplyToMerchant] = useState(false);
+  useEffect(() => { setApplyToMerchant(false); }, [detail?.id]);
   const [deleting, setDeleting] = useState(false);
   // Manual split editor state — array of {category, amount} rows shown
   // inside the detail sheet's Split panel. When null the panel is closed.
@@ -4566,7 +4570,11 @@ function TransactionsTab({ theme, darkMode, toast }) {
 
               {/* Manual classification override — only offered on posted rows.
                   Scheduled rows are excluded from rollups anyway, so their
-                  sign / transfer flag doesn't affect anything until adopted. */}
+                  sign / transfer flag doesn't affect anything until adopted.
+                  "Apply to all from this merchant" flips the write path from
+                  the per-row classify endpoint to the merchant-scoped
+                  reclassify endpoint, which also saves a forced_type rule
+                  so every future Plaid sync agrees. */}
               {!detail.isScheduled && (() => {
                 const current = detail.isTransfer
                   ? "transfer"
@@ -4579,8 +4587,13 @@ function TransactionsTab({ theme, darkMode, toast }) {
                 const setClass = async (kind) => {
                   if (kind === current) return;
                   try {
-                    await api.classifyTransaction(detail.id, kind);
-                    toast?.(`Marked as ${kind}`, "success");
+                    if (applyToMerchant) {
+                      const res = await api.reclassifyMerchant(detail.merchant, kind);
+                      toast?.(`Marked ${res.updated || 0} rows as ${kind} + rule saved`, "success");
+                    } else {
+                      await api.classifyTransaction(detail.id, kind);
+                      toast?.(`Marked as ${kind}`, "success");
+                    }
                     setDetail(null);
                     refreshAll();
                   } catch (e) {
@@ -4606,6 +4619,17 @@ function TransactionsTab({ theme, darkMode, toast }) {
                         );
                       })}
                     </div>
+                    <label className="flex items-start gap-2 mt-2 cursor-pointer text-[11px]">
+                      <input type="checkbox" checked={applyToMerchant}
+                        onChange={e => setApplyToMerchant(e.target.checked)}
+                        className="mt-0.5 accent-violet-500" />
+                      <div>
+                        <div className={theme.textMuted}>Apply to all from "{detail.merchant}"</div>
+                        <div className={theme.textSubtle}>
+                          Saves a rule so every future Plaid sync forces this classification too.
+                        </div>
+                      </div>
+                    </label>
                     <p className={`text-[11px] ${theme.textSubtle} mt-2`}>
                       Override auto-classification if it's wrong. Switching to
                       Income / Expense flips the sign; Transfer excludes the

@@ -941,10 +941,71 @@ export default async function (app) {
     return { ok: true, updated: r.affectedRows || 0 };
   });
 
+  // Same shape as /recategorize-merchant, but sets the forced TYPE
+  // (income / expense / transfer) rather than the category. Persists on
+  // merchant_rules.forced_type and back-fills every matching row for
+  // this user. Every future sync picks up the rule and applies it before
+  // insert. Passing type=null clears the override.
+  app.post("/reclassify-merchant", async (req, reply) => {
+    const { merchant, type } = req.body || {};
+    if (!merchant) return reply.code(400).send({ error: "merchant required" });
+    if (type != null && !["income","expense","transfer"].includes(type)) {
+      return reply.code(400).send({ error: "type must be income|expense|transfer|null" });
+    }
+    // Merchant_rules.category is NOT NULL, so if no rule exists yet we
+    // need a category to seed with — use whatever the most-recent txn
+    // from this merchant already has.
+    const seed = await queryOne(
+      `SELECT category FROM transactions
+       WHERE user_id = ? AND merchant = ? ORDER BY id DESC LIMIT 1`,
+      [req.user.id, merchant]
+    );
+    const seedCat = seed?.category || "Other";
+    await query(
+      `INSERT INTO merchant_rules (user_id, merchant, category, forced_type)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE forced_type = VALUES(forced_type)`,
+      [req.user.id, merchant, seedCat, type || null]
+    );
+    // Back-fill: force existing rows to the target type. Signs mirror the
+    // manual /classify endpoint so unrelated aggregates behave correctly.
+    let updated = 0;
+    if (type === "transfer") {
+      const r = await query(
+        `UPDATE transactions
+         SET is_transfer = 1
+         WHERE user_id = ? AND merchant = ? AND voided_at IS NULL`,
+        [req.user.id, merchant]
+      );
+      updated = r.affectedRows || 0;
+    } else if (type === "income") {
+      const r = await query(
+        `UPDATE transactions
+         SET is_transfer = 0, transfer_group_id = NULL, amount = ABS(amount)
+         WHERE user_id = ? AND merchant = ? AND voided_at IS NULL`,
+        [req.user.id, merchant]
+      );
+      updated = r.affectedRows || 0;
+    } else if (type === "expense") {
+      const r = await query(
+        `UPDATE transactions
+         SET is_transfer = 0, transfer_group_id = NULL, amount = -ABS(amount)
+         WHERE user_id = ? AND merchant = ? AND voided_at IS NULL`,
+        [req.user.id, merchant]
+      );
+      updated = r.affectedRows || 0;
+    }
+    // Clearing (type=null) doesn't retroactively touch existing rows —
+    // those keep whatever classification they had; only future syncs stop
+    // being forced.
+    return { ok: true, updated };
+  });
+
   // ── Manage merchant rules ──────────────────────────────────────
   app.get("/merchant-rules", async (req) => {
     return query(
-      `SELECT id, merchant, category, display_name AS displayName, created_at AS createdAt
+      `SELECT id, merchant, category, forced_type AS forcedType,
+              display_name AS displayName, created_at AS createdAt
        FROM merchant_rules WHERE user_id = ? ORDER BY merchant`,
       [req.user.id]
     );

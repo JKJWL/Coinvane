@@ -83,13 +83,16 @@ export async function syncTransactions(userId, itemId, accessToken) {
     )).map(a => [a.plaid_account_id, a.id])
   );
 
-  // Load this user's merchant→category rules so their preferences win over
-  // Plaid's classifier. (Per-user; never reads/writes another user's rules.)
+  // Load this user's merchant → { category, forced_type } rules so their
+  // preferences win over Plaid's classifier. forced_type lets the user
+  // override a Plaid mis-classification (e.g. an ATM cashback that Plaid
+  // keeps flagging as TRANSFER_OUT) once and have every future sync
+  // agree. (Per-user; never reads/writes another user's rules.)
   const ruleMap = new Map(
     (await query(
-      "SELECT merchant, category FROM merchant_rules WHERE user_id = ?",
+      "SELECT merchant, category, forced_type FROM merchant_rules WHERE user_id = ?",
       [userId]
-    )).map(r => [r.merchant.toLowerCase(), r.category])
+    )).map(r => [r.merchant.toLowerCase(), { category: r.category, forced: r.forced_type || null }])
   );
 
   // Track pending vs posted counts for diagnostics. The toast / worker
@@ -112,13 +115,19 @@ export async function syncTransactions(userId, itemId, accessToken) {
     const accId = accountMap.get(t.account_id) || null;
     const merchant = t.merchant_name || t.name || "Unknown";
     const plaidCat = t.personal_finance_category?.primary || (t.category?.[0]) || "Other";
-    // User-defined rule takes precedence over Plaid's category
-    const finalCat = ruleMap.get(merchant.toLowerCase()) || normalizeCategory(plaidCat, merchant);
+    // User-defined rule takes precedence over Plaid's category. If the
+    // user also stamped a forced_type on the rule, that overrides Plaid's
+    // transfer classification too (see forced_type handling below).
+    const rule = ruleMap.get(merchant.toLowerCase());
+    const finalCat = rule?.category || normalizeCategory(plaidCat, merchant);
     // Plaid tagged transfer (strong signal). We flag the row now so the
     // pairing pass below can match it up with the other side even if that
-    // side wasn't itself tagged.
+    // side wasn't itself tagged. Overridden by rule.forced when set.
     const plaidIsTransfer =
       plaidCat === "TRANSFER_IN" || plaidCat === "TRANSFER_OUT";
+    let finalIsTransfer = plaidIsTransfer ? 1 : 0;
+    if (rule?.forced === "transfer")               finalIsTransfer = 1;
+    else if (rule?.forced === "income" || rule?.forced === "expense") finalIsTransfer = 0;
     if (t.pending) pendingAdded++; else postedAdded++;
 
     // ── Adopt a scheduled row if the incoming txn matches one ──
@@ -132,7 +141,7 @@ export async function syncTransactions(userId, itemId, accessToken) {
     if (accId) {
       const adoptedId = await tryAdoptScheduled(
         userId, accId, -t.amount, t.date, t.transaction_id,
-        merchant, finalCat, t.pending ? 1 : 0, plaidIsTransfer ? 1 : 0
+        merchant, finalCat, t.pending ? 1 : 0, finalIsTransfer
       );
       if (adoptedId) {
         scheduledAdopted++;
@@ -150,8 +159,22 @@ export async function syncTransactions(userId, itemId, accessToken) {
                                 pending = VALUES(pending),
                                 is_transfer = GREATEST(is_transfer, VALUES(is_transfer))`,
       [userId, accId, t.transaction_id, t.date,
-       merchant, finalCat, -t.amount, t.pending ? 1 : 0, plaidIsTransfer ? 1 : 0]
+       merchant, finalCat, -t.amount, t.pending ? 1 : 0, finalIsTransfer]
     );
+    // The ON DUPLICATE clause uses GREATEST(is_transfer, VALUES) as a
+    // hedge against Plaid dropping the transfer flag on modifications
+    // (the pairing pass may have already set it). But when the user has
+    // an EXPLICIT forced_type of income/expense, that's a stronger signal
+    // than any previously-inferred pairing — so squash is_transfer back
+    // to 0 after the insert.
+    if (rule?.forced === "income" || rule?.forced === "expense") {
+      await query(
+        `UPDATE transactions
+         SET is_transfer = 0, transfer_group_id = NULL
+         WHERE user_id = ? AND plaid_transaction_id = ? AND is_transfer = 1`,
+        [userId, t.transaction_id]
+      );
+    }
     // If we labelled this row Interest & Dividends, make sure the user
     // has a matching category row with tax_schedule=B so it lands in
     // Schedule B on the tax summary.
