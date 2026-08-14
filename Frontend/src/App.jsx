@@ -3831,9 +3831,21 @@ function TransactionsTab({ theme, darkMode, toast }) {
                     <SIcon className="w-4 h-4" style={{ color: sColor }} />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5 min-w-0">
+                    <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
                       <div className="font-medium text-sm truncate">{s.merchant}</div>
                       <ScheduledPill isScheduled darkMode={darkMode} />
+                      {s.budgetExpectedIncome ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-violet-500/15 text-violet-500"
+                          title="Counts toward the Budgets tab's expected income">
+                          <Sparkles className="w-2.5 h-2.5" /> Budget Expected
+                        </span>
+                      ) : null}
+                      {s.recurringKind && s.recurringKind !== "none" ? (
+                        <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full ${darkMode ? "bg-slate-800 text-slate-300" : "bg-slate-100 text-slate-600"}`}
+                          title="Repeats — next occurrence spawns when adopted">
+                          <Repeat className="w-2.5 h-2.5" /> {s.recurringKind === "custom" ? `every ${s.recurringDays}d` : s.recurringKind}
+                        </span>
+                      ) : null}
                     </div>
                     <div className={`text-xs ${theme.textSubtle} truncate`}>
                       Expected {s.date} · <span className="private-name" tabIndex={0}>{s.accountName || "—"}</span>
@@ -4693,6 +4705,36 @@ function TransactionsTab({ theme, darkMode, toast }) {
                 </label>
               )}
 
+              {/* Budget Expected Income — same class of toggle, but flips
+                  the OPPOSITE way: include this in the budgets tab's
+                  "Expected income" bar. Meaningful on any income row
+                  (scheduled or arrived); adoption preserves the flag so
+                  an adopted paycheck keeps counting. */}
+              {Number(detail.amount) > 0 && !detail.isTransfer && (
+                <label className="flex items-start gap-2 text-sm">
+                  <input type="checkbox" checked={!!detail.budgetExpectedIncome}
+                    onChange={async e => {
+                      const val = e.target.checked;
+                      try {
+                        await api.updateTransaction(detail.id, { budget_expected_income: val });
+                        setDetail({ ...detail, budgetExpectedIncome: val });
+                        refreshAll();
+                        toast?.(val ? "Included in expected income" : "Removed from expected income", "success");
+                      } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+                    }}
+                    className="w-4 h-4 accent-violet-500 mt-0.5" />
+                  <div className="flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-violet-500" /> Budget Expected Income
+                    </div>
+                    <div className={`text-[10px] ${theme.textSubtle}`}>
+                      Adds this amount to the Budgets tab's expected-income
+                      bar and the zero-based-budget slider's basis.
+                    </div>
+                  </div>
+                </label>
+              )}
+
               {/* Flag colour picker — filter your register at a glance */}
               <div>
                 <div className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-2`}>Flag</div>
@@ -5174,10 +5216,14 @@ function ScheduleSheet({ open, onClose, copyFrom, accounts, catList, theme, dark
         account_id: copyFrom.accountId ? String(copyFrom.accountId) : "",
         note: copyFrom.note || "",
         sign: Number(copyFrom.amount) >= 0 ? "in" : "out",
+        budget_expected: !!copyFrom.budgetExpectedIncome,
+        recurring_kind: copyFrom.recurringKind || "none",
+        recurring_days: copyFrom.recurringDays || "",
       }
     : {
         date: today, merchant: "", amount: "", category: "Other",
         account_id: "", note: "", sign: "in",
+        budget_expected: false, recurring_kind: "none", recurring_days: "",
       };
   const [form, setForm] = useState(initial);
   const [saving, setSaving] = useState(false);
@@ -5200,6 +5246,14 @@ function ScheduleSheet({ open, onClose, copyFrom, accounts, catList, theme, dark
         return;
       }
       const signed = form.sign === "in" ? raw : -raw;
+      // Recurring: "custom" needs a positive day count. Everything else
+      // ignores recurring_days server-side.
+      const kind = form.recurring_kind || "none";
+      const rdays = kind === "custom" ? Number(form.recurring_days) || 0 : null;
+      if (kind === "custom" && !(rdays > 0)) {
+        toast?.("Custom recurrence needs a day count", "error");
+        return;
+      }
       await api.createScheduledTransaction({
         date: form.date,
         merchant: form.merchant.trim(),
@@ -5207,6 +5261,12 @@ function ScheduleSheet({ open, onClose, copyFrom, accounts, catList, theme, dark
         amount: signed,
         accountId: form.account_id || null,
         note: form.note || null,
+        // Income-only flags. Backend still accepts them on expense rows,
+        // but they don't do anything for expenses so we only send them for
+        // scheduled income.
+        budget_expected_income: form.sign === "in" ? !!form.budget_expected : false,
+        recurring_kind: kind,
+        recurring_days: rdays,
       });
       toast?.("Scheduled", "success");
       onSaved?.();
@@ -5289,6 +5349,58 @@ function ScheduleSheet({ open, onClose, copyFrom, accounts, catList, theme, dark
             onChange={e => setForm({ ...form, note: e.target.value })}
             className={inputCls} />
         </div>
+
+        {/* Repeat cadence — one row for both income and expense scheduled
+            transactions. "None" is a one-off; anything else spawns the
+            next occurrence when Plaid adopts this one (or nightly via the
+            worker). Custom asks for a day count. */}
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Repeat</label>
+            <select value={form.recurring_kind}
+              onChange={e => setForm({ ...form, recurring_kind: e.target.value })}
+              className={inputCls}>
+              <option value="none">Doesn't repeat</option>
+              <option value="weekly">Weekly</option>
+              <option value="biweekly">Every 2 weeks</option>
+              <option value="semimonthly">1st & 15th</option>
+              <option value="monthly">Monthly</option>
+              <option value="yearly">Yearly</option>
+              <option value="custom">Every N days</option>
+            </select>
+          </div>
+          {form.recurring_kind === "custom" && (
+            <div>
+              <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Days</label>
+              <input type="number" min="1" step="1"
+                value={form.recurring_days}
+                onChange={e => setForm({ ...form, recurring_days: e.target.value })}
+                placeholder="e.g. 10" className={inputCls} />
+            </div>
+          )}
+        </div>
+
+        {/* Budget Expected Income — income-only ticker. When set, this
+            scheduled row's amount counts toward the Budgets tab's
+            "Expected income" bar and the zero-based-budget slider's
+            basis for the current period. */}
+        {form.sign === "in" && (
+          <label className={`flex items-start gap-2 p-3 rounded-xl border ${theme.border} cursor-pointer ${form.budget_expected ? "bg-violet-500/5 border-violet-500/40" : ""}`}>
+            <input type="checkbox" checked={!!form.budget_expected}
+              onChange={e => setForm({ ...form, budget_expected: e.target.checked })}
+              className="mt-0.5 accent-violet-500" />
+            <div className="flex-1">
+              <div className="text-sm font-semibold text-violet-500 flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5" /> Budget Expected Income
+              </div>
+              <div className={`text-[11px] ${theme.textSubtle} mt-0.5`}>
+                Include this in the Budgets tab's expected-income bar and
+                the zero-based slider's basis. Great for salaried paychecks.
+              </div>
+            </div>
+          </label>
+        )}
+
         <p className={`text-[11px] ${theme.textSubtle}`}>
           Scheduled rows don't affect your budget or income totals. When your
           bank reports a matching transaction (same account, within $5, within
@@ -6258,20 +6370,35 @@ function CreditTracker({ tracker, theme, darkMode, onConfigure, readOnly = false
 }
 
 // ── Zero-budget summary at bottom (Feature 6) ──────────────────────────────
+// Three stacked bars:
+//   1. Current income (green) — money that has actually landed this period
+//   2. Expected income (violet) — sum of scheduled income marked
+//      `budget_expected_income` (hidden if 0)
+//   3. Usage — allocated ÷ basis, where basis = expected when > 0, else
+//      current. Always visible.
+// The "remaining to budget" pill and the zero-balanced indicator both key
+// on `basis`, so the same fallback applies to the slider math.
 function ZeroBudgetSummary({ zb, theme, darkMode }) {
   if (!zb) return null;
   const income = Number(zb.income || 0);
+  const expected = Number(zb.expected || 0);
   const allocated = Number(zb.allocated || 0);
-  const remaining = Number(zb.remaining || 0);
-  // Visual bar: budgeted (red) on left meets income (green) on right
-  const total = Math.max(income, allocated, 1);
-  const incomePct = (income / total) * 100;
-  const allocPct = (allocated / total) * 100;
+  // Basis: expected wins when the user has scheduled any income, else
+  // current income takes over so the slider still means something on a
+  // brand-new setup.
+  const basis = expected > 0 ? expected : income;
+  const remaining = basis - allocated;
   const balanced = Math.abs(remaining) < 1;
+  const scaleMax = Math.max(income, expected, allocated, 1);
+  const incomeW = Math.min(100, (income / scaleMax) * 100);
+  const expectedW = Math.min(100, (expected / scaleMax) * 100);
+  const allocW  = Math.min(100, (allocated / scaleMax) * 100);
+  const usagePct = basis > 0 ? Math.min(200, (allocated / basis) * 100) : 0;
+  const usageOver = usagePct > 100;
 
   return (
-    <div className={`${theme.surface} border ${theme.border} rounded-2xl p-4 mt-2`}>
-      <div className="flex items-center justify-between mb-2">
+    <div className={`${theme.surface} border ${theme.border} rounded-2xl p-4 mt-2 space-y-3`}>
+      <div className="flex items-center justify-between">
         <div className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider`}>
           Zero-based budget
         </div>
@@ -6289,24 +6416,60 @@ function ZeroBudgetSummary({ zb, theme, darkMode }) {
           </div>
         )}
       </div>
-      {/* Dual bar — budgeted (red) on left, income (green) on right */}
-      <div className={`flex h-2 rounded-full overflow-hidden ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
-        <motion.div
-          initial={{ width: 0 }} animate={{ width: `${allocPct / 2}%` }}
-          transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
-          className="bg-rose-500" />
-        <div className="w-px bg-transparent" />
-        <motion.div
-          initial={{ width: 0 }} animate={{ width: `${incomePct / 2}%` }}
-          transition={{ duration: 0.8, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
-          className="bg-emerald-500" />
-      </div>
-      <div className="flex items-center justify-between text-[11px] mt-2">
-        <div className="flex items-center gap-1 text-rose-500 font-semibold">
-          <span className="w-2 h-2 rounded-full bg-rose-500" /> Budgeted <span className="private-amount" tabIndex={0}>{fmt(allocated)}</span>
+
+      {/* Current income bar — allocated red segment sits on top */}
+      <div>
+        <div className="flex items-center justify-between text-[11px] mb-1">
+          <div className="flex items-center gap-1 text-emerald-500 font-semibold">
+            <span className="w-2 h-2 rounded-full bg-emerald-500" /> Current income
+          </div>
+          <div className="private-amount" tabIndex={0}>{fmt(income)}</div>
         </div>
-        <div className="flex items-center gap-1 text-emerald-500 font-semibold">
-          Income <span className="private-amount" tabIndex={0}>{fmt(income)}</span> <span className="w-2 h-2 rounded-full bg-emerald-500" />
+        <div className={`relative h-2 rounded-full overflow-hidden ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+          <motion.div initial={{ width: 0 }} animate={{ width: `${incomeW}%` }}
+            transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+            className="absolute inset-y-0 left-0 bg-emerald-500" />
+          <motion.div initial={{ width: 0 }} animate={{ width: `${Math.min(incomeW, allocW)}%` }}
+            transition={{ duration: 0.7, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
+            className="absolute inset-y-0 left-0 bg-rose-500 opacity-70" />
+        </div>
+      </div>
+
+      {/* Expected income bar — only when the user scheduled anything */}
+      {expected > 0 && (
+        <div>
+          <div className="flex items-center justify-between text-[11px] mb-1">
+            <div className="flex items-center gap-1 text-violet-500 font-semibold">
+              <span className="w-2 h-2 rounded-full bg-violet-500" /> Expected income
+            </div>
+            <div className="private-amount" tabIndex={0}>{fmt(expected)}</div>
+          </div>
+          <div className={`relative h-2 rounded-full overflow-hidden ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+            <motion.div initial={{ width: 0 }} animate={{ width: `${expectedW}%` }}
+              transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+              className="absolute inset-y-0 left-0 bg-violet-500" />
+            <motion.div initial={{ width: 0 }} animate={{ width: `${Math.min(expectedW, allocW)}%` }}
+              transition={{ duration: 0.7, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
+              className="absolute inset-y-0 left-0 bg-rose-500 opacity-70" />
+          </div>
+        </div>
+      )}
+
+      {/* Usage — always shown; capped to 200% width so wildly over-budget
+          setups still render without stretching layout. */}
+      <div>
+        <div className="flex items-center justify-between text-[11px] mb-1">
+          <div className={`font-semibold ${usageOver ? "text-rose-500" : theme.textSubtle}`}>
+            Budget usage
+          </div>
+          <div className={`font-semibold ${usageOver ? "text-rose-500" : theme.textSubtle} private-amount`} tabIndex={0}>
+            {Math.round(usagePct)}% of {expected > 0 ? "expected" : "current"} income
+          </div>
+        </div>
+        <div className={`relative h-1.5 rounded-full overflow-hidden ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+          <motion.div initial={{ width: 0 }} animate={{ width: `${Math.min(100, usagePct)}%` }}
+            transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+            className={`absolute inset-y-0 left-0 ${usageOver ? "bg-rose-500" : "bg-violet-500"}`} />
         </div>
       </div>
     </div>

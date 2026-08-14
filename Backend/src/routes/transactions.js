@@ -142,6 +142,10 @@ export default async function (app) {
               t.voided_at AS voidedAt,
               t.flag_color AS flagColor,
               t.exclude_from_budget_income AS excludeFromBudgetIncome,
+              t.budget_expected_income AS budgetExpectedIncome,
+              t.recurring_kind AS recurringKind,
+              t.recurring_days AS recurringDays,
+              t.recurring_parent_id AS recurringParentId,
               t.paystub_json AS paystubJson,
               a.name AS accountName, a.id AS accountId, a.plaid_item_id AS plaidItemId,
               mr.display_name AS merchantDisplayName
@@ -248,7 +252,8 @@ export default async function (app) {
   // `is_scheduled: true` flag. The row is invisible to budget/income
   // rollups until adopted by a Plaid sync or manually flipped.
   app.post("/scheduled", async (req, reply) => {
-    const { date, merchant, category, amount, accountId, note, paystub } = req.body || {};
+    const { date, merchant, category, amount, accountId, note, paystub,
+            budget_expected_income, recurring_kind, recurring_days } = req.body || {};
     if (!date || !merchant || amount === undefined) {
       return reply.code(400).send({ error: "date, merchant, amount required" });
     }
@@ -261,13 +266,23 @@ export default async function (app) {
       if (!owned) return reply.code(400).send({ error: "invalid account" });
     }
     const paystubJson = paystub ? JSON.stringify(paystub) : null;
+    // Only accept recognised cadence kinds. "none" means one-shot (default).
+    const RK = new Set(["none","weekly","biweekly","semimonthly","monthly","yearly","custom"]);
+    const kind = RK.has(String(recurring_kind)) ? String(recurring_kind) : "none";
+    const rdays = kind === "custom" ? Math.max(1, Number(recurring_days) || 0) : null;
+    if (kind === "custom" && !rdays) {
+      return reply.code(400).send({ error: "recurring_days required when recurring_kind='custom'" });
+    }
+    const expected = budget_expected_income ? 1 : 0;
     const r = await query(
       `INSERT INTO transactions
          (user_id, account_id, date, merchant, category, amount, note,
-          is_scheduled, scheduled_at, paystub_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW(), ?)`,
+          is_scheduled, scheduled_at, paystub_json,
+          budget_expected_income, recurring_kind, recurring_days)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?)`,
       [req.user.id, accountId || null, date, merchant,
-       category || "Other", amount, note || null, paystubJson]
+       category || "Other", amount, note || null, paystubJson,
+       expected, kind, rdays]
     );
     return queryOne("SELECT * FROM transactions WHERE id = ?", [r.insertId]);
   });
@@ -595,7 +610,8 @@ export default async function (app) {
 
   app.patch("/:id", async (req) => {
     const { merchant, category, amount, note, date, is_deductible,
-            check_number, flag_color, exclude_from_budget_income } = req.body || {};
+            check_number, flag_color, exclude_from_budget_income,
+            budget_expected_income, recurring_kind, recurring_days } = req.body || {};
     // If amount changes on a manual account txn, adjust balance by the delta.
     // Scheduled rows are excluded (see DELETE handler above).
     const existing = await queryOne(
@@ -606,12 +622,20 @@ export default async function (app) {
       ? null : (is_deductible ? 1 : 0);
     const excludeBit = exclude_from_budget_income === undefined
       ? null : (exclude_from_budget_income ? 1 : 0);
+    const expectedBit = budget_expected_income === undefined
+      ? null : (budget_expected_income ? 1 : 0);
     // Flag: undefined = no change; null or "" = clear; else validate.
     // Check num: undefined = no change; null or "" = clear; else store.
     const flagVal = flag_color === undefined
       ? null : (flag_color ? validFlag(flag_color) : null);
     const checkVal = check_number === undefined
       ? null : (check_number ? String(check_number).slice(0, 32) : null);
+    // Recurring: undefined = no change; otherwise validate.
+    const RK = new Set(["none","weekly","biweekly","semimonthly","monthly","yearly","custom"]);
+    const rkVal = recurring_kind === undefined
+      ? null : (RK.has(String(recurring_kind)) ? String(recurring_kind) : "none");
+    const rdVal = recurring_days === undefined
+      ? null : (recurring_days == null ? null : Math.max(1, Number(recurring_days) || 0));
     await query(
       `UPDATE transactions SET
          merchant = COALESCE(?, merchant),
@@ -621,11 +645,16 @@ export default async function (app) {
          date = COALESCE(?, date),
          is_deductible = COALESCE(?, is_deductible),
          exclude_from_budget_income = COALESCE(?, exclude_from_budget_income),
+         budget_expected_income = COALESCE(?, budget_expected_income),
+         recurring_kind = COALESCE(?, recurring_kind),
+         recurring_days = IF(?, ?, recurring_days),
          flag_color = IF(?, ?, flag_color),
          check_number = IF(?, ?, check_number)
        WHERE id = ? AND user_id = ?`,
       [merchant ?? null, category ?? null, amount ?? null, note ?? null, date ?? null,
-       deductibleBit, excludeBit,
+       deductibleBit, excludeBit, expectedBit,
+       rkVal,
+       recurring_days !== undefined ? 1 : 0, rdVal,
        flag_color !== undefined ? 1 : 0, flagVal,
        check_number !== undefined ? 1 : 0, checkVal,
        req.params.id, req.user.id]

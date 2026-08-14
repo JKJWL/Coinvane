@@ -244,7 +244,9 @@ async function tryAdoptScheduled(
   // Same-sign filter to keep a scheduled paycheck from adopting a bill.
   const signClause = signedAmount >= 0 ? "amount >= 0" : "amount < 0";
   const rows = await query(
-    `SELECT id, date, amount FROM transactions
+    `SELECT id, date, amount, category, merchant, note,
+            budget_expected_income, recurring_kind, recurring_days
+     FROM transactions
      WHERE user_id = ? AND account_id = ?
        AND is_scheduled = 1
        AND plaid_transaction_id IS NULL
@@ -277,7 +279,77 @@ async function tryAdoptScheduled(
     [plaidTxnId, incomingDate, merchant, category,
      signedAmount, pending, isTransfer, match.id, userId]
   );
+
+  // Recurring: if this scheduled row was a repeating template (biweekly
+  // paycheck, monthly rent, etc.), spawn the next occurrence so cashflow
+  // forecast + expected-income budgets stay populated. We anchor on the
+  // ORIGINAL scheduled date (match.date), not incomingDate, so drift from
+  // slow paychecks doesn't stack up.
+  if (match.recurring_kind && match.recurring_kind !== "none") {
+    try {
+      const nextDate = advanceRecurringDate(match.date, match.recurring_kind, match.recurring_days);
+      if (nextDate) {
+        // Skip if a next occurrence already exists on that date for this
+        // parent chain — happens when the daily cron already spawned it.
+        const exists = await query(
+          `SELECT id FROM transactions
+           WHERE user_id = ? AND recurring_parent_id = ? AND date = ? LIMIT 1`,
+          [userId, match.id, nextDate]
+        );
+        if (!exists.length) {
+          await query(
+            `INSERT INTO transactions
+               (user_id, account_id, date, merchant, category, amount, note,
+                is_scheduled, scheduled_at, budget_expected_income,
+                recurring_kind, recurring_days, recurring_parent_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?)`,
+            [userId, accountId, nextDate, match.merchant, match.category,
+             match.amount, match.note || null,
+             match.budget_expected_income || 0,
+             match.recurring_kind, match.recurring_days, match.id]
+          );
+        }
+      }
+    } catch { /* recurring spawn is best-effort; adoption already committed */ }
+  }
   return match.id;
+}
+
+/**
+ * Advance a "YYYY-MM-DD" date by one cadence step. Returns the next date
+ * as "YYYY-MM-DD" or null if the cadence is unknown. Uses local date math
+ * (no timezone shifts) via UTC-component arithmetic on a UTC-midnight
+ * Date, then reformatting the components.
+ */
+function advanceRecurringDate(dateStr, kind, days) {
+  // mysql2 returns DATE columns as JS Date objects by default, so we
+  // normalise to a plain "YYYY-MM-DD" string first. Using UTC components
+  // avoids the local-timezone off-by-one that hits negative-UTC users.
+  let s;
+  if (dateStr instanceof Date) {
+    s = `${dateStr.getUTCFullYear()}-${String(dateStr.getUTCMonth() + 1).padStart(2, "0")}-${String(dateStr.getUTCDate()).padStart(2, "0")}`;
+  } else {
+    s = String(dateStr || "").slice(0, 10);
+  }
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return null;
+  let y = Number(m[1]), mo = Number(m[2]) - 1, d = Number(m[3]);
+  switch (kind) {
+    case "weekly":      d += 7; break;
+    case "biweekly":    d += 14; break;
+    case "monthly":     mo += 1; break;
+    case "yearly":      y += 1; break;
+    case "custom":      d += Math.max(1, Number(days) || 0); break;
+    case "semimonthly": {
+      // 1st ↔ 15th, snap to month end when needed.
+      if (d < 15) { d = 15; }
+      else        { d = 1; mo += 1; }
+      break;
+    }
+    default: return null;
+  }
+  const nd = new Date(Date.UTC(y, mo, d));
+  return `${nd.getUTCFullYear()}-${String(nd.getUTCMonth() + 1).padStart(2, "0")}-${String(nd.getUTCDate()).padStart(2, "0")}`;
 }
 
 /**
@@ -313,6 +385,70 @@ async function pickTriggerTargets(userId, newPlaidIds, adoptedIds) {
     targets.push(...rows);
   }
   return targets;
+}
+
+/**
+ * Ensure every recurring scheduled income template has an upcoming
+ * occurrence at least `horizonDays` in the future. Called from the daily
+ * worker cron. Idempotent — skips templates whose next expected date
+ * already has a matching row (by recurring_parent_id + date).
+ *
+ * Only walks the LEAF of each recurring chain (rows with no children yet)
+ * so a template that gets adopted multiple times doesn't spawn duplicate
+ * futures. Bounded by MAX_HORIZON steps so a misconfigured cadence can't
+ * loop forever.
+ */
+export async function ensureRecurringOccurrences(userId, horizonDays = 180) {
+  const MAX_HOPS = 24;
+  // Leaves: rows with a cadence and no downstream child scheduled row.
+  const leaves = await query(
+    `SELECT t.id, t.account_id, t.date, t.merchant, t.category, t.amount,
+            t.note, t.budget_expected_income, t.recurring_kind, t.recurring_days
+     FROM transactions t
+     WHERE t.user_id = ?
+       AND t.recurring_kind IS NOT NULL
+       AND t.recurring_kind <> 'none'
+       AND NOT EXISTS (
+         SELECT 1 FROM transactions c
+         WHERE c.recurring_parent_id = t.id
+       )`,
+    [userId]
+  );
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() + horizonDays);
+  const cutoffStr = `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, "0")}-${String(cutoff.getDate()).padStart(2, "0")}`;
+  for (const leaf of leaves) {
+    // Normalise Date → "YYYY-MM-DD" (mysql2 hands back Date objects by
+    // default). advanceRecurringDate does the same internally, but we
+    // also compare `currentDate` string-lexicographically against the
+    // cutoff so it has to be the ISO shape.
+    let currentDate;
+    if (leaf.date instanceof Date) {
+      currentDate = `${leaf.date.getUTCFullYear()}-${String(leaf.date.getUTCMonth() + 1).padStart(2, "0")}-${String(leaf.date.getUTCDate()).padStart(2, "0")}`;
+    } else {
+      currentDate = String(leaf.date).slice(0, 10);
+    }
+    let parentId = leaf.id;
+    let hops = 0;
+    while (currentDate < cutoffStr && hops < MAX_HOPS) {
+      const nextDate = advanceRecurringDate(currentDate, leaf.recurring_kind, leaf.recurring_days);
+      if (!nextDate || nextDate <= currentDate) break;
+      const r = await query(
+        `INSERT INTO transactions
+           (user_id, account_id, date, merchant, category, amount, note,
+            is_scheduled, scheduled_at, budget_expected_income,
+            recurring_kind, recurring_days, recurring_parent_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?)`,
+        [userId, leaf.account_id, nextDate, leaf.merchant, leaf.category,
+         leaf.amount, leaf.note || null,
+         leaf.budget_expected_income || 0,
+         leaf.recurring_kind, leaf.recurring_days, parentId]
+      );
+      parentId = r.insertId;
+      currentDate = nextDate;
+      hops++;
+    }
+  }
 }
 
 /**

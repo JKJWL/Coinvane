@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import "dotenv/config";
 import { Worker } from "bullmq";
-import { fullSyncItem, syncTransactions, syncHoldings } from "./sync.js";
+import { fullSyncItem, syncTransactions, syncHoldings, ensureRecurringOccurrences } from "./sync.js";
 import { decrypt } from "./crypto.js";
 import { query, queryOne, pool } from "./db.js";
 import { sendMail } from "./mailer.js";
@@ -115,6 +115,12 @@ new Worker("sync", async (job) => {
       // and silent-fail so a malformed bill can't stop the batch.
       try { await refreshUserBillCycles(u.id); }
       catch (e) { console.error(`bill cycle refresh failed for user ${u.id}:`, e.message); }
+
+      // Ensure the next ~6 months of recurring scheduled income exist so
+      // cashflow forecast + budget expected-income totals stay populated
+      // even when Plaid adoption hasn't happened yet.
+      try { await ensureRecurringOccurrences(u.id); }
+      catch (e) { console.error(`recurring occurrences failed for user ${u.id}:`, e.message); }
 
       // Period-rollover detection. Fire period_rolled_over EXACTLY ONCE
       // per master-period boundary per user, no matter how often this

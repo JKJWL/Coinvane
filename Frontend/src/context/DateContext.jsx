@@ -31,7 +31,7 @@ export function DataProvider({ children, enabled }) {
         api.getGoals(), api.getNotes(), api.getCategories(), api.getNotifications(),
         api.getHoldings(), api.getAccountSummary(), api.getInvestmentSummary(),
         api.getCashflow(), api.getByCategory(),
-        api.getBudgetTrackers().catch(() => ({ income: null, credit: null, zeroBudget: null })),
+        api.getBudgetTrackers().catch(() => ({ income: null, credit: null, zeroBudget: { income: 0, expected: 0, basis: 0, allocated: 0, remaining: 0 } })),
         api.getBudgetSuggestions().catch(() => []),
         api.listAssets().catch(() => []),
       ]);

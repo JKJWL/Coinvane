@@ -46,6 +46,34 @@ async function sumIncomeInWindow(userId, startStr, endStr) {
   return Number(row.total) || 0;
 }
 
+/**
+ * Sum of scheduled/arrived transactions flagged `budget_expected_income`
+ * whose date falls in the master period. Drives the "Expected income"
+ * bar on the Budgets tab plus the zero-based-budget slider's target.
+ *
+ * Includes both `is_scheduled = 1` upcoming rows AND already-arrived
+ * rows (is_scheduled = 0) that inherited the flag when adopted by the
+ * Plaid sync — so once a paycheck lands, expected doesn't drop below
+ * current. Voided rows and rows the user explicitly excluded from
+ * budget income are dropped, same as sumIncomeInWindow.
+ */
+async function sumExpectedIncomeInWindow(userId, startStr, endStr) {
+  const row = await queryOne(
+    `SELECT COALESCE(SUM(t.amount), 0) AS total
+     FROM transactions t
+     LEFT JOIN accounts a ON a.id = t.account_id
+     WHERE t.user_id = ? AND t.amount > 0
+       AND t.date >= ? AND t.date < ?
+       AND t.budget_expected_income = 1
+       AND (a.type IS NULL OR a.type <> 'credit')
+       AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+       AND t.voided_at IS NULL
+       AND (t.exclude_from_budget_income = 0 OR t.exclude_from_budget_income IS NULL)`,
+    [userId, startStr, endStr]
+  );
+  return Number(row.total) || 0;
+}
+
 async function creditUsageInWindow(userId, startStr, endStr) {
   // Internal transfers to/from the credit account (e.g. paying the card
   // from checking) are excluded so the tracker only reflects real swipes.
@@ -123,8 +151,14 @@ export default async function (app) {
     );
 
     const incomeTotal = await sumIncomeInWindow(req.user.id, master.startStr, master.endStr);
+    const expectedIncomeTotal = await sumExpectedIncomeInWindow(req.user.id, master.startStr, master.endStr);
     const income = {
       total: incomeTotal,
+      // Sum of scheduled + arrived transactions marked `budget_expected_income`
+      // for the period. Zero when the user hasn't flagged any scheduled income,
+      // in which case the frontend hides the second bar and the zero-based
+      // slider falls back to `total`.
+      expected: expectedIncomeTotal,
       period: master.period,
       periodDays: master.periodDays,
       periodStart: master.startStr,
@@ -171,8 +205,13 @@ export default async function (app) {
       credit,
       zeroBudget: {
         income: incomeTotal,
+        expected: expectedIncomeTotal,
+        // Slider is based on expected income when the user has scheduled
+        // any; otherwise falls back to current income so the tracker is
+        // still meaningful when nothing's flagged.
+        basis: expectedIncomeTotal > 0 ? expectedIncomeTotal : incomeTotal,
         allocated,
-        remaining: incomeTotal - allocated,
+        remaining: (expectedIncomeTotal > 0 ? expectedIncomeTotal : incomeTotal) - allocated,
       },
     };
   });

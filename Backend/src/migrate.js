@@ -337,6 +337,24 @@ const SCHEMA = [
   `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_scheduled BOOLEAN DEFAULT FALSE`,
   `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMP NULL`,
 
+  // ── Recurring scheduled income + budget expected-income flag (D2) ──
+  // Scheduled income can now REPEAT on a chosen cadence — biweekly for
+  // salary, monthly for pension, etc. — so cashflow forecasting has real
+  // future dates to project against. When a recurring scheduled row is
+  // adopted by a real Plaid transaction (is_scheduled → 0), the worker
+  // spawns the next occurrence. `budget_expected_income = 1` marks a
+  // scheduled row as counting toward the budget tab's "expected income"
+  // bar (see /budgets/trackers). Users tick this on paychecks so the
+  // zero-based-budget slider can plan against future income instead of
+  // only what's already arrived.
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS budget_expected_income BOOLEAN DEFAULT FALSE`,
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS recurring_kind VARCHAR(16) DEFAULT 'none'`,
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS recurring_days INT NULL`,
+  // Link a spawned occurrence back to the row it was created from, so
+  // we can walk the chain when editing the template rolls forward, and
+  // so the "next occurrence" check avoids duplicating.
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS recurring_parent_id INT NULL`,
+
   // ── Automations (Feature: Automations tab) ──────────────────────
   // Per-user rule engine. Each rule is:
   //   trigger:    one of transaction_arrived | income_landed |
@@ -841,6 +859,10 @@ const SOFT_SCHEMA = [
   // Adopt-match lookup runs on every Plaid insert, so this index is
   // load-bearing (user_id, account_id, is_scheduled, date).
   `ALTER TABLE transactions ADD INDEX idx_scheduled_match (user_id, account_id, is_scheduled, date)`,
+  // Recurring-parent chain lookup — used when a scheduled row is adopted
+  // and the worker needs to see if the next occurrence has already been
+  // spawned. Errors swallowed on subsequent runs where the index exists.
+  `ALTER TABLE transactions ADD INDEX idx_recurring_parent (recurring_parent_id)`,
   // Assets → loan-account link (added post-1.7). Silent no-op on fresh DBs
   // where the CREATE TABLE already declared these.
   `ALTER TABLE assets ADD INDEX idx_loan_account (loan_account_id)`,
