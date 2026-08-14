@@ -6409,6 +6409,12 @@ function ZeroBudgetSummary({ zb, theme, darkMode }) {
   const income = Number(zb.income || 0);
   const expected = Number(zb.expected || 0);
   const allocated = Number(zb.allocated || 0);
+  // Actual dollars spent across all category budgets this period.
+  // Distinct from `allocated` — allocated is the sum of budget CAPS,
+  // spent is what's actually left the accounts. Drives the "Budget
+  // usage" bar so 100% means "you've hit your income", not "you've
+  // planned to hit it".
+  const spent = Number(zb.spent || 0);
   // Basis: expected wins when the user has scheduled any income, else
   // current income takes over so the slider still means something on a
   // brand-new setup.
@@ -6419,7 +6425,7 @@ function ZeroBudgetSummary({ zb, theme, darkMode }) {
   const incomeW = Math.min(100, (income / scaleMax) * 100);
   const expectedW = Math.min(100, (expected / scaleMax) * 100);
   const allocW  = Math.min(100, (allocated / scaleMax) * 100);
-  const usagePct = basis > 0 ? Math.min(200, (allocated / basis) * 100) : 0;
+  const usagePct = basis > 0 ? Math.min(200, (spent / basis) * 100) : 0;
   const usageOver = usagePct > 100;
 
   return (

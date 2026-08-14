@@ -200,6 +200,27 @@ export default async function (app) {
     );
     const allocated = Number(allocRow.total) || 0;
 
+    // Actual money spent across every category budget this period. Drives
+    // the "Budget usage" bar under Expected income — distinct from
+    // `allocated`, which is just the sum of the caps. Card budgets are
+    // excluded to match the allocation query (a swipe on a tracked card
+    // + its matching category budget would otherwise double-count).
+    const spentRow = await queryOne(
+      `SELECT COALESCE(SUM(ABS(t.amount)), 0) AS total
+       FROM transactions t
+       JOIN budgets b ON b.user_id = t.user_id AND b.category = t.category
+                     AND b.account_id IS NULL
+       LEFT JOIN accounts a ON a.id = t.account_id
+       WHERE t.user_id = ? AND t.amount < 0
+         AND t.date >= ? AND t.date < ?
+         AND (a.type IS NULL OR a.type <> 'credit')
+         AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
+         AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
+         AND t.voided_at IS NULL`,
+      [req.user.id, master.startStr, master.endStr]
+    );
+    const spentAcrossBudgets = Number(spentRow.total) || 0;
+
     return {
       income,
       credit,
@@ -211,6 +232,9 @@ export default async function (app) {
         // still meaningful when nothing's flagged.
         basis: expectedIncomeTotal > 0 ? expectedIncomeTotal : incomeTotal,
         allocated,
+        // Actual dollars spent across all category budgets this period.
+        // Distinct from `allocated`; drives the "Budget usage" bar.
+        spent: spentAcrossBudgets,
         remaining: (expectedIncomeTotal > 0 ? expectedIncomeTotal : incomeTotal) - allocated,
       },
     };
