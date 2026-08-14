@@ -9,6 +9,7 @@ import { audit } from "../audit.js";
 import { getAllowedEmails } from "../app-settings.js";
 import { plaid } from "../plaid-client.js";
 import { decrypt } from "../crypto.js";
+import { getVapidPublicKey } from "../push.js";
 
 const ATTACHMENTS_ROOT = process.env.ATTACHMENTS_ROOT || "/data/attachments";
 
@@ -279,6 +280,64 @@ export default async function (app) {
     );
   });
 
+  // ── Web Push subscriptions (D10) ─────────────────────────────
+  // Public: the VAPID application-server public key the browser needs
+  // to open a PushManager subscription. Not authenticated on purpose
+  // so the SW registration path doesn't need a session-scoped fetch.
+  app.get("/push/vapid-public-key", async () => {
+    return { key: getVapidPublicKey() || null };
+  });
+
+  // Enroll a browser/PWA. Body = the full PushSubscription.toJSON()
+  // shape the frontend gets from PushManager.subscribe(). We store
+  // endpoint + keys keyed by endpoint (unique) so re-subscribing the
+  // same device just overwrites the row.
+  app.post("/me/push-subscriptions", { preHandler: [app.authenticate] }, async (req, reply) => {
+    const b = req.body || {};
+    const endpoint = String(b.endpoint || "");
+    const p256dh   = String(b.keys?.p256dh || "");
+    const auth     = String(b.keys?.auth   || "");
+    if (!endpoint || !p256dh || !auth) {
+      return reply.code(400).send({ error: "endpoint + keys required" });
+    }
+    const ua = String(req.headers["user-agent"] || "").slice(0, 255);
+    await query(
+      `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent)
+       VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE p256dh = VALUES(p256dh), auth = VALUES(auth),
+                                user_agent = VALUES(user_agent), user_id = VALUES(user_id)`,
+      [req.user.id, endpoint.slice(0, 500), p256dh.slice(0, 255), auth.slice(0, 255), ua]
+    );
+    return { ok: true };
+  });
+
+  // Unsubscribe just this device (by endpoint), or all this user's
+  // devices when endpoint is omitted. Used by Settings → "Sign out
+  // this device from push" / "Turn push off everywhere".
+  app.delete("/me/push-subscriptions", { preHandler: [app.authenticate] }, async (req) => {
+    const endpoint = req.body?.endpoint || req.query?.endpoint;
+    if (endpoint) {
+      await query(
+        "DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?",
+        [req.user.id, String(endpoint)]
+      );
+    } else {
+      await query("DELETE FROM push_subscriptions WHERE user_id = ?", [req.user.id]);
+    }
+    return { ok: true };
+  });
+
+  // Manage-devices list. Endpoint URL isn't returned — it's opaque and
+  // long — just id + user_agent + timestamps.
+  app.get("/me/push-subscriptions", { preHandler: [app.authenticate] }, async (req) => {
+    return query(
+      `SELECT id, user_agent AS userAgent,
+              last_used_at AS lastUsedAt, created_at AS createdAt
+       FROM push_subscriptions WHERE user_id = ? ORDER BY created_at DESC`,
+      [req.user.id]
+    );
+  });
+
   // ── Clear-all-my-data (D8) ────────────────────────────────────
   // Nuclear reset for a user who wants to start fresh (or stop using
   // the app but wipe their financial footprint). Deletes every
@@ -356,6 +415,7 @@ export default async function (app) {
       "accounts",
       "plaid_items",
       "attachment_upload_log",
+      "push_subscriptions",
     ];
     for (const t of tables) {
       try { await query(`DELETE FROM ${t} WHERE user_id = ?`, [userId]); }

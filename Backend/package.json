@@ -27,6 +27,7 @@
     "dotenv": "^16.4.5",
     "pdfkit": "^0.15.0",
     "geoip-lite": "^1.4.10",
-    "papaparse": "^5.4.1"
+    "papaparse": "^5.4.1",
+    "web-push": "^3.6.7"
   }
 }

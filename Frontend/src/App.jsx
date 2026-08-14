@@ -22,6 +22,7 @@ import { usePlaidLink } from "react-plaid-link";
 import { useAuth } from "./hooks/useAuth.js";
 import { DataProvider, useData } from "./context/DateContext.jsx";
 import { api } from "./api/client.js";
+import { enablePush, disablePush, resurrectPushIfEnabled, pushSupported, isIosSafariNotInstalled } from "./push.js";
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
 function fmtCurrency(n, currency = "USD") {
@@ -11431,16 +11432,55 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
               don't need access to. */}
         </div>
 
-        {/* In-app bell — independent of email. */}
+        {/* Web Push — OS-level notifications on lock screen / notification
+            tray. Toggling on triggers the browser's permission prompt +
+            registers a per-device push subscription with the backend.
+            The bell icon still shows every alert regardless of this
+            toggle — it reads directly from the notifications table. */}
         <div className="flex items-center justify-between">
-          <div>
-            <div className="text-sm font-medium">In-app notifications</div>
+          <div className="min-w-0 pr-3">
+            <div className="text-sm font-medium">Push notifications</div>
             <div className={`text-xs ${theme.textSubtle} mt-0.5`}>
-              Show alerts in the bell icon menu (independent of email).
+              Send alerts to this device's lock screen and notification tray. In-app bell still works either way.
+              {!pushSupported() && <> · <span className="text-amber-500">Not supported by this browser.</span></>}
             </div>
           </div>
-          <Toggle checked={form.notification_push} onChange={v => setForm({ ...form, notification_push: v })} darkMode={darkMode} />
+          <Toggle checked={form.notification_push}
+            onChange={async (v) => {
+              // Optimistically flip the local form so the toggle reflects
+              // the user's intent immediately; if the browser prompt is
+              // denied, roll back and let the toast explain why.
+              setForm(f => ({ ...f, notification_push: v }));
+              if (v) {
+                const r = await enablePush();
+                if (!r.ok) {
+                  setForm(f => ({ ...f, notification_push: false }));
+                  if (r.reason === "denied") {
+                    toast?.("Permission denied — enable in your browser's site settings first", "error");
+                  } else if (r.reason === "ios-install-required") {
+                    toast?.("On iPhone: tap Share → Add to Home Screen, then enable from there", "error");
+                  } else if (r.reason === "no-key") {
+                    toast?.("Push not configured on the server (VAPID keys missing)", "error");
+                  } else if (r.reason === "unsupported") {
+                    toast?.("This browser doesn't support Web Push", "error");
+                  } else {
+                    toast?.("Couldn't enable push", "error");
+                  }
+                }
+              } else {
+                await disablePush();
+              }
+            }} darkMode={darkMode} />
         </div>
+        {/* iOS Safari one-time install hint. Shown only when the user is
+            on iOS Safari AND hasn't installed the PWA yet — the two
+            preconditions for push not working. Dismissible via toggle
+            itself (once installed the check flips false). */}
+        {isIosSafariNotInstalled() && (
+          <div className={`${darkMode ? "bg-sky-500/10 border-sky-500/30 text-sky-300" : "bg-sky-50 border-sky-200 text-sky-800"} border rounded-xl px-3 py-2 text-xs`}>
+            <b>iPhone/iPad:</b> Add Coinvane to your home screen (Share → Add to Home Screen) before enabling push. iOS only delivers Web Push to installed PWAs.
+          </div>
+        )}
         {/* No bottom Save button — the sticky bar at the top of the page is
             the single save action whenever the form is dirty. */}
       </form>
@@ -11739,6 +11779,11 @@ function Shell({ user, onLogout, refreshUser }) {
 
   // Keep local state in sync if user is refreshed from server
   useEffect(() => { setDarkModeLocal(!!user?.dark_mode); }, [user?.dark_mode]);
+
+  // If the user previously enabled push and permission is still
+  // granted, re-POST the current subscription on load so the backend
+  // has the freshest endpoint (browsers rotate them). No prompt.
+  useEffect(() => { if (user?.id) resurrectPushIfEnabled(); }, [user?.id]);
 
   // Sync-on-open: trigger a Plaid sync when the app is opened / brought
   // back to focus, guarded to at most once every 30 minutes per browser

@@ -3,6 +3,7 @@ import { query, queryOne } from "./db.js";
 import { enqueueMail } from "./queue.js";
 import { renderNotificationDigest } from "./mailer.js";
 import { getMasterPeriod, spentForBudgetInWindow } from "./budget-utils.js";
+import { sendPush } from "./push.js";
 
 async function insertNotification(userId, n) {
   const dupe = await queryOne(
@@ -329,6 +330,29 @@ export async function generateNotifications(userId) {
       if (u) {
         const mail = renderNotificationDigest({ userName: u.name, notifications: created });
         await enqueueMail({ to: u.email, ...mail });
+      }
+    }
+  }
+
+  // ── Web Push fanout ──────────────────────────────────────────────
+  // One push per new notification when the user has `notification_push`
+  // on. Silent no-op if VAPID isn't configured or the user has no
+  // registered subscriptions. Stale endpoints self-clean via 410
+  // handling inside sendPush.
+  if (created.length > 0 && prefs.notification_push) {
+    for (const n of created) {
+      try {
+        await sendPush(userId, {
+          title: n.title,
+          body:  n.body || "",
+          // Tag collapses repeated same-topic pushes into one on the
+          // lock screen (e.g. "budget_usage_high" replaces the previous
+          // budget alert instead of stacking).
+          tag:   n.type,
+          url:   "/",
+        });
+      } catch (e) {
+        console.warn(`[push] fanout failed for user ${userId}:`, e.message);
       }
     }
   }

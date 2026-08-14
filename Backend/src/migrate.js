@@ -845,6 +845,28 @@ const SCHEMA = [
     INDEX idx_bill_start (bill_id, cycle_start)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
+  // ── Web Push subscriptions (D10) ──────────────────────────────
+  // One row per (user, device) subscription. `endpoint` is the browser-
+  // supplied URL the push service (Google/Apple/Mozilla) delivers to;
+  // `p256dh` + `auth` are the client-generated keys used to end-to-end
+  // encrypt the payload so the push service can't read it.
+  // `user_agent` is captured for the user-facing "manage devices" list.
+  // The unique key on endpoint prevents dupes when the same device
+  // subscribes twice; ON DUPLICATE UPDATE handles rotation.
+  `CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    endpoint VARCHAR(500) NOT NULL,
+    p256dh VARCHAR(255) NOT NULL,
+    auth VARCHAR(255) NOT NULL,
+    user_agent VARCHAR(255) NULL,
+    last_used_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY uq_endpoint (endpoint),
+    INDEX idx_user (user_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
   // ── Admin broadcasts (D4) — desktop-only yellow-slip banner ──
   // Instance-wide messages authored by admins/owners. Users see all
   // active broadcasts until they dismiss them (per-user client-side

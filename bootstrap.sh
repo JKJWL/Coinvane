@@ -96,6 +96,17 @@ SMTP_PORT=587
 SMTP_USER=
 SMTP_PASS=
 SMTP_FROM=Coinvane <noreply@${DOMAIN}>
+
+# ─── Web Push (OS-level notifications) ───────────────────────────
+# Generate a VAPID key pair with:
+#     docker run --rm node:20-alpine npx --yes web-push generate-vapid-keys
+# Paste the two values below and set VAPID_SUBJECT to a mailto: URL you
+# own (Google/Apple push services reject empty). Leave blank to disable
+# push — the rest of the app works normally, users just see "not
+# configured on the server" if they try to enable push in Settings.
+VAPID_PUBLIC_KEY=
+VAPID_PRIVATE_KEY=
+VAPID_SUBJECT=mailto:admin@${DOMAIN}
 EOF
 
 chmod 600 "$ENV_FILE"

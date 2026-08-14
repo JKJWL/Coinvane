@@ -69,6 +69,11 @@ services:
       # Worker-only: how often Plaid is polled, in minutes. The backend
       # ignores it. Default in code is 60. See .env.example for guidance.
       SYNC_INTERVAL_MINUTES: ${SYNC_INTERVAL_MINUTES:-60}
+      # Web Push VAPID keys. Empty = push silently disabled. Generate
+      # with `npx web-push generate-vapid-keys`.
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.com}
     volumes:
       # Receipt attachments — shared with worker so both can read/write
       # (worker only reads today, but we future-proof).

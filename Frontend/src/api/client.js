@@ -44,6 +44,12 @@ export const api = {
   // Nuke every user_id-scoped row, revoke every Plaid item, unlink
   // attachments on disk. The user row stays so sign-in still works.
   clearMyData: (confirm) => request("POST", "/auth/me/clear-data", { confirm }),
+  // Web Push (D10)
+  getVapidPublicKey: () => request("GET", "/auth/push/vapid-public-key"),
+  registerPushSubscription: (sub) => request("POST", "/auth/me/push-subscriptions", sub),
+  deletePushSubscription: (endpoint) =>
+    request("DELETE", `/auth/me/push-subscriptions?endpoint=${encodeURIComponent(endpoint)}`),
+  listPushSubscriptions: () => request("GET", "/auth/me/push-subscriptions"),
 
   // admin
   listUsers: () => request("GET", "/auth/users"),
