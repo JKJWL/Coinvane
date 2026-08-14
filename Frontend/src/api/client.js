@@ -318,6 +318,16 @@ export const api = {
   adminSetAllowlist: (emails) => request("PUT", "/admin/allowlist", { emails }),
   adminGetAudit: () => request("GET", "/admin/audit"),
   adminCleanupNotifications: (days) => request("POST", "/admin/cleanup-notifications", { days }),
+  // Broadcast banner (D4). List is admin-authored history; me/broadcasts is
+  // the per-user active feed everyone reads.
+  adminListBroadcasts: () => request("GET", "/admin/broadcasts"),
+  adminCreateBroadcast: (data) => request("POST", "/admin/broadcasts", data),
+  adminUpdateBroadcast: (id, data) => request("PATCH", `/admin/broadcasts/${id}`, data),
+  adminArchiveBroadcast: (id) => request("DELETE", `/admin/broadcasts/${id}`),
+  myBroadcasts: () => request("GET", "/auth/me/broadcasts"),
+  // Plaid account counts (D5). Investment/cash/credit split so admins can
+  // model per-item Plaid product cost.
+  adminPlaidAccountCounts: () => request("GET", "/admin/plaid-account-counts"),
 };
 
 // Authed file-download helper. fetch() with Authorization → blob → save.

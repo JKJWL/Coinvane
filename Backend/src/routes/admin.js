@@ -159,4 +159,118 @@ export default async function (app) {
     }, { major: true });
     return { ok: true, deleted: r.affectedRows || 0, olderThanDays: days };
   });
+
+  // ── Admin broadcasts (D4) ─────────────────────────────────────
+  // Yellow-slip banner authored by admins/owners, shown to every user
+  // on desktop. Per-user dismiss is client-side (localStorage) so no
+  // per-user tracking table is needed. Only admins/owners can create,
+  // edit, or archive. Rate-limited to 10/min because a runaway console
+  // could otherwise spam the whole user base.
+  const BROADCAST_LIMIT = { max: 10, timeWindow: "1 minute" };
+  const SEVERITIES = new Set(["info", "warning", "critical"]);
+
+  app.get("/broadcasts", { config: { rateLimit: ADMIN_LIMIT } }, async () => {
+    // Admin view: includes archived + expired so history is visible.
+    return query(
+      `SELECT b.id, b.message, b.severity, b.expires_at AS expiresAt,
+              b.archived_at AS archivedAt, b.created_at AS createdAt,
+              u.email AS createdByEmail
+       FROM admin_broadcasts b
+       LEFT JOIN users u ON u.id = b.created_by
+       ORDER BY b.created_at DESC LIMIT 200`
+    );
+  });
+
+  app.post("/broadcasts", { config: { rateLimit: BROADCAST_LIMIT } }, async (req, reply) => {
+    const { message, severity, expires_at } = req.body || {};
+    const msg = String(message || "").trim();
+    if (!msg) return reply.code(400).send({ error: "message required" });
+    if (msg.length > 500) return reply.code(400).send({ error: "message too long (max 500)" });
+    const sev = SEVERITIES.has(severity) ? severity : "info";
+    // expires_at is optional; we normalise to null/valid MySQL datetime.
+    const expiresIso = expires_at ? new Date(expires_at) : null;
+    const expiresVal = expiresIso && !isNaN(expiresIso.getTime())
+      ? expiresIso.toISOString().slice(0, 19).replace("T", " ")
+      : null;
+    const r = await query(
+      `INSERT INTO admin_broadcasts (message, severity, created_by, expires_at)
+       VALUES (?, ?, ?, ?)`,
+      [msg, sev, req.user.id, expiresVal]
+    );
+    await audit(req.user.id, "admin.broadcast_create", req, {
+      id: r.insertId, severity: sev, len: msg.length,
+    }, { major: true });
+    return queryOne("SELECT * FROM admin_broadcasts WHERE id = ?", [r.insertId]);
+  });
+
+  app.patch("/broadcasts/:id", { config: { rateLimit: BROADCAST_LIMIT } }, async (req, reply) => {
+    const owned = await queryOne("SELECT id FROM admin_broadcasts WHERE id = ?", [req.params.id]);
+    if (!owned) return reply.code(404).send({ error: "not found" });
+    const b = req.body || {};
+    const msg = b.message === undefined ? null : String(b.message || "").trim().slice(0, 500);
+    const sev = b.severity === undefined
+      ? null : (SEVERITIES.has(b.severity) ? b.severity : "info");
+    const expiresVal = b.expires_at === undefined ? undefined
+      : (b.expires_at
+          ? new Date(b.expires_at).toISOString().slice(0, 19).replace("T", " ")
+          : null);
+    await query(
+      `UPDATE admin_broadcasts SET
+         message = COALESCE(?, message),
+         severity = COALESCE(?, severity),
+         expires_at = IF(?, ?, expires_at)
+       WHERE id = ?`,
+      [msg, sev,
+       expiresVal !== undefined ? 1 : 0, expiresVal ?? null,
+       req.params.id]
+    );
+    await audit(req.user.id, "admin.broadcast_edit", req, { id: req.params.id });
+    return queryOne("SELECT * FROM admin_broadcasts WHERE id = ?", [req.params.id]);
+  });
+
+  app.delete("/broadcasts/:id", { config: { rateLimit: BROADCAST_LIMIT } }, async (req, reply) => {
+    const r = await query(
+      "UPDATE admin_broadcasts SET archived_at = NOW() WHERE id = ? AND archived_at IS NULL",
+      [req.params.id]
+    );
+    if (!r.affectedRows) return reply.code(404).send({ error: "not found" });
+    await audit(req.user.id, "admin.broadcast_archive", req, { id: req.params.id });
+    return { ok: true };
+  });
+
+  // ── Plaid account type counts (D5) ────────────────────────────
+  // Aggregated across every user, Plaid-linked only, split by category.
+  // No user-identifying info returned — this is a pure Plaid-cost
+  // planning surface. Investment accounts cost more in Plaid product
+  // fees than cash/credit, so we surface them separately.
+  app.get("/plaid-account-counts", { config: { rateLimit: ADMIN_LIMIT } }, async () => {
+    const rows = await query(
+      `SELECT type, COUNT(*) AS n FROM accounts
+       WHERE plaid_item_id IS NOT NULL
+       GROUP BY type`
+    );
+    const counts = { investment: 0, cash: 0, credit: 0, loan: 0, other: 0 };
+    let total = 0;
+    for (const r of rows) {
+      const n = Number(r.n) || 0;
+      total += n;
+      if (r.type === "investment")           counts.investment += n;
+      else if (r.type === "credit")          counts.credit += n;
+      else if (r.type === "loan")            counts.loan += n;
+      else if (r.type === "cash" || r.type === "depository")
+                                             counts.cash += n;
+      else                                   counts.other += n;
+    }
+    // Item count (an "item" is one bank connection; Plaid bills per-item
+    // for most products). Useful because a single item can back many
+    // accounts.
+    const items = await queryOne(
+      "SELECT COUNT(*) AS n FROM plaid_items"
+    );
+    return {
+      totalAccounts: total,
+      itemCount: Number(items?.n) || 0,
+      counts,
+    };
+  });
 }

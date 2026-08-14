@@ -833,6 +833,25 @@ const SCHEMA = [
     INDEX idx_user_open (user_id, paid_at, cycle_end),
     INDEX idx_bill_start (bill_id, cycle_start)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // ── Admin broadcasts (D4) — desktop-only yellow-slip banner ──
+  // Instance-wide messages authored by admins/owners. Users see all
+  // active broadcasts until they dismiss them (per-user client-side
+  // dismiss via localStorage — not persisted server-side because it's
+  // ephemeral UI state and doesn't need to survive device swaps).
+  // Severity drives colour on the frontend: info-sky, warning-amber,
+  // critical-rose.
+  `CREATE TABLE IF NOT EXISTS admin_broadcasts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    message TEXT NOT NULL,
+    severity ENUM('info','warning','critical') NOT NULL DEFAULT 'info',
+    created_by INT NULL,
+    expires_at TIMESTAMP NULL,
+    archived_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    INDEX idx_active (archived_at, expires_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];
 
 const DEFAULT_CATEGORIES = [

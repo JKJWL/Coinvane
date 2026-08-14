@@ -257,6 +257,19 @@ export default async function (app) {
     return userPayload(u);
   });
 
+  // Active admin broadcasts visible to this user. Not gated on role —
+  // every authenticated user reads their own list. Filters out archived
+  // + expired rows; per-user dismiss is client-side (localStorage).
+  app.get("/me/broadcasts", { preHandler: [app.authenticate] }, async () => {
+    return query(
+      `SELECT id, message, severity, created_at AS createdAt
+       FROM admin_broadcasts
+       WHERE archived_at IS NULL
+         AND (expires_at IS NULL OR expires_at > NOW())
+       ORDER BY id DESC LIMIT 10`
+    );
+  });
+
   // Coerce a body field to (1 | 0 | null). null means "don't update".
   const bool = (v) => (v === undefined ? null : (v ? 1 : 0));
   // Clamp + coerce an integer in [min, max], or null if undefined.

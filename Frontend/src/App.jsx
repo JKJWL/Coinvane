@@ -9,7 +9,7 @@ import {
   Repeat, Utensils, Car, ShoppingBag, Heart, Briefcase, Coffee,
   Film, Zap, GraduationCap, Gift, Music, Book, Plane,
   ChevronDown, Check, Trash2, Shield, AlertCircle, AlertTriangle,
-  Pin, Calendar, Link2, Mail, CheckCircle2, Plus,
+  Pin, Calendar, Link2, Mail, CheckCircle2, Plus, Info,
   Pencil, GripVertical, Sparkles, TrendingDown,
   Lock, Unlock, ChevronRight,
   Image as ImageIcon, Split, Upload, Printer,
@@ -10145,6 +10145,11 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
   const [origSyncMin, setOrigSyncMin] = useState("");
   const [allowText, setAllowText] = useState("");
   const [origAllowText, setOrigAllowText] = useState("");
+  // Broadcast composer + list (D4) + Plaid account counts (D5)
+  const [broadcasts, setBroadcasts] = useState([]);
+  const [bcDraft, setBcDraft] = useState({ message: "", severity: "info", expires_at: "" });
+  const [bcSaving, setBcSaving] = useState(false);
+  const [plaidCounts, setPlaidCounts] = useState(null);
   // Pending role changes — keyed by user id. Empty when nothing pending.
   // Cleared after a successful save so the dropdown reflects fresh state.
   const [roleChanges, setRoleChanges] = useState({});
@@ -10160,11 +10165,13 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
   };
   const loadAdmin = async () => {
     try {
-      const [i, s, a, al] = await Promise.all([
+      const [i, s, a, al, bcs, pc] = await Promise.all([
         api.adminInfo(),
         api.adminGetSyncInterval(),
         api.adminGetAllowlist(),
         api.adminGetAudit(),
+        api.adminListBroadcasts().catch(() => []),
+        api.adminPlaidAccountCounts().catch(() => null),
       ]);
       setInfo(i);
       const sm = String(s.minutes);
@@ -10172,7 +10179,37 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
       const at = (a.emails || []).join("\n");
       setAllowText(at); setOrigAllowText(at);
       setAudit(al);
+      setBroadcasts(Array.isArray(bcs) ? bcs : []);
+      setPlaidCounts(pc);
     } catch (e) { /* swallow — non-admin will 403 elsewhere */ }
+  };
+  const reloadBroadcasts = async () => {
+    try { setBroadcasts(await api.adminListBroadcasts()); }
+    catch { /* no-op */ }
+  };
+  const submitBroadcast = async () => {
+    const msg = (bcDraft.message || "").trim();
+    if (!msg) { toast?.("Message required", "error"); return; }
+    setBcSaving(true);
+    try {
+      await api.adminCreateBroadcast({
+        message: msg,
+        severity: bcDraft.severity,
+        expires_at: bcDraft.expires_at || null,
+      });
+      setBcDraft({ message: "", severity: "info", expires_at: "" });
+      await reloadBroadcasts();
+      toast?.("Broadcast published", "success");
+    } catch (e) {
+      toast?.("Failed: " + (e.message || ""), "error");
+    } finally { setBcSaving(false); }
+  };
+  const archiveBroadcast = async (id) => {
+    try {
+      await api.adminArchiveBroadcast(id);
+      await reloadBroadcasts();
+      toast?.("Archived", "success");
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
   };
   const isOwner = currentUser.role === "owner";
   const isAdminish = isOwner || currentUser.role === "admin";
@@ -10493,6 +10530,102 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
           </motion.button>
         </div>
       </div>
+
+      {/* ── Plaid account counts (D5) ── admin/owner only ── */}
+      {isAdminish && plaidCounts && (
+        <div className={`${theme.surface} rounded-2xl border ${theme.border} p-4`}>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-semibold text-sm">Plaid account counts</h3>
+            <span className={`text-[10px] ${theme.textSubtle}`}>
+              {plaidCounts.itemCount} item{plaidCounts.itemCount === 1 ? "" : "s"} · {plaidCounts.totalAccounts} accounts
+            </span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+            <div className={`p-3 rounded-xl border ${theme.border}`}>
+              <div className={`text-[10px] font-semibold uppercase ${theme.textSubtle}`}>Investment</div>
+              <div className="text-xl font-bold text-violet-500">{plaidCounts.counts.investment}</div>
+              <div className={`text-[10px] ${theme.textSubtle}`}>higher per-item cost</div>
+            </div>
+            <div className={`p-3 rounded-xl border ${theme.border}`}>
+              <div className={`text-[10px] font-semibold uppercase ${theme.textSubtle}`}>Cash / Depository</div>
+              <div className="text-xl font-bold text-emerald-500">{plaidCounts.counts.cash}</div>
+            </div>
+            <div className={`p-3 rounded-xl border ${theme.border}`}>
+              <div className={`text-[10px] font-semibold uppercase ${theme.textSubtle}`}>Credit</div>
+              <div className="text-xl font-bold text-rose-500">{plaidCounts.counts.credit}</div>
+            </div>
+            <div className={`p-3 rounded-xl border ${theme.border}`}>
+              <div className={`text-[10px] font-semibold uppercase ${theme.textSubtle}`}>Loan / Other</div>
+              <div className={`text-xl font-bold ${theme.textMuted}`}>{plaidCounts.counts.loan + plaidCounts.counts.other}</div>
+            </div>
+          </div>
+          <p className={`text-[10px] ${theme.textSubtle} mt-2`}>
+            Plaid-linked accounts only; manual accounts aren't counted. Use to size flat member fees against Plaid product cost.
+          </p>
+        </div>
+      )}
+
+      {/* ── Broadcast composer + history (D4) ── admin/owner only ── */}
+      {isAdminish && (
+        <div className={`${theme.surface} rounded-2xl border ${theme.border} p-4`}>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-semibold text-sm">Broadcast banner (desktop)</h3>
+            <span className={`text-[10px] ${theme.textSubtle}`}>Shown to every user until dismissed</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_140px_180px_auto] gap-2 items-start">
+            <textarea
+              value={bcDraft.message}
+              onChange={e => setBcDraft({ ...bcDraft, message: e.target.value.slice(0, 500) })}
+              placeholder="e.g. Maintenance window tonight 10pm–11pm ET"
+              rows={2}
+              className={`px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`} />
+            <select value={bcDraft.severity}
+              onChange={e => setBcDraft({ ...bcDraft, severity: e.target.value })}
+              className={`px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`}>
+              <option value="info">Info (sky)</option>
+              <option value="warning">Warning (amber)</option>
+              <option value="critical">Critical (rose)</option>
+            </select>
+            <input type="datetime-local" value={bcDraft.expires_at}
+              onChange={e => setBcDraft({ ...bcDraft, expires_at: e.target.value })}
+              placeholder="Optional expires-at"
+              className={`px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`} />
+            <button type="button" onClick={submitBroadcast} disabled={bcSaving}
+              className="px-4 py-2 rounded-xl text-sm font-semibold bg-violet-500 text-white disabled:opacity-60">
+              {bcSaving ? "Publishing…" : "Publish"}
+            </button>
+          </div>
+          {broadcasts.length > 0 && (
+            <div className={`mt-3 max-h-48 overflow-y-auto rounded-lg border ${theme.border} divide-y ${theme.divide}`}>
+              {broadcasts.map(b => {
+                const active = !b.archivedAt && (!b.expiresAt || new Date(b.expiresAt) > new Date());
+                const sevColor = b.severity === "critical" ? "text-rose-500"
+                             : b.severity === "warning"  ? "text-amber-500"
+                             :                              "text-sky-500";
+                return (
+                  <div key={b.id} className="flex items-start gap-2 px-3 py-2 text-xs">
+                    <div className={`font-bold uppercase text-[10px] ${sevColor} min-w-[60px]`}>{b.severity}</div>
+                    <div className="flex-1 min-w-0">
+                      <div className={active ? "" : `line-through ${theme.textSubtle}`}>{b.message}</div>
+                      <div className={`text-[10px] ${theme.textSubtle}`}>
+                        {new Date(b.createdAt).toLocaleString()} · {b.createdByEmail || "system"}
+                        {b.expiresAt ? ` · expires ${new Date(b.expiresAt).toLocaleString()}` : ""}
+                        {b.archivedAt ? " · archived" : ""}
+                      </div>
+                    </div>
+                    {active && (
+                      <button type="button" onClick={() => archiveBroadcast(b.id)}
+                        className="text-[10px] font-semibold text-rose-500 hover:underline">
+                        Archive
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Audit log (last 100, tiered retention) ── */}
       <div className={`${theme.surface} rounded-2xl border ${theme.border} p-4`}>
@@ -11397,6 +11530,88 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
 }
 
 // ─── Shell ────────────────────────────────────────────────────────────────────
+// ── Admin broadcast banner (D4) ────────────────────────────────────────────
+// Desktop-only yellow slip pinned below the top header. Fetches active
+// broadcasts on mount and every 5 minutes (cheap read, keeps a maintenance
+// notice fresh without needing a page reload). Per-user dismiss is stored
+// in localStorage as a set of ids — deliberately not persisted server-side
+// because it's ephemeral UI state and a device swap re-showing an active
+// broadcast is fine.
+const BROADCAST_DISMISS_KEY = "coinvane_dismissed_broadcasts";
+function readDismissed() {
+  try {
+    const raw = localStorage.getItem(BROADCAST_DISMISS_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr.map(Number) : []);
+  } catch { return new Set(); }
+}
+function writeDismissed(set) {
+  try { localStorage.setItem(BROADCAST_DISMISS_KEY, JSON.stringify(Array.from(set))); }
+  catch { /* localStorage disabled — banner just re-shows next load */ }
+}
+function BroadcastBanner({ theme, darkMode }) {
+  const [items, setItems] = useState([]);
+  const [dismissed, setDismissed] = useState(() => readDismissed());
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const rows = await api.myBroadcasts();
+        if (!cancelled) setItems(Array.isArray(rows) ? rows : []);
+      } catch { /* silently no-op — banner is opportunistic */ }
+    };
+    load();
+    const t = setInterval(load, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, []);
+  const visible = items.filter(b => !dismissed.has(Number(b.id)));
+  if (!visible.length) return null;
+  const dismiss = (id) => {
+    const next = new Set(dismissed);
+    next.add(Number(id));
+    writeDismissed(next);
+    setDismissed(next);
+  };
+  const stylesForSeverity = (sev) => {
+    if (sev === "critical") {
+      return darkMode
+        ? { bg: "bg-rose-500/10 border-rose-500/40", text: "text-rose-300", icon: "text-rose-400" }
+        : { bg: "bg-rose-50 border-rose-300", text: "text-rose-800", icon: "text-rose-600" };
+    }
+    if (sev === "warning") {
+      return darkMode
+        ? { bg: "bg-amber-500/10 border-amber-500/40", text: "text-amber-200", icon: "text-amber-400" }
+        : { bg: "bg-amber-50 border-amber-300", text: "text-amber-900", icon: "text-amber-600" };
+    }
+    return darkMode
+      ? { bg: "bg-sky-500/10 border-sky-500/40", text: "text-sky-200", icon: "text-sky-400" }
+      : { bg: "bg-sky-50 border-sky-300", text: "text-sky-900", icon: "text-sky-600" };
+  };
+  return (
+    <div className="hidden lg:block">
+      {visible.map(b => {
+        const s = stylesForSeverity(b.severity);
+        const Icon = b.severity === "critical" ? AlertCircle
+                  : b.severity === "warning"  ? AlertCircle
+                  :                              Info;
+        return (
+          <div key={b.id}
+            className={`border-b ${s.bg} ${s.text} px-4 py-2.5 flex items-start gap-3 text-sm`}>
+            <Icon className={`w-4 h-4 mt-0.5 flex-shrink-0 ${s.icon}`} />
+            <div className="flex-1 whitespace-pre-wrap break-words">{b.message}</div>
+            <button type="button" onClick={() => dismiss(b.id)}
+              className={`${s.text} opacity-60 hover:opacity-100 transition-opacity flex-shrink-0`}
+              aria-label="Dismiss">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function Shell({ user, onLogout, refreshUser }) {
   const [tab, setTab] = useState("dashboard");
   const [prevTab, setPrevTab] = useState("dashboard");
@@ -11588,6 +11803,10 @@ function Shell({ user, onLogout, refreshUser }) {
           </div>
         </div>
       </div>
+
+      {/* Admin broadcast banner — desktop only, sits below the header
+          and above all content. Renders nothing when no active broadcasts. */}
+      <BroadcastBanner theme={theme} darkMode={darkMode} />
 
       {/* ── Mobile large iOS-style title (scrolls with content) ── */}
       <div className="lg:hidden px-4 pt-4 pb-1">
