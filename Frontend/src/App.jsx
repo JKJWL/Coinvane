@@ -11171,6 +11171,22 @@ function BiometricLockPanel({ theme, darkMode, toast, user, onUpdate }) {
   };
 
   const flipLock = async (v) => {
+    // Turning the lock OFF requires a fresh biometric verification —
+    // stops someone with an unlocked-app session from just flipping the
+    // toggle off. Turning it ON doesn't require re-auth since the user
+    // is inherently past the lock at that point.
+    if (!v && lockEnabled) {
+      const r = await unlockBiometric();
+      if (!r.ok) {
+        // Roll the visible toggle back — this fires when the biometric
+        // was cancelled OR failed. Silent for "denied" (cancelled),
+        // toast for real errors.
+        if (r.reason !== "denied") {
+          toast?.("Couldn't verify. Try again.", "error");
+        }
+        return;
+      }
+    }
     setLockEnabled(v);
     try {
       await api.webauthnSetLockEnabled(v);
@@ -11184,6 +11200,15 @@ function BiometricLockPanel({ theme, darkMode, toast, user, onUpdate }) {
 
   const revoke = async (id) => {
     if (!window.confirm("Remove this device? You'll need to enroll again next time.")) return;
+    // Removing a device weakens the lock, so gate it behind biometric
+    // the same way disabling does. Same UX for both destructive actions.
+    const auth = await unlockBiometric();
+    if (!auth.ok) {
+      if (auth.reason !== "denied") {
+        toast?.("Couldn't verify. Try again.", "error");
+      }
+      return;
+    }
     try {
       const r = await api.webauthnDeleteCredential(id);
       toast?.("Device removed", "success");
@@ -12121,12 +12146,15 @@ function Shell({ user, onLogout, refreshUser }) {
   // user has biometric_lock_enabled + at least one enrolled credential
   // + WebAuthn is supported by the browser. Desktop skips entirely
   // (matches the settings toggle's mobile-only visibility).
+  //
+  // Fresh mount ALWAYS locks (matches "closed the app, reopening now"
+  // expectation). The 5-min idle window only applies to in-session
+  // visibility flips — a reload / cold start / PWA restart is treated
+  // as a new session and needs re-auth regardless of timing.
   const [locked, setLocked] = useState(() => {
     if (isDesktop || !webauthnSupported()) return false;
     if (!user?.biometric_lock_enabled) return false;
-    // Cold-start lock: never unlocked, or unlocked > idle-lock window ago.
-    const last = readUnlockedAt();
-    return !last || (Date.now() - last) >= BIOMETRIC_IDLE_LOCK_MIN * 60 * 1000;
+    return true;
   });
   useEffect(() => {
     if (isDesktop || !webauthnSupported() || !user?.biometric_lock_enabled) return;
