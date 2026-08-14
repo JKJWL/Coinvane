@@ -168,18 +168,7 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 Coinvane accepts native `.mny` (Microsoft Money) database files in addition to the QIF Money exports. Two paths depending on your file:
 
 - **Unencrypted `.mny`** — decrypted or password-cleared files import directly. The backend uses `mdbtools` (an Alpine package baked into the backend image) to read the underlying Jet tables — `TRN` (transactions), plus `PAY` / `CAT` for merchant + category lookups. Column names are probed across Money 99 → Sunset since the schema shifted between versions.
-- **Password-protected `.mny`** — most Money files are locked. Coinvane can call `sunriise` (a community Apache-licensed Java tool that strips the password using the Sunset-era backdoor) transparently, but only if you've dropped its fat jar into the backend image at `Backend/vendor/sunriise.jar`. The frontend prompts for the password when you select the file — leaving it blank tells sunriise to use the backdoor, which is usually the right choice.
-
-Installing sunriise is optional and only needed if you have locked `.mny` files:
-
-1. Grab a sunriise fat jar (jar-with-dependencies) from a maintained fork — as of writing, <https://github.com/clmsoft/sunriise> has releases.
-2. Drop it in as `Backend/vendor/sunriise.jar`.
-3. Rebuild the backend image to bake it in:
-   ```bash
-   docker compose build backend && docker compose up -d backend
-   ```
-
-If sunriise is not installed and you upload an encrypted `.mny`, the import returns a clear error rather than crashing — unencrypted `.mny` and other formats keep working.
+- **Password-protected `.mny`** — most Money files are locked. Coinvane bundles `sunriise` (Apache-licensed community Java tool) with the backend image and calls it transparently to strip the password using the Sunset-era backdoor. The frontend prompts for the password when you select the file — leaving it blank tells sunriise to use the backdoor, which is usually the right choice.
 
 **Licensing:** sunriise is Apache 2.0, compatible with Coinvane's AGPL v3 (Apache 2.0 → AGPL is a permitted one-way combination). Vendoring the jar does not affect Coinvane's licence.
 
@@ -386,17 +375,6 @@ sudo ufw enable
 If your VPS has its own cloud firewall (Linode, AWS, DigitalOcean, etc.), **make
 sure to also open 80 and 443 there**. UFW won't help if the cloud firewall blocks
 traffic first.
-
-**Outbound**: with UFW's default `allow outgoing` (and no cloud-firewall outbound
-rules), you're set — Coinvane's outbound needs are all standard HTTPS (443) plus
-DNS (53) and NTP (123). If you've hardened outbound to a specific allowlist,
-open at minimum: TCP 443 (Plaid, Google, Web Push, Docker Hub, npm), TCP 587
-(SMTP submission, only when `EMAIL_CONFIG=enabled`), UDP+TCP 53 (DNS), UDP 123
-(NTP — token expiry math + Let's Encrypt renewal both break if clock drifts).
-Web Push in particular needs outbound to `fcm.googleapis.com`,
-`updates.push.services.mozilla.com`, `web.push.apple.com`, and
-`*.notify.windows.com` — blocked outbound = silent no-op in worker logs and
-no notifications ever land.
 
 ### 4. fail2ban + auto-updates
 
