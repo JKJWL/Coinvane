@@ -16,7 +16,8 @@
     "react-plaid-link": "^3.6.0",
     "lucide-react": "^0.439.0",
     "recharts": "^2.12.7",
-    "framer-motion": "^11.3.0"
+    "framer-motion": "^11.3.0",
+    "@simplewebauthn/browser": "^11.0.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",

@@ -52,6 +52,14 @@ export const api = {
   deletePushSubscriptionById: (id) =>
     request("DELETE", `/auth/me/push-subscriptions/${encodeURIComponent(id)}`),
   listPushSubscriptions: () => request("GET", "/auth/me/push-subscriptions"),
+  // WebAuthn biometric app-lock (D12)
+  webauthnRegisterOptions: () => request("POST", "/auth/webauthn/register-options", {}),
+  webauthnRegister: (body) => request("POST", "/auth/webauthn/register", body),
+  webauthnAuthOptions: () => request("POST", "/auth/webauthn/auth-options", {}),
+  webauthnVerify: (body) => request("POST", "/auth/webauthn/verify", body),
+  webauthnListCredentials: () => request("GET", "/auth/webauthn/credentials"),
+  webauthnDeleteCredential: (id) => request("DELETE", `/auth/webauthn/credentials/${id}`),
+  webauthnSetLockEnabled: (enabled) => request("PATCH", "/auth/webauthn/lock-enabled", { enabled }),
 
   // admin
   listUsers: () => request("GET", "/auth/users"),

@@ -10,6 +10,12 @@ import { getAllowedEmails } from "../app-settings.js";
 import { plaid } from "../plaid-client.js";
 import { decrypt } from "../crypto.js";
 import { getVapidPublicKey } from "../push.js";
+import {
+  makeRegistrationOptions,
+  completeRegistration,
+  makeAuthenticationOptions,
+  completeAuthentication,
+} from "../webauthn.js";
 
 const ATTACHMENTS_ROOT = process.env.ATTACHMENTS_ROOT || "/data/attachments";
 
@@ -71,6 +77,7 @@ function userPayload(u) {
     notify_budget_usage_enabled: !!u.notify_budget_usage_enabled,
     notify_budget_usage_pct: Number(u.notify_budget_usage_pct ?? 90),
     push_frequency: u.push_frequency || "daily",
+    biometric_lock_enabled: !!u.biometric_lock_enabled,
     // Misc prefs
     privacy_mode:    !!u.privacy_mode,
     show_cashflow_forecast: u.show_cashflow_forecast === undefined ? true : !!u.show_cashflow_forecast,
@@ -261,7 +268,7 @@ export default async function (app) {
         notify_bill_reminders, notify_bill_days_before,
         notify_cashflow_enabled, notify_cashflow_min,
         notify_budget_usage_enabled, notify_budget_usage_pct,
-        push_frequency,
+        push_frequency, biometric_lock_enabled,
         privacy_mode, show_cashflow_forecast, week_start, email_frequency, email_weekday`;
 
   app.get("/me", { preHandler: [app.authenticate] }, async (req) => {
@@ -352,6 +359,103 @@ export default async function (app) {
     return { ok: true };
   });
 
+  // ── WebAuthn biometric app-lock (D12) ────────────────────────
+  // Two ceremonies: register (adds a device via FaceID/TouchID) and
+  // authenticate (unlocks after the app was locked). Rate-limited to
+  // prevent enumeration + brute force attempts against the challenge
+  // JWT.
+  const WEBAUTHN_LIMIT = { max: 20, timeWindow: "1 minute" };
+
+  app.post("/webauthn/register-options", {
+    preHandler: [app.authenticate], config: { rateLimit: WEBAUTHN_LIMIT },
+  }, async (req, reply) => {
+    try { return await makeRegistrationOptions(req); }
+    catch (e) {
+      return reply.code(e.expose ? 400 : 500).send({ error: e.message });
+    }
+  });
+
+  app.post("/webauthn/register", {
+    preHandler: [app.authenticate], config: { rateLimit: WEBAUTHN_LIMIT },
+  }, async (req, reply) => {
+    try {
+      const r = await completeRegistration(req, req.body || {});
+      await audit(req.user.id, "webauthn.register", req, {}, { major: true });
+      return r;
+    } catch (e) {
+      req.log.warn({ err: e.message }, "webauthn register failed");
+      return reply.code(e.expose ? 400 : 500).send({ error: e.message });
+    }
+  });
+
+  app.post("/webauthn/auth-options", {
+    preHandler: [app.authenticate], config: { rateLimit: WEBAUTHN_LIMIT },
+  }, async (req, reply) => {
+    try { return await makeAuthenticationOptions(req); }
+    catch (e) {
+      return reply.code(e.expose ? 400 : 500).send({ error: e.message });
+    }
+  });
+
+  app.post("/webauthn/verify", {
+    preHandler: [app.authenticate], config: { rateLimit: WEBAUTHN_LIMIT },
+  }, async (req, reply) => {
+    try { return await completeAuthentication(req, req.body || {}); }
+    catch (e) {
+      req.log.warn({ err: e.message }, "webauthn verify failed");
+      return reply.code(e.expose ? 400 : 500).send({ error: e.message });
+    }
+  });
+
+  // List enrolled devices (id, name, timestamps only — no keys).
+  app.get("/webauthn/credentials", { preHandler: [app.authenticate] }, async (req) => {
+    return query(
+      `SELECT id, device_name AS deviceName,
+              created_at AS createdAt, last_used_at AS lastUsedAt
+       FROM webauthn_credentials WHERE user_id = ? ORDER BY created_at DESC`,
+      [req.user.id]
+    );
+  });
+
+  // Revoke one device. If the last one goes, we also flip
+  // biometric_lock_enabled off so the user isn't locked out of their app.
+  app.delete("/webauthn/credentials/:id", { preHandler: [app.authenticate] }, async (req, reply) => {
+    const r = await query(
+      "DELETE FROM webauthn_credentials WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    if (!r.affectedRows) return reply.code(404).send({ error: "not found" });
+    const remaining = await queryOne(
+      "SELECT COUNT(*) AS n FROM webauthn_credentials WHERE user_id = ?",
+      [req.user.id]
+    );
+    if (!Number(remaining?.n)) {
+      await query(
+        "UPDATE users SET biometric_lock_enabled = 0 WHERE id = ?",
+        [req.user.id]
+      );
+    }
+    await audit(req.user.id, "webauthn.revoke", req, { id: req.params.id });
+    return { ok: true, remaining: Number(remaining?.n) || 0 };
+  });
+
+  // Toggle biometric_lock on/off without dropping credentials.
+  app.patch("/webauthn/lock-enabled", { preHandler: [app.authenticate] }, async (req, reply) => {
+    const enabled = req.body?.enabled ? 1 : 0;
+    if (enabled) {
+      const has = await queryOne(
+        "SELECT id FROM webauthn_credentials WHERE user_id = ? LIMIT 1",
+        [req.user.id]
+      );
+      if (!has) return reply.code(400).send({ error: "Enroll a device first" });
+    }
+    await query(
+      "UPDATE users SET biometric_lock_enabled = ? WHERE id = ?",
+      [enabled, req.user.id]
+    );
+    return { ok: true, enabled: !!enabled };
+  });
+
   // ── Clear-all-my-data (D8) ────────────────────────────────────
   // Nuclear reset for a user who wants to start fresh (or stop using
   // the app but wipe their financial footprint). Deletes every
@@ -430,6 +534,7 @@ export default async function (app) {
       "plaid_items",
       "attachment_upload_log",
       "push_subscriptions",
+      "webauthn_credentials",
     ];
     for (const t of tables) {
       try { await query(`DELETE FROM ${t} WHERE user_id = ?`, [userId]); }
@@ -446,7 +551,8 @@ export default async function (app) {
            income_period = 'monthly', income_period_start = NULL, income_period_days = NULL,
            credit_period = 'monthly', credit_period_start = NULL, credit_period_days = NULL,
            last_period_start = NULL,
-           show_cashflow_forecast = 0
+           show_cashflow_forecast = 0,
+           biometric_lock_enabled = 0
          WHERE id = ?`,
         [userId]
       );

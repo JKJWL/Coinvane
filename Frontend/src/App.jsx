@@ -23,6 +23,7 @@ import { useAuth } from "./hooks/useAuth.js";
 import { DataProvider, useData } from "./context/DateContext.jsx";
 import { api } from "./api/client.js";
 import { enablePush, disablePush, resurrectPushIfEnabled, pushSupported, isIosSafariNotInstalled } from "./push.js";
+import { enrollBiometric, unlockBiometric, webauthnSupported } from "./webauthn.js";
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
 function fmtCurrency(n, currency = "USD") {
@@ -11117,8 +11118,128 @@ function PushDevicesPanel({ theme, darkMode, toast }) {
   );
 }
 
+// ── Biometric lock settings panel (D12) — mobile only ──────────────────
+// Owns the FaceID / TouchID enrollment + toggle + manage-devices UI.
+// Shown only when the browser supports WebAuthn; falls back to an
+// explanatory disabled tile when unsupported (older iOS, Firefox
+// Focus, etc). Enrolling a device implicitly enables the lock; the
+// toggle then lets the user turn it off without wiping the credential.
+function BiometricLockPanel({ theme, darkMode, toast, user, onUpdate }) {
+  const [creds, setCreds] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [lockEnabled, setLockEnabled] = useState(!!user?.biometric_lock_enabled);
+  const load = useCallback(async () => {
+    try { setCreds(await api.webauthnListCredentials()); }
+    catch { /* stay empty */ }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => { setLockEnabled(!!user?.biometric_lock_enabled); }, [user?.biometric_lock_enabled]);
+
+  const supported = webauthnSupported();
+
+  const enroll = async () => {
+    if (busy) return;
+    setBusy(true);
+    const r = await enrollBiometric();
+    setBusy(false);
+    if (r.ok) {
+      toast?.("Device enrolled — biometric lock is on", "success");
+      setLockEnabled(true);
+      await load();
+      onUpdate?.();
+    } else if (r.reason === "denied") {
+      toast?.("Cancelled", "warning");
+    } else if (r.reason === "unsupported") {
+      toast?.("Your browser doesn't support FaceID / TouchID here", "error");
+    } else {
+      toast?.("Enroll failed. Try again from the home-screen PWA.", "error");
+    }
+  };
+
+  const flipLock = async (v) => {
+    setLockEnabled(v);
+    try {
+      await api.webauthnSetLockEnabled(v);
+      toast?.(v ? "Lock enabled" : "Lock disabled", "success");
+      onUpdate?.();
+    } catch (e) {
+      setLockEnabled(!v);
+      toast?.("Failed: " + (e.message || ""), "error");
+    }
+  };
+
+  const revoke = async (id) => {
+    if (!window.confirm("Remove this device? You'll need to enroll again next time.")) return;
+    try {
+      const r = await api.webauthnDeleteCredential(id);
+      toast?.("Device removed", "success");
+      await load();
+      if (!r.remaining) {
+        setLockEnabled(false);
+        onUpdate?.();
+      }
+    } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+  };
+
+  return (
+    <div className={`${theme.surface} border ${theme.border} rounded-2xl p-4 space-y-3`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold flex items-center gap-1.5">
+            <Lock className="w-4 h-4 text-violet-500" /> Require FaceID / TouchID to open
+          </div>
+          <div className={`text-xs ${theme.textSubtle} mt-0.5`}>
+            Locks the app after 5 minutes idle or when reopened. Your login stays valid — this only gates who can see your data on this device.
+            {!supported && <> <span className="text-amber-500">Not supported by this browser.</span></>}
+          </div>
+        </div>
+        {creds.length > 0 && (
+          <Toggle checked={lockEnabled} darkMode={darkMode} onChange={flipLock} />
+        )}
+      </div>
+
+      {supported && creds.length === 0 && (
+        <button type="button" onClick={enroll} disabled={busy}
+          className="w-full py-2.5 rounded-xl bg-violet-500 text-white text-sm font-semibold disabled:opacity-60">
+          {busy ? "Enrolling…" : "Enable FaceID / TouchID"}
+        </button>
+      )}
+
+      {supported && creds.length > 0 && (
+        <div>
+          <div className={`text-[10px] font-semibold uppercase tracking-wider ${theme.textSubtle} mb-1`}>
+            Enrolled devices ({creds.length})
+          </div>
+          <div className={`border ${theme.border} rounded-xl divide-y ${theme.divide}`}>
+            {creds.map(c => (
+              <div key={c.id} className="flex items-center gap-3 px-3 py-2 text-xs">
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium truncate">{c.deviceName || "Unknown device"}</div>
+                  <div className={theme.textSubtle}>
+                    Added {new Date(c.createdAt).toLocaleDateString()}
+                    {c.lastUsedAt ? ` · last used ${new Date(c.lastUsedAt).toLocaleDateString()}` : " · never used"}
+                  </div>
+                </div>
+                <button type="button" onClick={() => revoke(c.id)}
+                  className="px-2 py-1 rounded-lg text-[11px] font-semibold text-rose-500 hover:bg-rose-500/10">
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+          <button type="button" onClick={enroll} disabled={busy}
+            className={`w-full mt-2 py-2 rounded-lg text-xs font-semibold text-violet-500 border border-dashed ${theme.border} hover:bg-violet-500/5 disabled:opacity-60`}>
+            {busy ? "Enrolling…" : "+ Add another device"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
   const toast = useToast();
+  const isDesktop = useIsDesktop();
   const fileInputRef = useRef(null);
   const rootRef = useRef(null);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -11637,6 +11758,12 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
         {form.notification_push && (
           <PushDevicesPanel theme={theme} darkMode={darkMode} toast={toast} />
         )}
+        {/* Biometric app-lock — mobile only. Rendered here inside the
+            notifications block since it's device-scoped like push. */}
+        {!isDesktop && (
+          <BiometricLockPanel theme={theme} darkMode={darkMode} toast={toast}
+            user={user} onUpdate={onUpdate} />
+        )}
         {/* No bottom Save button — the sticky bar at the top of the page is
             the single save action whenever the form is dirty. */}
       </form>
@@ -11825,6 +11952,69 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
 }
 
 // ─── Shell ────────────────────────────────────────────────────────────────────
+// ── Biometric app-lock (D12) — mobile-only PWA feature ────────────────────
+// Renders a full-screen lock over the entire app until the user unlocks
+// with FaceID / TouchID / Windows Hello. Only ever shown when the user
+// has biometric_lock_enabled=true AND has at least one enrolled
+// credential. Skipped on desktop even if enabled (shouldn't happen —
+// the settings toggle is mobile-only — but defensive).
+//
+// The JWT itself is untouched — an expired session still redirects to
+// the normal Google sign-in flow at api/client.js level. This lock is
+// purely a client-side reveal gate.
+const BIOMETRIC_UNLOCKED_KEY = "coinvane_biometric_unlocked_at";
+const BIOMETRIC_IDLE_LOCK_MIN = 5; // re-lock after 5 min hidden
+function readUnlockedAt() {
+  try { return Number(localStorage.getItem(BIOMETRIC_UNLOCKED_KEY) || 0); }
+  catch { return 0; }
+}
+function writeUnlockedAt(ts) {
+  try { localStorage.setItem(BIOMETRIC_UNLOCKED_KEY, String(ts)); } catch { /* noop */ }
+}
+function LockScreen({ theme, darkMode, onUnlocked, onLogout, userEmail }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const doUnlock = useCallback(async () => {
+    setBusy(true); setErr(null);
+    const r = await unlockBiometric();
+    setBusy(false);
+    if (r.ok) {
+      writeUnlockedAt(Date.now());
+      onUnlocked?.();
+    } else if (r.reason === "denied") {
+      setErr("Cancelled. Try again.");
+    } else {
+      setErr("Couldn't verify. Try again or sign out.");
+    }
+  }, [onUnlocked]);
+  // Deliberately do NOT auto-fire the biometric prompt on mount — the
+  // WebAuthn spec requires a user activation (tap), and browsers will
+  // reject navigator.credentials.get() called from a bare effect with
+  // NotAllowedError. The big button below is the entry point.
+  return (
+    <div className={`fixed inset-0 z-[100] flex items-center justify-center ${darkMode ? "bg-slate-950" : "bg-slate-50"} safe-pt safe-pb px-6`}>
+      <div className="w-full max-w-xs text-center space-y-6">
+        <div className="mx-auto w-16 h-16 rounded-2xl bg-violet-500 flex items-center justify-center text-white text-2xl font-bold">$</div>
+        <div>
+          <div className={`text-2xl font-bold ${theme.text}`}>Coinvane locked</div>
+          <div className={`text-sm ${theme.textSubtle} mt-1`}>
+            Signed in as <span className="font-medium">{userEmail || "you"}</span>
+          </div>
+        </div>
+        <button type="button" onClick={doUnlock} disabled={busy}
+          className="w-full py-3 rounded-2xl bg-violet-500 text-white font-semibold text-sm shadow-lg shadow-violet-500/30 disabled:opacity-60">
+          {busy ? "Verifying…" : "Unlock with FaceID / TouchID"}
+        </button>
+        {err && <div className="text-xs text-rose-500">{err}</div>}
+        <button type="button" onClick={onLogout}
+          className={`text-xs ${theme.textSubtle} hover:text-rose-500`}>
+          Sign out instead
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Admin broadcast banner (D4) ────────────────────────────────────────────
 // Desktop-only yellow slip pinned below the top header. Fetches active
 // broadcasts on mount and every 5 minutes (cheap read, keeps a maintenance
@@ -11912,6 +12102,33 @@ function Shell({ user, onLogout, refreshUser }) {
   const [prevTab, setPrevTab] = useState("dashboard");
   const [darkMode, setDarkModeLocal] = useState(!!user?.dark_mode);
   const [syncing, setSyncing] = useState(false);
+  const isDesktop = useIsDesktop();
+  // Biometric lock — mobile only, activates on cold start when the
+  // user has biometric_lock_enabled + at least one enrolled credential
+  // + WebAuthn is supported by the browser. Desktop skips entirely
+  // (matches the settings toggle's mobile-only visibility).
+  const [locked, setLocked] = useState(() => {
+    if (isDesktop || !webauthnSupported()) return false;
+    if (!user?.biometric_lock_enabled) return false;
+    // Cold-start lock: never unlocked, or unlocked > idle-lock window ago.
+    const last = readUnlockedAt();
+    return !last || (Date.now() - last) >= BIOMETRIC_IDLE_LOCK_MIN * 60 * 1000;
+  });
+  useEffect(() => {
+    if (isDesktop || !webauthnSupported() || !user?.biometric_lock_enabled) return;
+    // Re-lock when the user comes back to a tab that's been hidden
+    // for at least BIOMETRIC_IDLE_LOCK_MIN minutes. Applications get
+    // suspended in iOS PWAs, so this is the primary re-lock trigger.
+    const onVis = () => {
+      if (document.visibilityState !== "visible") return;
+      const last = readUnlockedAt();
+      if (!last || (Date.now() - last) >= BIOMETRIC_IDLE_LOCK_MIN * 60 * 1000) {
+        setLocked(true);
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [isDesktop, user?.biometric_lock_enabled]);
   const toast = useToast();
   const { refreshAll, loading, summary, accounts, assets } = useData();
   const theme = darkMode ? DARK : LIGHT;
@@ -12070,6 +12287,17 @@ function Shell({ user, onLogout, refreshUser }) {
   return (
     <div className={`min-h-screen ${theme.bg} ${theme.text} font-sans transition-colors`}
       style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif' }}>
+
+      {/* Biometric lock overlays the entire app when active. Renders
+          at the very top of Shell so nothing behind it can be tapped.
+          Signing out from the lock screen falls back to the standard
+          logout flow (drops the JWT + shows Google sign-in). */}
+      {locked && (
+        <LockScreen theme={theme} darkMode={darkMode}
+          userEmail={user?.email}
+          onUnlocked={() => setLocked(false)}
+          onLogout={onLogout} />
+      )}
 
       {/* ── Desktop nav ── */}
       <nav className={`hidden lg:block ${theme.surface} border-b ${theme.border} sticky top-0 z-20`}>

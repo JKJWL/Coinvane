@@ -28,6 +28,7 @@
     "pdfkit": "^0.15.0",
     "geoip-lite": "^1.4.10",
     "papaparse": "^5.4.1",
-    "web-push": "^3.6.7"
+    "web-push": "^3.6.7",
+    "@simplewebauthn/server": "^11.0.0"
   }
 }

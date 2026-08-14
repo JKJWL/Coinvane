@@ -629,6 +629,32 @@ const SCHEMA = [
   // so upgrading users don't get spammed by an inline hook change.
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS push_frequency VARCHAR(16) DEFAULT 'daily'`,
 
+  // Biometric app-lock (D12). When enabled AND the user has at least one
+  // enrolled webauthn credential, the PWA shows a lock screen over the app
+  // until FaceID/TouchID succeeds. Doesn't gate the JWT itself — an
+  // expired session still falls back to Google SSO. Mobile-only UX
+  // (frontend hides the setting on desktop).
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS biometric_lock_enabled BOOLEAN DEFAULT FALSE`,
+
+  // One row per (user, device) WebAuthn credential. credential_id is
+  // the platform-authenticator's opaque id (up to 1023 bytes per spec,
+  // but iOS + Android produce ~64 bytes; 512 gives generous headroom).
+  // public_key is CBOR-encoded COSE key material.
+  `CREATE TABLE IF NOT EXISTS webauthn_credentials (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    credential_id VARBINARY(512) NOT NULL,
+    public_key BLOB NOT NULL,
+    counter INT UNSIGNED DEFAULT 0,
+    transports VARCHAR(128) NULL,
+    device_name VARCHAR(128) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TIMESTAMP NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY uq_cred (credential_id(255)),
+    INDEX idx_user (user_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
   // Optional grouping on categories (Groceries + Restaurants → "Food").
   // Group is display-only: budgets, rules, and by-category totals still
   // key off the leaf category name. Nullable so existing rows are
