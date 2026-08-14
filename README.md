@@ -80,7 +80,9 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 - **Suggested categories** — new-budget form suggests categories you spend on but haven't budgeted yet.
 - **Income tracker** — pinned at top, no limit; sums positive transactions over the master period.
 - **Credit usage tracker** — only appears when a credit account is linked; per-card breakdown, also master-period bound.
-- **Zero-based-budget summary** — dual-color bar at the bottom showing income vs allocated, with "X left to budget" indicator.
+- **Zero-based-budget summary** — three stacked bars at the bottom: current-income allocation, expected-income allocation (when scheduled), and actual budget usage (spent ÷ basis). "X left to budget" indicator; goes rose only when you've over-allocated.
+- **Expected income + recurring paychecks** — flag any scheduled income transaction as "Budget Expected Income" and it feeds a second bar in the budgets tab. Scheduled income can also loop on a cadence (weekly / bi-weekly / semi-monthly / monthly / yearly / every N days); loops keep the next ~3 months of occurrences populated automatically so cashflow projections stay accurate. The zero-based slider bases itself on expected income when scheduled, otherwise falls back to current income.
+- **Transaction type rules** — same "apply to all from this merchant" pattern as category rules, but for the income/expense/transfer classification. Fixes merchants Plaid consistently mis-tags (e.g. an ATM cashback that keeps coming back as TRANSFER_OUT).
 - **Themed confirmations** — destructive actions (delete budget, etc.) prompt with an in-app modal, not the native browser dialog.
 
 ### Goals & loans
@@ -109,15 +111,21 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 - **Desktop KPI fullscreen** — click any of the three KPI cards (Cashflow / Spending by Category / Net Worth) on desktop to center-fullscreen it. Spending by Category card has its own filters + sort options matching the Net Worth chart.
 
 ### Investments
-- **Holdings, gains/losses** — brokerage syncing via Plaid
-- **Lot tracking + cost basis** — each holding is expandable into per-purchase lots (acquired date, quantity, cost-per-share). Sell any lot with a quantity + price; the app records the realized gain, decrements the lot, and flags **wash sales** when the same security was purchased within ±30 days of the loss. Realized YTD is exposed on its own KPI card for Schedule D prep.
+- **Holdings, gains/losses** — brokerage syncing via Plaid. Cost-basis handling is Plaid-source-agnostic: NULL basis rows fall back to open-lot basis, and Plaid's inconsistent per-share vs total semantics (Fidelity et al) are normalized at read time so gain/loss doesn't misread by an order of magnitude.
+- **Lot tracking + cost basis** — each holding is expandable into per-purchase lots (acquired date, quantity, cost-per-share). Sell any lot with a quantity + price; the app records the realized gain, decrements the lot, and flags **wash sales** when the same security was purchased within ±30 days of the loss. Disallowed loss is proportional to the overlapping share count (sell 100 at a loss, buy back 60 → 60% disallowed, not all of it). Realized + disallowed YTD are exposed on their own KPI card for Schedule D prep.
+- **Manual lots roll into the portfolio summary** — pure-manual portfolios (no Plaid brokerage) still track total value + gain via the same UI.
+- **Fresh-purchase phantom loss fixed** — buying at a price the security hasn't yet reported a fresh close for shows "—" instead of a spurious loss equal to the whole basis.
 - **Dividend + interest auto-categorization** — Plaid's `INCOME_DIVIDENDS` / `INCOME_INTEREST_EARNED` categories (plus merchant patterns like `dividend`, `intrst`, `coupon`) are recognized during sync and labelled **Interest & Dividends**. Coinvane ensures a matching Schedule B category exists on your account so the year-end tax PDF picks it up automatically.
 
 ### Notifications & per-user settings
-- **Per-type toggles** — large transactions, income received ("Congrats You Got Paid!"), approaching budget limit, budget exceeded, goal milestones, bill reminders, cashflow low-balance. Each independently on/offable.
-- **Configurable thresholds** — large-transaction $ amount, income $ amount, budget-warning percentage, bill-reminder days-before, cashflow minimum-balance are all editable in Settings.
+- **Per-type toggles** — large transactions, income received ("Congrats You Got Paid!"), approaching budget limit, budget exceeded, goal milestones, bill reminders, cashflow low-balance, overall budget usage %. Each independently on/offable.
+- **Configurable thresholds** — large-transaction $ amount, income $ amount, budget-warning percentage, bill-reminder days-before, cashflow minimum-balance, budget-usage % are all editable in Settings.
 - **Email frequency** — instant / daily / weekly (with a weekly send-day picker). Daily and instant are functionally identical until the engine runs more than once a day.
+- **Web Push (OS-level notifications)** — real lock-screen / notification-tray alerts on desktop, Android, and iOS PWAs. Enable per-device from Settings; per-device revoke via the "Enrolled devices" list. Push frequency is its own instant / daily / weekly setting — instant fires the moment a triggering event lands via sync, daily/weekly ride the same cron as email. Requires VAPID keys in `.env` — see [Web Push setup](#web-push-notifications).
+- **Biometric app-lock (mobile only)** — require FaceID / TouchID / fingerprint / device passcode to reveal the app on your phone. Doesn't touch your JWT — an expired session still falls back to Google SSO. Locks on every fresh open + after 5 min of being backgrounded. Disabling the lock or removing an enrolled device requires a fresh biometric verification. See [Biometric app-lock](#biometric-app-lock) for platform notes.
+- **Admin broadcast banner** — instance-wide message admins can post that shows up as a dismissible yellow / amber / rose slip on every user's desktop app (info / warning / critical severity). Useful for maintenance windows or pushed-update notices.
 - **Privacy mode** — blurs dollar amounts on the dominant surfaces (hero net worth, KPI cards, account balances, transaction amounts). Hover/focus reveals.
+- **Clear all data** — nuclear reset in Settings → Danger zone. Wipes every transaction / account / budget / goal / note / attachment / Plaid item / push subscription / biometric credential tied to your login, and revokes every Plaid connection. The users row itself stays so you can start fresh without re-going-through-the-allowlist. Guarded by a typed-email confirmation.
 - **Sticky save bar** — Settings and the Admin panel share one save UX: a sticky top bar appears only when something is dirty, plus a floating "Save Changes?" ribbon on the right edge once you've scrolled past it.
 
 ### Admin (Owner / Admin roles)
@@ -129,10 +137,12 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 - **Notification cleanup** — bulk-delete in-app notifications older than N days. Audit-logged as a major event.
 - **Audit log viewer** — last 100 entries with IP + offline GeoIP location. Routine entries auto-prune at 48 h; major entries (role changes, user deletes, bulk wipes, settings edits) survive 7 days and render with a red left border.
 - **Per-user test email** — owner-only Mail icon next to each Members row sends a sample digest (with a "this is a test" banner) to verify SMTP delivery to that user without logging in as them.
+- **Broadcast composer + history** — post an instance-wide desktop banner (info / warning / critical) with an optional expiry timestamp; the history list shows past broadcasts + who published each and lets you archive any active one. Rate-limited 10/min so a runaway console can't spam every user.
+- **Plaid account-type counts** — aggregate view (no user-identifying data) of investment / cash / credit / loan Plaid-linked accounts across every user + total item count. Investment accounts are broken out because they cost more in Plaid product fees, so operators charging a flat member fee to break even can size the number correctly. Manual accounts aren't counted.
 
 ### Assets & valuables
 - **Non-account holdings** — vehicles, boats, jewelry, art, collectibles, property. Track acquired value, current value, and (optionally) a depreciation curve. All roll into net worth alongside your bank accounts and appear in the sidebar under an Assets group.
-- **Three depreciation methods** — `none` (you maintain the value manually), `straight-line` (drops evenly from acquired to salvage over N years), `declining-balance` (X% of remaining value each year). "Refresh depreciation" snaps the current value to today's projected number in one click.
+- **Four value curves** — `none` (you maintain the value manually), `straight-line` (drops evenly from acquired to salvage over N years), `declining-balance` (X% of remaining value each year), `appreciating` (X% growth per year — real estate, art). "Refresh depreciation" snaps the current value to today's projected number in one click, and a **nightly worker cron** runs the same refresh for every user's non-manual asset so the Net Worth chart drifts on its own without anyone touching it.
 - **Damage / repair log** — record dents, hail, scratches, or repairs against any asset. Damage rows subtract from current value; repairs add value back. Every event is kept and reversible. The refresh-depreciation button respects the log so a projection re-snap never erases a real-world dent.
 - **Loan link** — pair a car loan (or any loan-type account) with the asset it backs. The asset row shows the linked account, remaining balance, and per-asset net position (asset value − amount owed). Net-worth math is unchanged (both sides were already counted); this makes the relationship visible. Linkable from both directions — creating a loan account offers a "backing asset" picker, and the asset form offers a "loan on this asset" picker.
 
@@ -175,6 +185,73 @@ If sunriise is not installed and you upload an encrypted `.mny`, the import retu
 
 **What's imported:** transactions with date, merchant, category, amount, note, and check number. Investment records (`!Type:Invst`) are skipped — those belong in the [lot tracker](#investments), not the transaction ledger. Money's split lines (S / E / $ codes) fan out into individual transaction rows; any residual amount stays on the parent.
 
+### Web Push notifications
+
+Coinvane can push OS-level alerts to a user's lock screen or notification tray via the Web Push standard — Chrome, Edge, Firefox, Safari (iOS 16.4+ as an installed PWA only), Android. Cost: free; the push relays through Google FCM / Apple APNs / Mozilla autopush transparently, no accounts.
+
+**Setup**:
+
+1. Generate a VAPID key pair once, on the VPS:
+
+   ```bash
+   docker run --rm node:20-alpine npx --yes web-push generate-vapid-keys
+   ```
+
+   Copy the two printed strings into `.env`:
+
+   ```
+   VAPID_PUBLIC_KEY=BJx...
+   VAPID_PRIVATE_KEY=A5v...
+   VAPID_SUBJECT=https://your-domain.com
+   ```
+
+   `VAPID_SUBJECT` is an **instance-wide operator contact** used ONLY by push services if they need to reach you about abuse or delivery. Users never see it. Use `mailto:you@your-domain.com` or your app URL. Do NOT use a random user's personal email on a multi-user instance.
+
+2. Restart backend + worker so they pick up the env:
+
+   ```bash
+   docker compose up -d --force-recreate backend worker
+   ```
+
+3. Users enable per-device from **Settings → Push notifications**. On iOS, the site must first be installed as a home-screen PWA (Share → Add to Home Screen) — Apple only delivers Web Push to installed PWAs.
+
+**Firewall / DNS requirements** — this is easy to miss:
+
+- **Your server** needs outbound HTTPS to `fcm.googleapis.com`, `updates.push.services.mozilla.com`, `web.push.apple.com`, and `*.notify.windows.com`. Blocked outbound = silent failure in worker logs.
+- **Every user's own network** must reach the same hosts — `pushManager.subscribe()` calls them from the browser. Pihole, NextDNS, AdGuard, or corporate proxies that block `fcm.googleapis.com` as "Google telemetry" produce a `AbortError: Registration failed - push service error` when the user tries to enable push. Allowlist those hosts on your DNS filter if you run one.
+- If any of the three VAPID vars is blank, push is silently disabled — the rest of the app runs normally, users just see "not configured on the server" if they try to enable push in Settings.
+
+**Cadence**: each user picks instant / daily / weekly independently (in Settings → Push frequency). Instant pushes fire the moment a triggering Plaid transaction lands (large-txn or income), daily/weekly batch through the 8 AM cron.
+
+**Manage devices**: users can revoke any enrolled browser individually from the Settings panel; a revoked device silently stops receiving push. Removing a device does NOT log the user out — it just stops push to that browser.
+
+### Biometric app-lock
+
+Optional per-device screen lock on top of Google SSO. When enabled, the app requires FaceID / TouchID / fingerprint / Windows Hello (whichever the OS offers) to reveal data. The JWT is untouched — an expired session still falls back to Google SSO, so no one gets locked out of their own login.
+
+**Platform support**:
+
+| Platform | Prompt shows | Fallback if biometric fails |
+|---|---|---|
+| iPhone / iPad (16.4+, installed as PWA) | FaceID or TouchID | Device passcode |
+| Android Chrome | Fingerprint / face unlock | Screen lock (PIN/pattern/password) |
+| macOS Safari / Chrome | Touch ID | System password |
+| Windows Edge / Chrome | Windows Hello | PIN |
+
+The OS picks the mechanism. Coinvane calls WebAuthn with `userVerification: required` so the OS is obligated to verify the user somehow — biometric OR the platform's passcode fallback. No extra config needed for the fallback; it's built into every supported platform.
+
+**Setup**: users toggle "Require ... to open" in Settings (only shown on mobile). First enable triggers OS enrollment → subsequent app opens present the lock screen. **iOS specifically** requires the site to be installed as a home-screen PWA first — Safari-tab visits don't get the FaceID prompt.
+
+**Behaviour**:
+
+- Fresh app open / hard-refresh / PWA relaunch → always locks
+- In-session backgrounding → locks only after 5 minutes hidden
+- **Disabling the lock** or **removing an enrolled device** requires a fresh biometric verification (prevents someone with an already-unlocked app from just flipping the toggle off)
+
+**Nothing to configure server-side** — no VAPID equivalent. The credential is bound to your app's origin (the exact hostname), so migrating to a new domain would require every user to re-enroll on every device. Uses `JWT_SECRET` (already set) to sign the ephemeral challenge tokens; no new env vars.
+
+**Threat model**: this is a **reveal gate** against shoulder-surfers and someone grabbing an unlocked phone, not a security perimeter against a compromised device. Someone with the JWT could still hit `/api/*` directly. Same model as Bitwarden / 1Password.
+
 ### Misc
 - **Notes** — free-form notes, content encrypted at rest
 - **Mobile PWA** — install to iPhone home screen, full-screen, frosted iOS-style nav, Dynamic Island safe
@@ -197,8 +274,8 @@ If sunriise is not installed and you upload an encrypted `.mny`, the import retu
 
 | Layer       | Tech                                                   |
 | ----------- | ------------------------------------------------------ |
-| Backend     | Node.js 20, Fastify 5, MariaDB 11, BullMQ + Redis, Plaid SDK v27, Nodemailer 8, `@fastify/multipart` for receipt uploads |
-| Frontend    | React 18, Vite 6, Tailwind 3, Framer Motion 11, Recharts 2 |
+| Backend     | Node.js 20, Fastify 5, MariaDB 11, BullMQ + Redis, Plaid SDK v27, Nodemailer 8, `@fastify/multipart` for receipt uploads, `web-push` for OS notifications, `@simplewebauthn/server` for biometric app-lock |
+| Frontend    | React 18, Vite 6, Tailwind 3, Framer Motion 11, Recharts 2, `@simplewebauthn/browser` |
 | Server-side rendering | pdfkit (PDF export), papaparse (CSV import), geoip-lite (offline IP→location for audit log) |
 | Auth        | Google Sign-In (ID-token verification, no client secret needed) |
 | Encryption  | AES-256-GCM for Plaid access tokens + note content     |
@@ -309,6 +386,17 @@ sudo ufw enable
 If your VPS has its own cloud firewall (Linode, AWS, DigitalOcean, etc.), **make
 sure to also open 80 and 443 there**. UFW won't help if the cloud firewall blocks
 traffic first.
+
+**Outbound**: with UFW's default `allow outgoing` (and no cloud-firewall outbound
+rules), you're set — Coinvane's outbound needs are all standard HTTPS (443) plus
+DNS (53) and NTP (123). If you've hardened outbound to a specific allowlist,
+open at minimum: TCP 443 (Plaid, Google, Web Push, Docker Hub, npm), TCP 587
+(SMTP submission, only when `EMAIL_CONFIG=enabled`), UDP+TCP 53 (DNS), UDP 123
+(NTP — token expiry math + Let's Encrypt renewal both break if clock drifts).
+Web Push in particular needs outbound to `fcm.googleapis.com`,
+`updates.push.services.mozilla.com`, `web.push.apple.com`, and
+`*.notify.windows.com` — blocked outbound = silent no-op in worker logs and
+no notifications ever land.
 
 ### 4. fail2ban + auto-updates
 
@@ -663,6 +751,8 @@ coinvane/
 │   │   ├── mailer.js              # SMTP / Nodemailer + notification-digest template
 │   │   ├── quicken-import.js      # QIF / OFX / QFX parsers with MS Money split-record support
 │   │   ├── mny-import.js          # Native .mny reader (mdbtools + optional sunriise unlock)
+│   │   ├── push.js                # Web Push helper (VAPID + 410-cleanup + shouldPushNow cadence gate)
+│   │   ├── webauthn.js            # Biometric app-lock ceremonies (register + authenticate)
 │   │   └── routes/
 │   │       ├── auth.js            # Google SSO, /me, members, role updates, test-email
 │   │       ├── accounts.js
@@ -689,8 +779,11 @@ coinvane/
 │   │   ├── main.jsx
 │   │   ├── index.css           # Tailwind + iOS PWA reset + privacy-mode blur rule
 │   │   ├── api/client.js       # Thin fetch wrapper + authed file-download helper
+│   │   ├── push.js             # Service-worker registration + enroll/unenroll for Web Push
+│   │   ├── webauthn.js         # Enroll / unlock helpers wrapping @simplewebauthn/browser
 │   │   ├── hooks/useAuth.js
 │   │   └── context/DateContext.jsx  # Global data store
+│   ├── public/sw.js               # Service worker (push handler + notification click routing)
 │   ├── public/favicon.svg      # Single source of truth for every PWA icon
 │   ├── public/manifest.webmanifest
 │   ├── scripts/generate-icons.mjs   # `prebuild` step: SVG → 4 PNG icons via sharp
@@ -728,6 +821,8 @@ coinvane/
 | `SYNC_INTERVAL_MINUTES`   | Optional | Initial polling cadence for Plaid; default 60. Owners can override this live from the Admin panel (the DB value wins). Webhook-driven syncs fire regardless. |
 | `EMAIL_CONFIG`            | Optional | `disabled` (default) or `enabled`. Master kill-switch for outbound email. UI greys out email-notification settings when disabled. |
 | `SMTP_*`                  | Optional | SMTP credentials, only consulted when `EMAIL_CONFIG=enabled`. Leave `SMTP_HOST` blank to log emails to console for testing. |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Optional | Web Push key pair. Generate once with `docker run --rm node:20-alpine npx --yes web-push generate-vapid-keys`. Blank = push silently disabled; rest of app is unaffected. See [Web Push notifications](#web-push-notifications). |
+| `VAPID_SUBJECT`           | Optional | Instance-wide operator contact push services use for abuse reports. `mailto:` URL or `https://` URL. Don't put a random user's personal email here on multi-user instances. |
 
 See `.env.example` for the full annotated template, or run `./bootstrap.sh` to
 generate one with strong randoms.
