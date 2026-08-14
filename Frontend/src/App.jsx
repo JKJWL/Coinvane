@@ -3418,8 +3418,11 @@ function TransactionsTab({ theme, darkMode, toast }) {
         await api.updateTransaction(detail.id, { category: catEdit.newCategory });
         toast?.("Category updated", "success");
       }
+      // Patch the open sheet in place instead of closing — the user was
+      // in the middle of editing and probably wants to change other things
+      // (flag, note, receipt) without re-opening.
+      setDetail({ ...detail, category: catEdit.newCategory });
       setCatEdit(null);
-      setDetail(null);
       refreshAll();
     } catch (e) {
       toast?.("Failed: " + (e.message || ""), "error");
@@ -4244,7 +4247,10 @@ function TransactionsTab({ theme, darkMode, toast }) {
                       });
                     }
                     toast?.(val.trim() ? `Renamed to "${val.trim()}"` : "Rename cleared", "success");
-                    setDetail(null);
+                    // Update the sheet's copy of the merchant display name
+                    // in place so the user can keep editing. The register
+                    // itself updates via refreshAll.
+                    setDetail({ ...detail, merchantDisplayName: val.trim() || null });
                     refreshAll();
                   } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
                 }}
@@ -4344,7 +4350,10 @@ function TransactionsTab({ theme, darkMode, toast }) {
                               toast?.("Receipt deleted", "success");
                               if (receiptState.url) URL.revokeObjectURL(receiptState.url);
                               setReceiptState({ url: null, loading: false, error: null, uploading: false });
-                              setDetail(null);
+                              // Keep the sheet open — the user often
+                              // wants to re-upload a corrected receipt
+                              // right after deleting a bad one.
+                              setDetail({ ...detail, hasAttachment: false });
                               refreshAll();
                             } catch (e) {
                               toast?.("Failed: " + (e.message || ""), "error");
@@ -4530,7 +4539,10 @@ function TransactionsTab({ theme, darkMode, toast }) {
                                   await api.splitTransaction(detail.id, splits);
                                   toast?.(`Split into ${splits.length} rows`, "success");
                                   setSplitDraft(null);
-                                  setDetail(null);
+                                  // Leave the detail sheet open — the
+                                  // parent row still exists as a split
+                                  // container; user might want to attach
+                                  // a receipt or set a flag on it.
                                   refreshAll();
                                 } catch (e) {
                                   toast?.("Failed: " + (e.message || ""), "error");
@@ -4597,7 +4609,21 @@ function TransactionsTab({ theme, darkMode, toast }) {
                       await api.classifyTransaction(detail.id, kind);
                       toast?.(`Marked as ${kind}`, "success");
                     }
-                    setDetail(null);
+                    // Patch the open sheet's local view so the buttons
+                    // reflect the new state without a re-open. Amount sign
+                    // flips for income/expense to match the backend, which
+                    // rewrites the sign on the row; is_transfer flips
+                    // between transfer and non-transfer.
+                    const nextAmount =
+                      kind === "income"   ? Math.abs(Number(detail.amount)) :
+                      kind === "expense"  ? -Math.abs(Number(detail.amount)) :
+                                            Number(detail.amount);
+                    setDetail({
+                      ...detail,
+                      amount: nextAmount,
+                      isTransfer: kind === "transfer" ? 1 : 0,
+                      transferGroupId: kind === "transfer" ? detail.transferGroupId : null,
+                    });
                     refreshAll();
                   } catch (e) {
                     toast?.("Failed: " + (e.message || ""), "error");
@@ -4693,7 +4719,10 @@ function TransactionsTab({ theme, darkMode, toast }) {
                       try {
                         await api.setTransactionScheduled(detail.id, false);
                         toast?.("Marked present", "success");
-                        setDetail(null);
+                        // Sheet stays open with the scheduled flag flipped
+                        // so the user can also tweak flag / note / receipt
+                        // right after adopting.
+                        setDetail({ ...detail, isScheduled: false });
                         refreshAll();
                       } catch (e) {
                         toast?.("Failed: " + (e.message || ""), "error");
@@ -4799,7 +4828,13 @@ function TransactionsTab({ theme, darkMode, toast }) {
                       await api.voidTransaction(detail.id);
                       toast?.("Transaction voided", "success");
                     }
-                    setDetail(null);
+                    // Toggle the local void state and stay open — the
+                    // user often wants to add a note explaining the void
+                    // right after flipping it.
+                    setDetail({
+                      ...detail,
+                      voidedAt: detail.voidedAt ? null : new Date().toISOString(),
+                    });
                     refreshAll();
                   } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
                 }}
