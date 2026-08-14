@@ -778,12 +778,17 @@ const SCHEMA = [
     price_per_share DECIMAL(14,4) NOT NULL,
     realized_gain DECIMAL(14,4) NOT NULL,
     is_wash_sale TINYINT DEFAULT 0,
+    disallowed_loss DECIMAL(14,4) DEFAULT 0,
     notes VARCHAR(255) NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (lot_id) REFERENCES holding_lots(id) ON DELETE CASCADE,
     INDEX idx_user_sec_date (user_id, security_id, disposal_date)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Wash-sale disallowed-loss amount (portion of the realized loss disallowed
+  // by matching purchases in the ±30 day window). Older rows get 0.
+  `ALTER TABLE lot_disposals ADD COLUMN IF NOT EXISTS disallowed_loss DECIMAL(14,4) DEFAULT 0`,
 
   `CREATE TABLE IF NOT EXISTS bill_cycles (
     id INT AUTO_INCREMENT PRIMARY KEY,

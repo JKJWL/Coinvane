@@ -8858,7 +8858,12 @@ function InvestmentsTab({ theme, darkMode, toast }) {
             No holdings — connect a brokerage account via Plaid.
           </div>
         ) : holdings.map((h, i) => {
-          const gain = Number(h.value) - (Number(h.costBasis) * Number(h.quantity) || 0);
+          // Backend now returns `gain` + `basisKnown` with the per-share
+          // vs total cost-basis heuristic already applied, and falls back
+          // to manual-lot basis when Plaid didn't report one. Show "—"
+          // instead of a misleading number when nothing's known.
+          const gain = Number(h.gain) || 0;
+          const basisKnown = h.basisKnown !== false;
           const isOpen = expanded === h.securityId;
           return (
             <div key={h.id} className={`${i < holdings.length - 1 ? `border-b ${theme.border}` : ""}`}>
@@ -8873,9 +8878,15 @@ function InvestmentsTab({ theme, darkMode, toast }) {
                 </div>
                 <div className="text-right">
                   <div className="font-semibold text-sm private-amount" tabIndex={0}>{fmt(h.value)}</div>
-                  <div className={`text-xs private-amount ${gain >= 0 ? "text-emerald-500" : "text-rose-500"}`} tabIndex={0}>
-                    {gain >= 0 ? "+" : ""}{fmt(gain)}
-                  </div>
+                  {basisKnown ? (
+                    <div className={`text-xs private-amount ${gain >= 0 ? "text-emerald-500" : "text-rose-500"}`} tabIndex={0}>
+                      {gain >= 0 ? "+" : ""}{fmt(gain)}
+                    </div>
+                  ) : (
+                    <div className={`text-xs ${theme.textSubtle}`} title="Cost basis not reported by your brokerage. Add a manual lot to track gain/loss.">
+                      basis —
+                    </div>
+                  )}
                 </div>
               </button>
               <AnimatePresence initial={false}>
@@ -8953,9 +8964,12 @@ function LotsPanel({ securityId, accountId, theme, darkMode, toast }) {
           </div>
           <div className={`divide-y ${theme.divide}`}>
             {openLots.map(l => {
-              const cost = Number(l.costBasisPerShare) * Number(l.remainingQuantity);
-              const value = data.security.price * Number(l.remainingQuantity);
-              const gain = value - cost;
+              // Backend now sets unrealizedKnown=false when either the
+              // security has no close_price or the lot has no basis, so
+              // we can render "—" instead of showing a spurious loss
+              // right after buying (before Plaid reports a fresh price).
+              const gain = Number(l.unrealizedGain) || 0;
+              const known = l.unrealizedKnown !== false;
               return (
                 <div key={l.id} className="flex items-center gap-3 px-3 py-2 text-xs">
                   <div className="flex-1 min-w-0">
@@ -8964,9 +8978,13 @@ function LotsPanel({ securityId, accountId, theme, darkMode, toast }) {
                       <span className="private-amount" tabIndex={0}>{Number(l.remainingQuantity).toFixed(4)}</span> @ <span className="private-amount" tabIndex={0}>{fmt(l.costBasisPerShare)}</span>
                     </div>
                   </div>
-                  <div className={`text-right ${gain >= 0 ? "text-emerald-500" : "text-rose-500"} font-semibold private-amount`} tabIndex={0}>
-                    {gain >= 0 ? "+" : ""}{fmt(gain)}
-                  </div>
+                  {known ? (
+                    <div className={`text-right ${gain >= 0 ? "text-emerald-500" : "text-rose-500"} font-semibold private-amount`} tabIndex={0}>
+                      {gain >= 0 ? "+" : ""}{fmt(gain)}
+                    </div>
+                  ) : (
+                    <div className={`text-right text-xs ${theme.textSubtle}`} title="No fresh price for this security yet.">—</div>
+                  )}
                   <button type="button" onClick={() => setDisposing(l)}
                     className="px-2 py-1 rounded-lg text-[10px] font-semibold border border-violet-500 text-violet-500 hover:bg-violet-500/10">
                     Sell
@@ -8999,7 +9017,15 @@ function LotsPanel({ securityId, accountId, theme, darkMode, toast }) {
                   <div className="font-medium">{d.disposalDate}</div>
                   <div className={theme.textSubtle}>
                     <span className="private-amount" tabIndex={0}>{Number(d.quantity).toFixed(4)}</span> @ <span className="private-amount" tabIndex={0}>{fmt(d.pricePerShare)}</span>
-                    {d.washSale ? <span className="ml-2 text-rose-500 font-semibold">WASH SALE</span> : null}
+                    {d.washSale ? (
+                      <span className="ml-2 text-rose-500 font-semibold" title={
+                        Number(d.disallowedLoss) > 0
+                          ? `${fmt(d.disallowedLoss)} of loss disallowed by matching purchase in ±30 day window`
+                          : "Matching purchase within ±30 days — some or all of this loss is disallowed"
+                      }>
+                        WASH SALE{Number(d.disallowedLoss) > 0 ? ` · ${fmt(d.disallowedLoss)}` : ""}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
                 <div className={`text-right font-semibold ${Number(d.realizedGain) >= 0 ? "text-emerald-500" : "text-rose-500"} private-amount`} tabIndex={0}>
