@@ -6458,10 +6458,6 @@ function ZeroBudgetSummary({ zb, theme, darkMode }) {
   const basis = expected > 0 ? expected : income;
   const remaining = basis - allocated;
   const balanced = Math.abs(remaining) < 1;
-  const scaleMax = Math.max(income, expected, allocated, 1);
-  const incomeW = Math.min(100, (income / scaleMax) * 100);
-  const expectedW = Math.min(100, (expected / scaleMax) * 100);
-  const allocW  = Math.min(100, (allocated / scaleMax) * 100);
   const usagePct = basis > 0 ? Math.min(200, (spent / basis) * 100) : 0;
   const usageOver = usagePct > 100;
 
@@ -6486,43 +6482,61 @@ function ZeroBudgetSummary({ zb, theme, darkMode }) {
         )}
       </div>
 
-      {/* Current income bar — allocated red segment sits on top */}
-      <div>
-        <div className="flex items-center justify-between text-[11px] mb-1">
-          <div className="flex items-center gap-1 text-emerald-500 font-semibold">
-            <span className="w-2 h-2 rounded-full bg-emerald-500" /> Current income
-          </div>
-          <div className="private-amount" tabIndex={0}>{fmt(income)}</div>
-        </div>
-        <div className={`relative h-2 rounded-full overflow-hidden ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
-          <motion.div initial={{ width: 0 }} animate={{ width: `${incomeW}%` }}
-            transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
-            className="absolute inset-y-0 left-0 bg-emerald-500" />
-          <motion.div initial={{ width: 0 }} animate={{ width: `${Math.min(incomeW, allocW)}%` }}
-            transition={{ duration: 0.7, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
-            className="absolute inset-y-0 left-0 bg-rose-500 opacity-70" />
-        </div>
-      </div>
-
-      {/* Expected income bar — only when the user scheduled anything */}
-      {expected > 0 && (
-        <div>
-          <div className="flex items-center justify-between text-[11px] mb-1">
-            <div className="flex items-center gap-1 text-violet-500 font-semibold">
-              <span className="w-2 h-2 rounded-full bg-violet-500" /> Expected income
+      {/* Allocation bar — how much of your current income is planned
+          for. The bar fills up as you allocate. Emerald when the
+          allocation lands at ≤ income (the ZBB ideal — "fully
+          allocated" reads GREEN, not red). Rose only when you've
+          allocated MORE than you actually earn. */}
+      {(() => {
+        const overIncome = income > 0 && allocated > income;
+        const incomeFillPct = income > 0
+          ? Math.min(100, (allocated / income) * 100)
+          : 0;
+        return (
+          <div>
+            <div className="flex items-center justify-between text-[11px] mb-1">
+              <div className="flex items-center gap-1 font-semibold text-emerald-500">
+                <span className="w-2 h-2 rounded-full bg-emerald-500" /> Current income
+              </div>
+              <div className="private-amount" tabIndex={0}>
+                {fmt(allocated)} <span className={theme.textSubtle}>/ {fmt(income)}</span>
+              </div>
             </div>
-            <div className="private-amount" tabIndex={0}>{fmt(expected)}</div>
+            <div className={`relative h-2 rounded-full overflow-hidden ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+              <motion.div initial={{ width: 0 }} animate={{ width: `${incomeFillPct}%` }}
+                transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+                className={`absolute inset-y-0 left-0 ${overIncome ? "bg-rose-500" : "bg-emerald-500"}`} />
+            </div>
           </div>
-          <div className={`relative h-2 rounded-full overflow-hidden ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
-            <motion.div initial={{ width: 0 }} animate={{ width: `${expectedW}%` }}
-              transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
-              className="absolute inset-y-0 left-0 bg-violet-500" />
-            <motion.div initial={{ width: 0 }} animate={{ width: `${Math.min(expectedW, allocW)}%` }}
-              transition={{ duration: 0.7, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
-              className="absolute inset-y-0 left-0 bg-rose-500 opacity-70" />
+        );
+      })()}
+
+      {/* Expected income bar — only when the user scheduled anything.
+          Same fill semantics: violet when allocated <= expected (fine),
+          rose when the allocation overshoots expected. */}
+      {expected > 0 && (() => {
+        const overExpected = allocated > expected;
+        const expectedFillPct = expected > 0
+          ? Math.min(100, (allocated / expected) * 100)
+          : 0;
+        return (
+          <div>
+            <div className="flex items-center justify-between text-[11px] mb-1">
+              <div className="flex items-center gap-1 font-semibold text-violet-500">
+                <span className="w-2 h-2 rounded-full bg-violet-500" /> Expected income
+              </div>
+              <div className="private-amount" tabIndex={0}>
+                {fmt(allocated)} <span className={theme.textSubtle}>/ {fmt(expected)}</span>
+              </div>
+            </div>
+            <div className={`relative h-2 rounded-full overflow-hidden ${darkMode ? "bg-slate-800" : "bg-slate-100"}`}>
+              <motion.div initial={{ width: 0 }} animate={{ width: `${expectedFillPct}%` }}
+                transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+                className={`absolute inset-y-0 left-0 ${overExpected ? "bg-rose-500" : "bg-violet-500"}`} />
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Usage — always shown; capped to 200% width so wildly over-budget
           setups still render without stretching layout. */}
