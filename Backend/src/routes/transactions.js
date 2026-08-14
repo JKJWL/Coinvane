@@ -857,9 +857,10 @@ export default async function (app) {
     );
     // Forecast: aggregate future scheduled transactions + open bill
     // cycles (unpaid, un-skipped) into month buckets. Only fires when
-    // forecastMonths is passed and > 0. Clamped to 12 as an upper bound
-    // so a malicious client can't ask for 100 years.
-    const fm = Math.max(0, Math.min(12, Number(forecastMonths) || 0));
+    // forecastMonths is passed and > 0. Clamped to 3 months — beyond a
+    // quarter the projection is dominated by uncertainty (bill amount
+    // drift, salary changes, one-off spending) and stops being useful.
+    const fm = Math.max(0, Math.min(3, Number(forecastMonths) || 0));
     if (fm > 0) {
       // Windows: current month through +fm months (inclusive of the
       // current month so partial-month scheduled items merge with the

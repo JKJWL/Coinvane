@@ -421,7 +421,12 @@ async function pickTriggerTargets(userId, newPlaidIds, adoptedIds) {
  * futures. Bounded by MAX_HORIZON steps so a misconfigured cadence can't
  * loop forever.
  */
-export async function ensureRecurringOccurrences(userId, horizonDays = 180) {
+export async function ensureRecurringOccurrences(userId, horizonDays = 90) {
+  // Cap the horizon at 90 days so recurring paycheck / rent templates
+  // don't stack occurrences years into the future. Anything past a
+  // quarter is projection noise the cashflow chart already refuses to
+  // render, and it keeps the transactions table tidy.
+  const cappedHorizon = Math.max(1, Math.min(90, horizonDays));
   const MAX_HOPS = 24;
   // Leaves: rows with a cadence and no downstream child scheduled row.
   const leaves = await query(
@@ -438,7 +443,7 @@ export async function ensureRecurringOccurrences(userId, horizonDays = 180) {
     [userId]
   );
   const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() + horizonDays);
+  cutoff.setDate(cutoff.getDate() + cappedHorizon);
   const cutoffStr = `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, "0")}-${String(cutoff.getDate()).padStart(2, "0")}`;
   for (const leaf of leaves) {
     // Normalise Date → "YYYY-MM-DD" (mysql2 hands back Date objects by

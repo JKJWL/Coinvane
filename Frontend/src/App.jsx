@@ -1162,9 +1162,11 @@ function CashflowCard({ theme, darkMode, expanded, onExpand, showForecast, onFor
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showAddOneOff, setShowAddOneOff] = useState(false);
-  // Number of forecast months to request. 3 keeps the chart legible; the
-  // fullscreen expanded view stretches to 6 for a longer horizon.
-  const forecastMonths = showForecast ? (expanded ? 6 : 3) : 0;
+  // Number of forecast months to request. Capped at 3 across both the
+  // compact and expanded views — beyond a quarter the projection is
+  // dominated by uncertainty (bill amount drift, salary changes) and
+  // stops being useful.
+  const forecastMonths = showForecast ? 3 : 0;
   const reload = useCallback(() => {
     let alive = true;
     setLoading(true);
