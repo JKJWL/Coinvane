@@ -42,6 +42,50 @@ export function projectDepreciatedValue(asset, atDate = new Date()) {
   return acquired;
 }
 
+/**
+ * Snap one asset's persisted current_value to its projected value for
+ * today, subtracting the sum of logged damage events. Extracted from the
+ * POST /:id/refresh route so both the manual button AND the daily worker
+ * cron can share it. Skips assets that don't depreciate (method='none')
+ * so we don't rewrite user-set flat values every night. Returns the
+ * new value (or null if skipped).
+ */
+export async function refreshAssetCurrentValue(userId, asset) {
+  if (!asset || asset.depreciation_method === "none") return null;
+  const damage = await queryOne(
+    "SELECT COALESCE(SUM(value_impact), 0) AS total FROM asset_damage_events WHERE asset_id = ? AND user_id = ?",
+    [asset.id, userId]
+  );
+  const projected = Number(projectDepreciatedValue(asset).toFixed(2));
+  const withDamage = Number(Math.max(0, projected - Number(damage?.total || 0)).toFixed(2));
+  await query("UPDATE assets SET current_value = ? WHERE id = ?", [withDamage, asset.id]);
+  return withDamage;
+}
+
+/**
+ * Sweep every depreciating (or appreciating) asset for a user and pin
+ * its current_value to today's projection. Used by the worker daily
+ * cron so the Net Worth chart doesn't need a manual click for values
+ * to keep drifting. Silent per-asset error so a single bad row can't
+ * stop the batch.
+ */
+export async function refreshAllAssetsForUser(userId) {
+  const rows = await query(
+    `SELECT * FROM assets
+     WHERE user_id = ? AND archived_at IS NULL
+       AND depreciation_method IS NOT NULL AND depreciation_method <> 'none'`,
+    [userId]
+  );
+  let updated = 0;
+  for (const a of rows) {
+    try {
+      await refreshAssetCurrentValue(userId, a);
+      updated++;
+    } catch { /* skip malformed asset */ }
+  }
+  return updated;
+}
+
 export default async function (app) {
   app.addHook("preHandler", app.authenticate);
 
@@ -264,21 +308,19 @@ export default async function (app) {
 
   // Snap current_value to the projected depreciation for today, minus
   // any logged damage. Depreciation is time-based; damage events are
-  // point-in-time deductions that must survive the refresh.
+  // point-in-time deductions that must survive the refresh. Shares the
+  // refreshAssetCurrentValue helper with the daily worker cron.
   app.post("/:id/refresh", async (req, reply) => {
     const asset = await queryOne(
       "SELECT * FROM assets WHERE id = ? AND user_id = ?",
       [req.params.id, req.user.id]
     );
     if (!asset) return reply.code(404).send({ error: "not found" });
-    const damage = await queryOne(
-      "SELECT COALESCE(SUM(value_impact), 0) AS total FROM asset_damage_events WHERE asset_id = ? AND user_id = ?",
-      [asset.id, req.user.id]
-    );
-    const projected = Number(projectDepreciatedValue(asset).toFixed(2));
-    const withDamage = Number(Math.max(0, projected - Number(damage?.total || 0)).toFixed(2));
-    await query("UPDATE assets SET current_value = ? WHERE id = ?", [withDamage, asset.id]);
-    return { ok: true, current_value: withDamage };
+    // For method='none' the helper returns null and skips the write, so
+    // send back the untouched value (manual refresh on a static asset is
+    // effectively a no-op).
+    const newVal = await refreshAssetCurrentValue(req.user.id, asset);
+    return { ok: true, current_value: newVal ?? Number(asset.current_value) };
   });
 
   app.delete("/:id", async (req, reply) => {

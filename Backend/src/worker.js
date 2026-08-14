@@ -7,6 +7,7 @@ import { query, queryOne, pool } from "./db.js";
 import { sendMail } from "./mailer.js";
 import { generateNotifications } from "./notification-engine.js";
 import { refreshUserBillCycles } from "./bill-utils.js";
+import { refreshAllAssetsForUser } from "./routes/assets.js";
 import { syncQueue } from "./queue.js";
 import { getSyncIntervalMinutes } from "./app-settings.js";
 import { runRulesForTrigger } from "./automation-engine.js";
@@ -121,6 +122,12 @@ new Worker("sync", async (job) => {
       // even when Plaid adoption hasn't happened yet.
       try { await ensureRecurringOccurrences(u.id); }
       catch (e) { console.error(`recurring occurrences failed for user ${u.id}:`, e.message); }
+
+      // Depreciate/appreciate every user asset once a day so the Net
+      // Worth chart doesn't need a manual click for the drift to keep
+      // showing. Manual (method='none') assets are left alone.
+      try { await refreshAllAssetsForUser(u.id); }
+      catch (e) { console.error(`asset refresh failed for user ${u.id}:`, e.message); }
 
       // Period-rollover detection. Fire period_rolled_over EXACTLY ONCE
       // per master-period boundary per user, no matter how often this
