@@ -173,7 +173,15 @@ export function getPastPeriods(period, periodStart, periodDays, count, nowDate, 
  * account's expenses; category budgets exclude credit-card accounts.
  */
 export async function spentForBudgetInWindow(userId, b, startStr, endStr) {
-  if (b.account_id) {
+  // Card-usage vs category-spend branch is decided by whether the budget
+  // is bound to an account. Accept BOTH `account_id` (raw column, used by
+  // budget history snapshots + automation code that reads the row before
+  // it's aliased) AND `accountId` (camelCase alias used by the /budgets
+  // list). Historically only the snake-case name was checked, which
+  // silently sent card budgets into the category branch → spent = 0
+  // forever because "card:XYZ" never matches a real transaction category.
+  const acctId = b.account_id ?? b.accountId ?? null;
+  if (acctId) {
     const row = await queryOne(
       `SELECT COALESCE(SUM(ABS(t.amount)), 0) AS spent
        FROM transactions t
@@ -182,7 +190,7 @@ export async function spentForBudgetInWindow(userId, b, startStr, endStr) {
          AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
          AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
          AND t.voided_at IS NULL`,
-      [userId, b.account_id, startStr, endStr]
+      [userId, acctId, startStr, endStr]
     );
     return Number(row.spent) || 0;
   }

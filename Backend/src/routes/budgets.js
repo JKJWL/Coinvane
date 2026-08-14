@@ -438,10 +438,31 @@ export default async function (app) {
       category, amount, period, period_start, period_days, account_id,
     });
 
-    return queryOne(
-      `SELECT * FROM budgets WHERE id = ? AND user_id = ?`,
+    // Return the budget with `spent` populated so the client doesn't
+    // depend on a follow-up refreshAll() firing before the user looks.
+    // Fixes the "new card budget shows $0 spent even with existing
+    // transactions" perception on freshly-created card usage budgets.
+    const master = await getMasterPeriod(req.user.id);
+    const row = await queryOne(
+      `SELECT b.id, b.category, b.amount, b.rollover_credit AS rolloverCredit,
+              b.period, b.period_start, b.period_days,
+              b.account_id AS accountId, b.sort_order AS sortOrder,
+              a.name AS accountName, a.type AS accountType
+       FROM budgets b
+       LEFT JOIN accounts a ON a.id = b.account_id
+       WHERE b.id = ? AND b.user_id = ?`,
       [budgetId, req.user.id]
     );
+    if (row) {
+      row.spent = await spentForBudgetInWindow(req.user.id, row, master.startStr, master.endStr);
+      row.periodStart = master.startStr;
+      row.periodEnd = master.endStr;
+      row.rolloverCredit = Number(row.rolloverCredit) || 0;
+      row.effectiveAmount = Number(row.amount) + row.rolloverCredit;
+      row.period = master.period;
+      row.period_days = master.periodDays;
+    }
+    return row;
   });
 
   // ── GET /:id/transactions — list contributing transactions ──────

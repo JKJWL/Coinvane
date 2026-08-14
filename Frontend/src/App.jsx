@@ -11641,6 +11641,41 @@ function Shell({ user, onLogout, refreshUser }) {
   // Keep local state in sync if user is refreshed from server
   useEffect(() => { setDarkModeLocal(!!user?.dark_mode); }, [user?.dark_mode]);
 
+  // Sync-on-open: trigger a Plaid sync when the app is opened / brought
+  // back to focus, guarded to at most once every 30 minutes per browser
+  // profile so tab-switching doesn't burn API calls. Only fires when the
+  // user actually has ≥ 1 Plaid-linked account — no point enqueueing a
+  // sweep for a manual-only user.
+  //
+  // Plaid billing note (PAYG): /transactions/sync is priced per-connection
+  // per-month for most contracts, not per-call, so the 30-minute floor is
+  // conservative — but on strict per-call plans it caps to at most 48
+  // calls/day. On Growth/Scale committed contracts this is a no-op cost.
+  useEffect(() => {
+    if (!user?.id) return;
+    const hasPlaid = (accounts || []).some(a => !!a.plaidItemId);
+    if (!hasPlaid) return;
+    const KEY = "coinvane_last_auto_sync";
+    const MIN_INTERVAL_MS = 30 * 60 * 1000;
+    const shouldSync = () => {
+      const last = Number(localStorage.getItem(KEY) || 0);
+      return !last || Date.now() - last >= MIN_INTERVAL_MS;
+    };
+    const maybeSync = async () => {
+      if (!shouldSync()) return;
+      try {
+        localStorage.setItem(KEY, String(Date.now())); // stamp FIRST to defeat races
+        await api.syncPlaid();
+        setTimeout(() => refreshAll(), 3000);
+      } catch { /* silent — header sync button still works */ }
+    };
+    maybeSync();
+    // Also re-check on tab focus (browser was in background for hours).
+    const onFocus = () => { maybeSync(); };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [user?.id, accounts, refreshAll]);
+
   // Privacy mode — adds a class to <body> so a CSS rule in index.css can
   // blur every element marked .private-amount. Toggle reveals on hover.
   useEffect(() => {
