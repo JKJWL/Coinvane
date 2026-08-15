@@ -24,13 +24,24 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(self.clients.claim());
 });
 
-// Broadcast SW-side diagnostics to any active client window. Used
-// when the badge call throws so we can see WHY on iOS (where there's
-// no console for the SW that a normal user can reach).
-async function broadcastDiag(payload) {
+// SW-side diagnostics. postMessage reaches any open client. But push
+// events fire when the app is CLOSED — no clients to receive — so we
+// also persist to the Cache API. The client reads that cache entry on
+// next mount and surfaces it in Settings. This is the only way to
+// see what iOS is doing in the SW without a Mac + Web Inspector.
+const DIAG_CACHE = "coinvane-diag-v1";
+const DIAG_URL   = "https://sw.coinvane.local/last-badge-event.json";
+async function recordDiag(payload) {
+  const body = JSON.stringify({ __coinvaneSW: true, at: Date.now(), ...payload });
   try {
     const wins = await self.clients.matchAll({ includeUncontrolled: true, type: "window" });
-    for (const w of wins) w.postMessage({ __coinvaneSW: true, ...payload });
+    for (const w of wins) w.postMessage(JSON.parse(body));
+  } catch { /* fall through to cache write */ }
+  try {
+    const cache = await caches.open(DIAG_CACHE);
+    await cache.put(new Request(DIAG_URL), new Response(body, {
+      headers: { "Content-Type": "application/json" },
+    }));
   } catch { /* nothing else to do */ }
 }
 
@@ -62,12 +73,12 @@ self.addEventListener("push", (event) => {
         try {
           if (badgeCount > 0) await self.navigator.setAppBadge(badgeCount);
           else                await self.navigator.clearAppBadge();
-          await broadcastDiag({ event: "badge_set", value: badgeCount });
+          await recordDiag({ event: "badge_set", value: badgeCount });
         } catch (e) {
-          await broadcastDiag({ event: "badge_error", value: badgeCount, error: String(e && e.message || e) });
+          await recordDiag({ event: "badge_error", value: badgeCount, error: String(e && e.message || e) });
         }
       } else {
-        await broadcastDiag({ event: "badge_unsupported", value: badgeCount });
+        await recordDiag({ event: "badge_unsupported", value: badgeCount });
       }
     }
 

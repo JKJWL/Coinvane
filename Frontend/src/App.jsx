@@ -11098,12 +11098,41 @@ const WEEK_DAYS = [
 function PushDevicesPanel({ theme, darkMode, toast }) {
   const [rows, setRows] = useState(null); // null = loading
   const [busyId, setBusyId] = useState(null);
+  const [diag, setDiag] = useState(null); // last SW badge event
   const currentUA = (typeof navigator !== "undefined" && navigator.userAgent) || "";
   const load = async () => {
     try { setRows(await api.listPushSubscriptions()); }
     catch { setRows([]); }
   };
   useEffect(() => { load(); }, []);
+
+  // Read the SW's last badge-event diagnostic. Written by sw.js into
+  // the Cache API from the push handler — survives a closed-app push
+  // so we can surface it here without needing a Mac + Web Inspector.
+  useEffect(() => {
+    (async () => {
+      if (typeof caches === "undefined") return;
+      try {
+        const c = await caches.open("coinvane-diag-v1");
+        const r = await c.match("https://sw.coinvane.local/last-badge-event.json");
+        if (r) setDiag(await r.json());
+      } catch { /* silent */ }
+    })();
+    if (typeof navigator === "undefined" || !navigator.serviceWorker) return;
+    const handler = (event) => {
+      const msg = event.data;
+      if (msg && msg.__coinvaneSW) setDiag(msg);
+    };
+    navigator.serviceWorker.addEventListener("message", handler);
+    return () => navigator.serviceWorker.removeEventListener("message", handler);
+  }, []);
+  const clearDiag = async () => {
+    setDiag(null);
+    try {
+      const c = await caches.open("coinvane-diag-v1");
+      await c.delete("https://sw.coinvane.local/last-badge-event.json");
+    } catch { /* ok */ }
+  };
 
   const revoke = async (id) => {
     setBusyId(id);
@@ -11122,13 +11151,43 @@ function PushDevicesPanel({ theme, darkMode, toast }) {
     finally { setBusyId(null); }
   };
 
+  const diagBlock = diag ? (
+    <div className={`border ${theme.border} rounded-xl px-3 py-2 text-[11px] space-y-1`}>
+      <div className="flex items-center justify-between gap-2">
+        <div className={`font-semibold uppercase tracking-wider text-[10px] ${theme.textSubtle}`}>
+          Last badge event (from service worker)
+        </div>
+        <button type="button" onClick={clearDiag}
+          className={`text-[10px] ${theme.textSubtle} hover:text-rose-500`}>Clear</button>
+      </div>
+      <div><span className={theme.textSubtle}>event: </span><span className="font-mono">{diag.event}</span></div>
+      {typeof diag.value === "number" && (
+        <div><span className={theme.textSubtle}>value: </span><span className="font-mono">{diag.value}</span></div>
+      )}
+      {diag.error && (
+        <div><span className={theme.textSubtle}>error: </span><span className="font-mono break-all">{diag.error}</span></div>
+      )}
+      {diag.at && (
+        <div className={theme.textSubtle}>{new Date(diag.at).toLocaleString()}</div>
+      )}
+      <div className={`text-[10px] ${theme.textSubtle} pt-1`}>
+        {diag.event === "badge_set" && "SW called setAppBadge and the OS accepted it. If the icon still shows no dot, the OS is silently dropping the badge (iOS beta bug, Badges toggle off, or app not installed to home screen)."}
+        {diag.event === "badge_error" && "The Badging API threw. See error above."}
+        {diag.event === "badge_unsupported" && "This browser's service worker doesn't expose setAppBadge. Badge won't work here."}
+      </div>
+    </div>
+  ) : null;
+
   if (rows === null) {
-    return <div className={`text-xs ${theme.textSubtle}`}>Loading devices…</div>;
+    return <div className={`text-xs ${theme.textSubtle} space-y-2`}>Loading devices…{diagBlock}</div>;
   }
   if (rows.length === 0) {
     return (
-      <div className={`text-xs ${theme.textSubtle} border ${theme.border} rounded-xl px-3 py-2`}>
-        No push devices enrolled yet. Toggle push on above to enroll this browser.
+      <div className="space-y-2">
+        <div className={`text-xs ${theme.textSubtle} border ${theme.border} rounded-xl px-3 py-2`}>
+          No push devices enrolled yet. Toggle push on above to enroll this browser.
+        </div>
+        {diagBlock}
       </div>
     );
   }
@@ -11150,6 +11209,7 @@ function PushDevicesPanel({ theme, darkMode, toast }) {
   };
 
   return (
+    <div className="space-y-2">
     <div className={`border ${theme.border} rounded-xl divide-y ${theme.divide}`}>
       <div className={`px-3 py-2 text-[10px] font-semibold uppercase tracking-wider ${theme.textSubtle} ${darkMode ? "bg-slate-800" : "bg-slate-50"}`}>
         Enrolled devices ({rows.length})
@@ -11176,6 +11236,8 @@ function PushDevicesPanel({ theme, darkMode, toast }) {
           </div>
         );
       })}
+    </div>
+    {diagBlock}
     </div>
   );
 }
