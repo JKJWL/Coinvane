@@ -280,6 +280,10 @@ export default async function (app) {
         body: "If you can see this, push is wired up correctly.",
         tag: "test_push",
         url: "/",
+        // Force a nonzero badge so an installed PWA on iOS/Android
+        // actually shows the red dot even when the user's real
+        // unread count is 0.
+        badge: 1,
       });
       if (r.sent === 0) {
         return reply.code(409).send({
