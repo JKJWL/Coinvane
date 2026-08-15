@@ -41,6 +41,7 @@ export const api = {
   me: () => request("GET", "/auth/me"),
   updateMe: (data) => request("PATCH", "/auth/me", data),
   sendTestEmail: () => request("POST", "/auth/me/test-email"),
+  sendTestPush: () => request("POST", "/auth/me/test-push"),
   // Nuke every user_id-scoped row, revoke every Plaid item, unlink
   // attachments on disk. The user row stays so sign-in still works.
   clearMyData: (confirm) => request("POST", "/auth/me/clear-data", { confirm }),
@@ -66,6 +67,7 @@ export const api = {
   deleteUser: (id) => request("DELETE", `/auth/users/${id}`),
   updateUserRole: (id, role) => request("PATCH", `/auth/users/${id}/role`, { role }),
   sendUserTestEmail: (id) => request("POST", `/auth/users/${id}/test-email`),
+  sendUserTestPush: (id) => request("POST", `/auth/users/${id}/test-push`),
 
   // accounts
   getAccounts: () => request("GET", "/accounts"),

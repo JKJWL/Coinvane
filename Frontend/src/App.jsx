@@ -10553,6 +10553,18 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
                       <Mail className={`w-4 h-4 ${theme.textSubtle} hover:text-violet-500 transition-colors`} />
                     </button>
                   )}
+                  {isOwner && info?.pushEnabled && (
+                    <button
+                      onClick={async () => {
+                        try {
+                          const r = await api.sendUserTestPush(u.id);
+                          toast?.(`Test push sent to ${r.sent} device${r.sent === 1 ? "" : "s"} for ${r.sentTo}`, "success");
+                        } catch (e) { toast?.("Push failed: " + (e.message || ""), "error"); }
+                      }}
+                      title={`Send test push to ${u.email}`}>
+                      <Bell className={`w-4 h-4 ${theme.textSubtle} hover:text-violet-500 transition-colors`} />
+                    </button>
+                  )}
                   {canDelete(u) && (
                     <button onClick={() => setToRemove(u)} title={u.role === "admin" ? "Remove admin" : "Remove member"}>
                       <Trash2 className={`w-4 h-4 ${theme.textSubtle} hover:text-rose-500 transition-colors`} />

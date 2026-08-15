@@ -2,6 +2,7 @@
 import { query, queryOne } from "../db.js";
 import { getAppSetting, setAppSetting } from "../app-settings.js";
 import { isEmailEnabled } from "../mailer.js";
+import { isPushConfigured } from "../push.js";
 import { geoFromIp, audit } from "../audit.js";
 
 /**
@@ -57,6 +58,7 @@ export default async function (app) {
     return {
       plaidEnvironment: process.env.PLAID_ENV || "production",
       emailEnabled: isEmailEnabled(),
+      pushEnabled: isPushConfigured(),
       smtpHost: process.env.SMTP_HOST || null,
       signupMode: process.env.SIGNUP_MODE || "open",
       nodeEnv: process.env.NODE_ENV || "development",

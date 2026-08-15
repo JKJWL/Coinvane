@@ -9,7 +9,7 @@ import { audit } from "../audit.js";
 import { getAllowedEmails } from "../app-settings.js";
 import { plaid } from "../plaid-client.js";
 import { decrypt } from "../crypto.js";
-import { getVapidPublicKey } from "../push.js";
+import { getVapidPublicKey, isPushConfigured, sendPush } from "../push.js";
 import {
   makeRegistrationOptions,
   completeRegistration,
@@ -255,6 +255,84 @@ export default async function (app) {
     } catch (e) {
       req.log.warn({ err: e.message }, "user test-email failed");
       return reply.code(500).send({ error: "Could not enqueue mail. Check SMTP env vars." });
+    }
+  });
+
+  // ── Send a sample push notification to the signed-in admin. ─────
+  // Mirrors /me/test-email — verifies the full pipeline (VAPID keys,
+  // browser subscription, service worker) end-to-end. Admin-only for
+  // the same reason (rate/quota hygiene). Returns {sent, cleaned} from
+  // sendPush so the UI can distinguish "no devices enrolled" (sent=0)
+  // from "server not configured" (503).
+  app.post("/me/test-push", {
+    preHandler: [app.authenticate],
+    config: { rateLimit: { max: 3, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
+    if (req.user.role !== "owner") {
+      return reply.code(403).send({ error: "Owner only" });
+    }
+    if (!isPushConfigured()) {
+      return reply.code(503).send({ error: "Push is disabled (VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY not set)" });
+    }
+    try {
+      const r = await sendPush(req.user.id, {
+        title: "Coinvane test notification",
+        body: "If you can see this, push is wired up correctly.",
+        tag: "test_push",
+        url: "/",
+      });
+      if (r.sent === 0) {
+        return reply.code(409).send({
+          error: "No push-enabled devices for this account. Enable push in Settings first.",
+          cleaned: r.cleaned,
+        });
+      }
+      return { ok: true, ...r };
+    } catch (e) {
+      req.log.warn({ err: e.message }, "test-push failed");
+      return reply.code(500).send({ error: "Could not send push. Check server logs." });
+    }
+  });
+
+  // ── Owner-only: send a sample push to ANY user. ─────────────────
+  // Same shape as /users/:id/test-email. Useful for the members panel
+  // when someone reports "notifications aren't reaching me" — the owner
+  // can trigger one from their end and audit the result without logging
+  // in as the target.
+  app.post("/users/:id/test-push", {
+    preHandler: [app.authenticate],
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
+    if (req.user.role !== "owner") {
+      return reply.code(403).send({ error: "Owner only" });
+    }
+    if (!isPushConfigured()) {
+      return reply.code(503).send({ error: "Push is disabled (VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY not set)" });
+    }
+    const u = await queryOne(
+      "SELECT id, email FROM users WHERE id = ?", [req.params.id]
+    );
+    if (!u) return reply.code(404).send({ error: "user not found" });
+    try {
+      const r = await sendPush(u.id, {
+        title: "Coinvane test notification",
+        body: "This is a test from your workspace owner. Push is working.",
+        tag: "test_push",
+        url: "/",
+      });
+      await audit(req.user.id, "admin.test_push", req, {
+        targetId: u.id, targetEmail: u.email, sent: r.sent, cleaned: r.cleaned,
+      });
+      if (r.sent === 0) {
+        return reply.code(409).send({
+          error: `${u.email} has no push-enabled devices. They need to enable push in Settings first.`,
+          cleaned: r.cleaned,
+        });
+      }
+      return { ok: true, sentTo: u.email, ...r };
+    } catch (e) {
+      req.log.warn({ err: e.message }, "user test-push failed");
+      return reply.code(500).send({ error: "Could not send push. Check server logs." });
     }
   });
 
