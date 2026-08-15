@@ -9,12 +9,6 @@
 // The SW is registered from main.jsx on startup. On upgrade, we skip
 // the waiting phase so the fresh handler code takes effect immediately
 // after a deploy — matches the no-cache posture of the rest of the app.
-//
-// SW_VERSION: bumping this comment changes the file bytes, which is
-// what triggers WebKit / Blink to notice the SW has updated on next
-// navigation. Bump when materially changing push/notification handling.
-//   v3 — 2026-08-15: badge set first + awaited; error reporting to
-//                    open clients for iOS diagnostics.
 
 self.addEventListener("install", (event) => {
   event.waitUntil(self.skipWaiting());
@@ -24,30 +18,12 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(self.clients.claim());
 });
 
-// SW-side diagnostics. postMessage reaches any open client. But push
-// events fire when the app is CLOSED — no clients to receive — so we
-// also persist to the Cache API. The client reads that cache entry on
-// next mount and surfaces it in Settings. This is the only way to
-// see what iOS is doing in the SW without a Mac + Web Inspector.
-const DIAG_CACHE = "coinvane-diag-v1";
-const DIAG_URL   = "https://sw.coinvane.local/last-badge-event.json";
-async function recordDiag(payload) {
-  const body = JSON.stringify({ __coinvaneSW: true, at: Date.now(), ...payload });
-  try {
-    const wins = await self.clients.matchAll({ includeUncontrolled: true, type: "window" });
-    for (const w of wins) w.postMessage(JSON.parse(body));
-  } catch { /* fall through to cache write */ }
-  try {
-    const cache = await caches.open(DIAG_CACHE);
-    await cache.put(new Request(DIAG_URL), new Response(body, {
-      headers: { "Content-Type": "application/json" },
-    }));
-  } catch { /* nothing else to do */ }
-}
-
 // The push event fires when the browser's push service delivers an
 // encrypted payload for this origin. The payload is opaque to us —
 // showNotification is what actually surfaces the OS-level banner.
+// Badge is set first + awaited before showNotification per Apple's
+// WWDC guidance — running them concurrently can drop the badge on
+// WebKit.
 self.addEventListener("push", (event) => {
   event.waitUntil((async () => {
     let data = {};
@@ -57,32 +33,17 @@ self.addEventListener("push", (event) => {
       data = { title: "Coinvane", body: (event.data && event.data.text && event.data.text()) || "" };
     }
 
-    // ── Badge FIRST, awaited. iOS is picky about ordering — if we
-    //    kick off showNotification concurrently, WebKit sometimes
-    //    ignores the badge call entirely. Setting it first and
-    //    awaiting guarantees the badge is committed before the
-    //    notification banner grabs the SW's attention.
-    //
-    //    setAppBadge is only defined on browsers that support the
-    //    Badging API — Android Chrome, iOS 16.4+ Safari (installed
-    //    PWA only), macOS/Windows/ChromeOS installed apps. Elsewhere
-    //    we silently skip.
+    // setAppBadge is only defined on browsers that support the Badging
+    // API — Android Chrome, iOS 16.4+ Safari (installed PWA only),
+    // macOS/Windows/ChromeOS installed apps. Silently skip elsewhere.
     const badgeCount = data.badge;
-    if (typeof badgeCount === "number") {
-      if ("setAppBadge" in self.navigator) {
-        try {
-          if (badgeCount > 0) await self.navigator.setAppBadge(badgeCount);
-          else                await self.navigator.clearAppBadge();
-          await recordDiag({ event: "badge_set", value: badgeCount });
-        } catch (e) {
-          await recordDiag({ event: "badge_error", value: badgeCount, error: String(e && e.message || e) });
-        }
-      } else {
-        await recordDiag({ event: "badge_unsupported", value: badgeCount });
-      }
+    if (typeof badgeCount === "number" && "setAppBadge" in self.navigator) {
+      try {
+        if (badgeCount > 0) await self.navigator.setAppBadge(badgeCount);
+        else                await self.navigator.clearAppBadge();
+      } catch { /* OS refused — nothing else to do */ }
     }
 
-    // ── Now show the notification.
     await self.registration.showNotification(data.title || "Coinvane", {
       body:  data.body || "",
       icon:  data.icon || "/icon-192.png",
