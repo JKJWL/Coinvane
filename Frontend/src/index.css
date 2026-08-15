@@ -88,6 +88,32 @@ select {
   text-overflow: ellipsis;
 }
 
+/* Date/time inputs — same class of overflow bug as <select>, but the
+   width comes from a WebKit shadow pseudo-element (the value display +
+   calendar glyph) rather than the input itself, so max-width on the
+   host doesn't reach it. Strip the native appearance and clamp the
+   inner pseudo-element too, otherwise the "mm/dd/yyyy" placeholder
+   plus the picker button pushes past a grid-column's right edge on
+   mobile and squats over the neighboring cell (Amount, etc). */
+input[type="date"],
+input[type="datetime-local"],
+input[type="time"],
+input[type="month"],
+input[type="week"] {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+}
+input[type="date"]::-webkit-date-and-time-value,
+input[type="datetime-local"]::-webkit-date-and-time-value,
+input[type="time"]::-webkit-date-and-time-value,
+input[type="month"]::-webkit-date-and-time-value,
+input[type="week"]::-webkit-date-and-time-value {
+  min-width: 0;
+  text-align: left;
+}
+
 /* Kill the blue/gray tap flash */
 * {
   -webkit-tap-highlight-color: transparent;
