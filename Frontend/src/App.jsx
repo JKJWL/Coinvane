@@ -11367,7 +11367,10 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
     notify_cashflow_min:     Number(u.notify_cashflow_min ?? 0),
     notify_budget_usage_enabled: !!u.notify_budget_usage_enabled,
     notify_budget_usage_pct: Number(u.notify_budget_usage_pct ?? 90),
-    push_frequency:          u.push_frequency || "daily",
+    // push_frequency is always "instant" now — kept in the payload for
+    // back-compat but the cadence selector was removed since batching a
+    // lock-screen alert defeats its purpose.
+    push_frequency:          "instant",
     privacy_mode:           !!u.privacy_mode,
     week_start:             Number(u.week_start ?? 0),
     email_frequency:        u.email_frequency || "daily",
@@ -11779,7 +11782,7 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
           <div className="min-w-0 pr-3">
             <div className="text-sm font-medium">Push notifications</div>
             <div className={`text-xs ${theme.textSubtle} mt-0.5`}>
-              Send alerts to this device's lock screen and notification tray. In-app bell still works either way.
+              Send alerts to this device's lock screen and notification tray, the moment they happen. When several trigger at once you'll get one summary push (the most urgent one) instead of a wall of banners. In-app bell still shows every alert either way.
               {!pushSupported() && <> · <span className="text-amber-500">Not supported by this browser.</span></>}
             </div>
           </div>
@@ -11820,24 +11823,6 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
           </div>
         )}
 
-        {/* Push cadence — mirrors the email frequency below but applies
-            to lock-screen pushes. Only meaningful when push is on. */}
-        {form.notification_push && (
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-sm font-medium">Push frequency</div>
-              <div className={`text-xs ${theme.textSubtle} mt-0.5`}>
-                When lock-screen alerts should fire. Instant hits the moment a triggering transaction lands; daily batches on the 8AM check; weekly fires only on your chosen weekday.
-              </div>
-            </div>
-            <select className={`${inputCls} max-w-[10rem]`} value={form.push_frequency}
-              onChange={e => setForm({ ...form, push_frequency: e.target.value })}>
-              <option value="instant">As they happen</option>
-              <option value="daily">Once daily</option>
-              <option value="weekly">Weekly</option>
-            </select>
-          </div>
-        )}
 
         {/* Manage devices — enrolled push subscriptions per browser/PWA.
             Revoke removes the subscription server-side; the browser side

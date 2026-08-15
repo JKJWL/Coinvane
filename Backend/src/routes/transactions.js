@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { query, queryOne } from "../db.js";
 import { runRulesForTrigger } from "../automation-engine.js";
+import { maybePushForInlineEvent } from "../notification-engine.js";
 import { parseAny } from "../quicken-import.js";
 import { parseMny, isMnyBuffer } from "../mny-import.js";
 import { promises as fs } from "fs";
@@ -207,6 +208,17 @@ export default async function (app) {
       await runRulesForTrigger(req.user.id, "transaction_arrived", ctx);
       if (Number(row.amount) > 0 && !row.is_transfer) {
         await runRulesForTrigger(req.user.id, "income_landed", ctx);
+      }
+      // "As they happen" instant push — same helper Plaid sync uses,
+      // so a manual entry that clears the large-txn or income
+      // threshold pings the user right away instead of waiting for
+      // the 8AM cron.
+      if (!row.is_transfer) {
+        try {
+          await maybePushForInlineEvent(req.user.id, {
+            amount: Number(row.amount), merchant: row.merchant, date: row.date,
+          });
+        } catch { /* silent — must not block the POST response */ }
       }
     }
     return queryOne("SELECT * FROM transactions WHERE id = ?", [r.insertId]);

@@ -3,7 +3,7 @@ import { query, queryOne } from "./db.js";
 import { enqueueMail } from "./queue.js";
 import { renderNotificationDigest } from "./mailer.js";
 import { getMasterPeriod, spentForBudgetInWindow } from "./budget-utils.js";
-import { sendPush, shouldPushNow } from "./push.js";
+import { sendPush, shouldPushNow, pickTopPush } from "./push.js";
 
 async function insertNotification(userId, n) {
   const dupe = await queryOne(
@@ -336,26 +336,24 @@ export async function generateNotifications(userId) {
   }
 
   // ── Web Push fanout ──────────────────────────────────────────────
-  // Fires when the user's push_frequency permits AND they have
-  // notification_push on. Silent no-op if VAPID isn't configured or
-  // the user has no registered subscriptions. Stale endpoints
-  // self-clean via 410 handling inside sendPush. Inline push (from
-  // sync.js right after a Plaid arrival) is a SEPARATE pathway —
-  // see maybePushForInlineEvent below.
-  if (
-    created.length > 0
-    && prefs.notification_push
-    && shouldPushNow(prefs.push_frequency, prefs.email_weekday, "cron")
-  ) {
-    for (const n of created) {
+  // Push is always instant (see shouldPushNow). When the cron sweep
+  // produces multiple notifications at once (typical when the user
+  // has a bunch of budget breaches + a bill reminder + a large
+  // transaction all detected in the same run), we collapse to ONE
+  // push whose content is the highest-priority alert. The bell still
+  // shows every row inserted above; only the OS-level banner is
+  // deduplicated so the lock screen isn't a wall of Coinvane pings.
+  // Inline pushes (from sync.js right after a Plaid arrival) are a
+  // separate pathway — see maybePushForInlineEvent below.
+  if (created.length > 0 && prefs.notification_push) {
+    const top = pickTopPush(created);
+    if (top) {
+      const suffix = created.length > 1 ? ` (+${created.length - 1} more)` : "";
       try {
         await sendPush(userId, {
-          title: n.title,
-          body:  n.body || "",
-          // Tag collapses repeated same-topic pushes into one on the
-          // lock screen (e.g. "budget_usage_high" replaces the previous
-          // budget alert instead of stacking).
-          tag:   n.type,
+          title: top.title + suffix,
+          body:  top.body || "",
+          tag:   top.type,
           url:   "/",
         });
       } catch (e) {
@@ -417,13 +415,10 @@ export async function maybePushForInlineEvent(userId, txn) {
     }
     if (!n) return;
 
-    // Push only when the user picked "instant" cadence. Anything else
-    // waits for the daily cron pass — the notification row already
-    // exists in the bell either way.
-    if (
-      prefs.notification_push
-      && shouldPushNow(prefs.push_frequency, prefs.email_weekday, "inline")
-    ) {
+    // Push is always instant for inline events. The notification row
+    // already exists in the bell either way, so a push-off user simply
+    // sees the bell dot.
+    if (prefs.notification_push) {
       try {
         await sendPush(userId, {
           title: n.title, body: n.body || "",

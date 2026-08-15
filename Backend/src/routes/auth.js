@@ -76,7 +76,10 @@ function userPayload(u) {
     notify_cashflow_min:     Number(u.notify_cashflow_min ?? 0),
     notify_budget_usage_enabled: !!u.notify_budget_usage_enabled,
     notify_budget_usage_pct: Number(u.notify_budget_usage_pct ?? 90),
-    push_frequency: u.push_frequency || "daily",
+    // push_frequency is always "instant" now; the cadence selector was
+    // removed since batching a lock-screen alert defeats its purpose.
+    // Legacy DB values are ignored on read.
+    push_frequency: "instant",
     biometric_lock_enabled: !!u.biometric_lock_enabled,
     // Misc prefs
     privacy_mode:    !!u.privacy_mode,

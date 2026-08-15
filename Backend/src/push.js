@@ -32,31 +32,51 @@ export function isPushConfigured() { return CONFIGURED; }
 export function getVapidPublicKey() { return PUB; }
 
 /**
- * Decide whether a push should fire right now given the user's chosen
- * cadence. Callers pass `context: "inline"` for real-time triggers
- * (immediately after a Plaid txn arrival) or `"cron"` for the 8AM
- * batch. Returns true when we should push.
- *
- *   instant → fire on either context (inline reflects "the moment it
- *             happened"; cron catches stragglers if the inline hook
- *             missed for any reason)
- *   daily   → cron only
- *   weekly  → cron only, and only on the configured weekday (0=Sun…6=Sat)
- *
- * Mirrors the email_frequency semantics in notification-engine so the
- * two channels behave identically w.r.t. user expectations.
+ * Push cadence used to have instant/daily/weekly parity with email,
+ * but the "daily" and "weekly" options were confusing because the
+ * push channel is inherently real-time — batching a lock-screen alert
+ * to 8AM tomorrow defeats its purpose. Push is now always instant.
+ * Kept as a helper so callers don't need to know the policy inline.
+ * `freq` and `weekday` are ignored; kept in the signature so the two
+ * existing call sites stay unchanged. `context` is also unused now
+ * (both inline and cron pushes always fire).
  */
-export function shouldPushNow(freq, weekday, context = "cron", now = new Date()) {
-  const f = String(freq || "daily").toLowerCase();
-  if (f === "instant") return true;
-  if (context === "inline") return false;
-  if (f === "weekly") {
-    const dow = now.getDay();
-    const target = ((Number(weekday) || 1) % 7);
-    return dow === target;
-  }
-  // "daily" (default) — fire on cron regardless of weekday.
+export function shouldPushNow(/* freq, weekday, context */) {
   return true;
+}
+
+/**
+ * When multiple notifications land in the same run (typical for the
+ * daily cron sweep), we send exactly ONE push — the highest-priority
+ * one — instead of stacking a lock-screen full of banners. The bell
+ * still shows every row; only the OS-level notification is collapsed.
+ *
+ * Higher number = more urgent. Anything not in the map defaults to 0
+ * so unknown types sort to the bottom instead of the top.
+ */
+const PUSH_PRIORITY = {
+  large_transaction:  100,  // real money went out unexpectedly
+  cashflow_low:        90,  // projected to go negative soon
+  budget_exceeded:     80,  // past limit right now
+  bill_reminder:       70,  // deadline approaching
+  budget_warning:      60,  // approaching limit
+  budget_usage_high:   55,  // overall budget usage high
+  goal_complete:       40,  // positive milestone
+  goal_milestone:      30,  // progress toward goal
+  income_received:     20,  // positive news, least urgent
+  test_push:           10,  // developer test
+};
+
+export function pickTopPush(notifications) {
+  if (!Array.isArray(notifications) || notifications.length === 0) return null;
+  let top = notifications[0];
+  let topScore = PUSH_PRIORITY[top.type] ?? 0;
+  for (let i = 1; i < notifications.length; i++) {
+    const n = notifications[i];
+    const s = PUSH_PRIORITY[n.type] ?? 0;
+    if (s > topScore) { top = n; topScore = s; }
+  }
+  return top;
 }
 
 /**
