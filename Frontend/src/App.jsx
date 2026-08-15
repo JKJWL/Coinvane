@@ -704,13 +704,35 @@ function NotificationsBell({ theme, darkMode }) {
   // read in another tab / on another device — reconciling here catches
   // that. No-op on browsers without the Badging API (all desktop
   // Firefox, Safari on Mac, tab-only Chrome).
+  //
+  // GUARD: skip the very first render pass so a badge the SW set
+  // while the app was closed isn't immediately wiped by an initial
+  // unread=0 read that hasn't yet reflected the just-fetched data.
+  // Once real fetches start updating the count, the effect syncs
+  // normally (whether unread stays 0 or moves).
+  const badgeSyncMountRef = useRef(true);
   useEffect(() => {
+    if (badgeSyncMountRef.current) { badgeSyncMountRef.current = false; return; }
     if (typeof navigator === "undefined" || !("setAppBadge" in navigator)) return;
     (unread > 0
       ? navigator.setAppBadge(unread)
       : navigator.clearAppBadge()
     ).catch(() => { /* denied / unsupported — nothing we can do */ });
   }, [unread]);
+
+  // Surface SW-side badge diagnostics to the browser console. On iOS
+  // there's no easy way to see the SW's own console, but a message
+  // from the SW arrives on the client and shows up here.
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !navigator.serviceWorker) return;
+    const handler = (event) => {
+      const msg = event.data;
+      if (!msg || !msg.__coinvaneSW) return;
+      console.log("[coinvane sw]", msg);
+    };
+    navigator.serviceWorker.addEventListener("message", handler);
+    return () => navigator.serviceWorker.removeEventListener("message", handler);
+  }, []);
 
   return (
     <div className="relative">

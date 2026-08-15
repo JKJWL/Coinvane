@@ -9,6 +9,12 @@
 // The SW is registered from main.jsx on startup. On upgrade, we skip
 // the waiting phase so the fresh handler code takes effect immediately
 // after a deploy — matches the no-cache posture of the rest of the app.
+//
+// SW_VERSION: bumping this comment changes the file bytes, which is
+// what triggers WebKit / Blink to notice the SW has updated on next
+// navigation. Bump when materially changing push/notification handling.
+//   v3 — 2026-08-15: badge set first + awaited; error reporting to
+//                    open clients for iOS diagnostics.
 
 self.addEventListener("install", (event) => {
   event.waitUntil(self.skipWaiting());
@@ -18,45 +24,70 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(self.clients.claim());
 });
 
+// Broadcast SW-side diagnostics to any active client window. Used
+// when the badge call throws so we can see WHY on iOS (where there's
+// no console for the SW that a normal user can reach).
+async function broadcastDiag(payload) {
+  try {
+    const wins = await self.clients.matchAll({ includeUncontrolled: true, type: "window" });
+    for (const w of wins) w.postMessage({ __coinvaneSW: true, ...payload });
+  } catch { /* nothing else to do */ }
+}
+
 // The push event fires when the browser's push service delivers an
 // encrypted payload for this origin. The payload is opaque to us —
 // showNotification is what actually surfaces the OS-level banner.
 self.addEventListener("push", (event) => {
-  let data = {};
-  try { data = event.data ? event.data.json() : {}; } catch { data = { title: "Coinvane", body: event.data?.text?.() || "" }; }
-  const title = data.title || "Coinvane";
-  const options = {
-    body:  data.body || "",
-    icon:  data.icon || "/icon-192.png",
-    badge: "/icon-192.png",
-    // `tag` collapses same-topic pushes into one on the lock screen
-    // (e.g. two budget-usage alerts don't stack — the newer replaces
-    // the older). Backend sets it to the notification `type`.
-    tag:   data.tag || undefined,
-    // Data field survives the notification click and is read by the
-    // notificationclick handler to decide where to navigate.
-    data:  { url: data.url || "/", ts: data.ts || Date.now() },
-    // Renotify with the same tag on subsequent pushes — otherwise the
-    // browser silently swaps the payload without alerting again.
-    renotify: !!data.tag,
-  };
-  // Set the app-icon badge (red dot / unread count) on installed PWAs.
-  // The backend includes the user's current unread notification count
-  // in the push payload as `badge` so this stays authoritative. If
-  // undefined (older payloads or DB hiccup), skip the call rather than
-  // clobber a good count with 0. setAppBadge is only defined on
-  // browsers that support the Badging API — Android Chrome, iOS 16.4+
-  // Safari (installed PWA only), macOS/Windows/ChromeOS installed apps.
-  const badgeCount = data.badge;
-  const badgeUpdate = (typeof badgeCount === "number" && "setAppBadge" in self.navigator)
-    ? (badgeCount > 0
-        ? self.navigator.setAppBadge(badgeCount).catch(() => {})
-        : self.navigator.clearAppBadge().catch(() => {}))
-    : Promise.resolve();
-  event.waitUntil(Promise.all([
-    self.registration.showNotification(title, options),
-    badgeUpdate,
-  ]));
+  event.waitUntil((async () => {
+    let data = {};
+    try {
+      data = event.data ? event.data.json() : {};
+    } catch {
+      data = { title: "Coinvane", body: (event.data && event.data.text && event.data.text()) || "" };
+    }
+
+    // ── Badge FIRST, awaited. iOS is picky about ordering — if we
+    //    kick off showNotification concurrently, WebKit sometimes
+    //    ignores the badge call entirely. Setting it first and
+    //    awaiting guarantees the badge is committed before the
+    //    notification banner grabs the SW's attention.
+    //
+    //    setAppBadge is only defined on browsers that support the
+    //    Badging API — Android Chrome, iOS 16.4+ Safari (installed
+    //    PWA only), macOS/Windows/ChromeOS installed apps. Elsewhere
+    //    we silently skip.
+    const badgeCount = data.badge;
+    if (typeof badgeCount === "number") {
+      if ("setAppBadge" in self.navigator) {
+        try {
+          if (badgeCount > 0) await self.navigator.setAppBadge(badgeCount);
+          else                await self.navigator.clearAppBadge();
+          await broadcastDiag({ event: "badge_set", value: badgeCount });
+        } catch (e) {
+          await broadcastDiag({ event: "badge_error", value: badgeCount, error: String(e && e.message || e) });
+        }
+      } else {
+        await broadcastDiag({ event: "badge_unsupported", value: badgeCount });
+      }
+    }
+
+    // ── Now show the notification.
+    await self.registration.showNotification(data.title || "Coinvane", {
+      body:  data.body || "",
+      icon:  data.icon || "/icon-192.png",
+      badge: "/icon-192.png",
+      // `tag` collapses same-topic pushes into one on the lock screen
+      // (e.g. two budget-usage alerts don't stack — the newer replaces
+      // the older). Backend sets it to the notification `type`.
+      tag:   data.tag || undefined,
+      // Data field survives the notification click and is read by the
+      // notificationclick handler to decide where to navigate.
+      data:  { url: data.url || "/", ts: data.ts || Date.now() },
+      // Renotify with the same tag on subsequent pushes — otherwise the
+      // browser silently swaps the payload without alerting again.
+      renotify: !!data.tag,
+    });
+  })());
 });
 
 // Notification click → focus an existing tab if the app is already
