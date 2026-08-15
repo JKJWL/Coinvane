@@ -276,15 +276,27 @@ export default async function (app) {
     }
     try {
       const subId = Number(req.body?.subscriptionId) || undefined;
+      const title = "Coinvane test notification";
+      const body = subId
+        ? "Targeted to a single device. Tap 'Mark all read' in the bell to clear the badge."
+        : "If you can see this, push is wired up correctly. Tap 'Mark all read' in the bell to clear the badge.";
+      // Insert a real notification row so the bell surfaces the test
+      // AND the badge count reflects genuine unread state. Marking it
+      // read is then the ONLY way to clear the badge, which lets us
+      // rule out "app is auto-clearing the badge on open" as an
+      // explanation for a missing PWA icon dot.
+      await query(
+        `INSERT INTO notifications (user_id, type, icon, color, title, body)
+         VALUES (?, 'test_push', 'Bell', 'violet', ?, ?)`,
+        [req.user.id, title, body]
+      );
       const r = await sendPush(req.user.id, {
-        title: "Coinvane test notification",
-        body: subId ? "Targeted to a single device." : "If you can see this, push is wired up correctly.",
+        title, body,
         tag: "test_push",
         url: "/",
-        // Force a nonzero badge so an installed PWA on iOS/Android
-        // actually shows the red dot even when the user's real
-        // unread count is 0.
-        badge: 1,
+        // Omit badge — sendPush will look up the real unread count now
+        // that the test row exists, so the number on the icon matches
+        // what the bell shows.
         subscriptionId: subId,
       });
       if (r.sent === 0) {
@@ -322,9 +334,17 @@ export default async function (app) {
     );
     if (!u) return reply.code(404).send({ error: "user not found" });
     try {
+      const title = "Coinvane test notification";
+      const body = "This is a test from your workspace owner. Push is working. Open the bell to mark it read.";
+      // Insert a real notification row so the recipient sees the test
+      // in their bell — same rationale as /me/test-push above.
+      await query(
+        `INSERT INTO notifications (user_id, type, icon, color, title, body)
+         VALUES (?, 'test_push', 'Bell', 'violet', ?, ?)`,
+        [u.id, title, body]
+      );
       const r = await sendPush(u.id, {
-        title: "Coinvane test notification",
-        body: "This is a test from your workspace owner. Push is working.",
+        title, body,
         tag: "test_push",
         url: "/",
       });
