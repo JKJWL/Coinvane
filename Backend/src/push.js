@@ -13,7 +13,7 @@
 // If any is missing, sendPush() no-ops (silently) so a fresh deploy
 // without keys still works — just doesn't push.
 import webpush from "web-push";
-import { query } from "./db.js";
+import { query, queryOne } from "./db.js";
 
 const PUB     = process.env.VAPID_PUBLIC_KEY  || "";
 const PRIV    = process.env.VAPID_PRIVATE_KEY || "";
@@ -70,7 +70,7 @@ export function shouldPushNow(freq, weekday, context = "cron", now = new Date())
  * endpoint or the user revoked permission) so we don't keep hammering
  * dead URLs.
  */
-export async function sendPush(userId, { title, body, url, tag, icon }) {
+export async function sendPush(userId, { title, body, url, tag, icon, badge }) {
   if (!CONFIGURED) return { sent: 0, cleaned: 0 };
   const subs = await query(
     "SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?",
@@ -78,12 +78,31 @@ export async function sendPush(userId, { title, body, url, tag, icon }) {
   );
   if (!subs.length) return { sent: 0, cleaned: 0 };
 
+  // If the caller didn't pass an explicit badge count, look up the
+  // user's current unread total. Included in the payload so the SW
+  // can call navigator.setAppBadge() to surface the red dot on the
+  // installed PWA icon (Android Chrome, iOS 16.4+ Safari, macOS
+  // dock, Windows/ChromeOS taskbar). Falls back to undefined on
+  // query failure so the SW knows to skip the badge update rather
+  // than clobber a good count with 0.
+  let badgeCount = badge;
+  if (badgeCount === undefined) {
+    try {
+      const row = await queryOne(
+        "SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND read_at IS NULL",
+        [userId]
+      );
+      badgeCount = Number(row?.c || 0);
+    } catch { /* leave undefined — SW will no-op the badge call */ }
+  }
+
   const payload = JSON.stringify({
     title: String(title || "Coinvane"),
     body:  body ? String(body) : "",
     url:   url  ? String(url)  : "/",
     tag:   tag  ? String(tag)  : undefined,
     icon:  icon || "/icon-192.png",
+    badge: typeof badgeCount === "number" ? badgeCount : undefined,
     // A dated timestamp so the SW notification's default sort works.
     ts:    Date.now(),
   });

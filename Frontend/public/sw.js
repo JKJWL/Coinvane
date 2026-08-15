@@ -40,7 +40,23 @@ self.addEventListener("push", (event) => {
     // browser silently swaps the payload without alerting again.
     renotify: !!data.tag,
   };
-  event.waitUntil(self.registration.showNotification(title, options));
+  // Set the app-icon badge (red dot / unread count) on installed PWAs.
+  // The backend includes the user's current unread notification count
+  // in the push payload as `badge` so this stays authoritative. If
+  // undefined (older payloads or DB hiccup), skip the call rather than
+  // clobber a good count with 0. setAppBadge is only defined on
+  // browsers that support the Badging API — Android Chrome, iOS 16.4+
+  // Safari (installed PWA only), macOS/Windows/ChromeOS installed apps.
+  const badgeCount = data.badge;
+  const badgeUpdate = (typeof badgeCount === "number" && "setAppBadge" in self.navigator)
+    ? (badgeCount > 0
+        ? self.navigator.setAppBadge(badgeCount).catch(() => {})
+        : self.navigator.clearAppBadge().catch(() => {}))
+    : Promise.resolve();
+  event.waitUntil(Promise.all([
+    self.registration.showNotification(title, options),
+    badgeUpdate,
+  ]));
 });
 
 // Notification click → focus an existing tab if the app is already

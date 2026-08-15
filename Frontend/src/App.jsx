@@ -698,6 +698,20 @@ function NotificationsBell({ theme, darkMode }) {
   const [open, setOpen] = useState(false);
   const unread = notifications.filter(n => !n.readAt).length;
 
+  // Keep the installed-PWA app-icon badge in sync with the in-app
+  // unread count. The service worker also sets it when a push arrives,
+  // but the SW's number goes stale as soon as the user marks anything
+  // read in another tab / on another device — reconciling here catches
+  // that. No-op on browsers without the Badging API (all desktop
+  // Firefox, Safari on Mac, tab-only Chrome).
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("setAppBadge" in navigator)) return;
+    (unread > 0
+      ? navigator.setAppBadge(unread)
+      : navigator.clearAppBadge()
+    ).catch(() => { /* denied / unsupported — nothing we can do */ });
+  }, [unread]);
+
   return (
     <div className="relative">
       <IconButton theme={theme} onClick={() => setOpen(!open)}>
