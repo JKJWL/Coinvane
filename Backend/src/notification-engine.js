@@ -5,6 +5,26 @@ import { renderNotificationDigest } from "./mailer.js";
 import { getMasterPeriod, spentForBudgetInWindow } from "./budget-utils.js";
 import { sendPush, shouldPushNow, pickTopPush } from "./push.js";
 
+// Which notification types have ALREADY fired a lock-screen push
+// for this user today? Used by both the cron fanout and the inline
+// event hook to suppress repeats of the same type in the same day —
+// the row still gets inserted (bell shows every alert) but the OS
+// banner only appears once per type per day.
+async function typesPushedToday(userId) {
+  const rows = await query(
+    `SELECT DISTINCT type FROM notifications
+     WHERE user_id = ? AND pushed_at IS NOT NULL
+       AND DATE(pushed_at) = CURDATE()`,
+    [userId]
+  );
+  return new Set(rows.map(r => r.type));
+}
+async function stampPushed(notificationId) {
+  try {
+    await query("UPDATE notifications SET pushed_at = NOW() WHERE id = ?", [notificationId]);
+  } catch { /* best-effort — a missed stamp only means one extra push tomorrow */ }
+}
+
 async function insertNotification(userId, n) {
   const dupe = await queryOne(
     `SELECT id FROM notifications WHERE user_id = ? AND type = ? AND title = ?
@@ -346,9 +366,15 @@ export async function generateNotifications(userId) {
   // Inline pushes (from sync.js right after a Plaid arrival) are a
   // separate pathway — see maybePushForInlineEvent below.
   if (created.length > 0 && prefs.notification_push) {
-    const top = pickTopPush(created);
+    // Drop any notification whose TYPE has already been pushed today
+    // (could be from an earlier cron run this same day, or from an
+    // inline event fired during Plaid sync). Prevents 3 same-type
+    // pings from three same-day cron windows.
+    const alreadyPushed = await typesPushedToday(userId);
+    const candidates = created.filter(n => !alreadyPushed.has(n.type));
+    const top = pickTopPush(candidates);
     if (top) {
-      const suffix = created.length > 1 ? ` (+${created.length - 1} more)` : "";
+      const suffix = candidates.length > 1 ? ` (+${candidates.length - 1} more)` : "";
       try {
         await sendPush(userId, {
           title: top.title + suffix,
@@ -356,6 +382,7 @@ export async function generateNotifications(userId) {
           tag:   top.type,
           url:   "/",
         });
+        await stampPushed(top.id);
       } catch (e) {
         console.warn(`[push] fanout failed for user ${userId}:`, e.message);
       }
@@ -417,14 +444,20 @@ export async function maybePushForInlineEvent(userId, txn) {
 
     // Push is always instant for inline events. The notification row
     // already exists in the bell either way, so a push-off user simply
-    // sees the bell dot.
+    // sees the bell dot. Skip the OS push if we've already pinged
+    // this same type today (from an earlier inline event or a cron
+    // sweep) — the bell still surfaces every alert.
     if (prefs.notification_push) {
-      try {
-        await sendPush(userId, {
-          title: n.title, body: n.body || "",
-          tag: n.type, url: "/",
-        });
-      } catch { /* silent — daily cron catches stragglers */ }
+      const alreadyPushed = await typesPushedToday(userId);
+      if (!alreadyPushed.has(n.type)) {
+        try {
+          await sendPush(userId, {
+            title: n.title, body: n.body || "",
+            tag: n.type, url: "/",
+          });
+          await stampPushed(n.id);
+        } catch { /* silent — daily cron catches stragglers */ }
+      }
     }
   } catch (e) {
     console.warn(`[notify] inline event failed for user ${userId}:`, e.message);

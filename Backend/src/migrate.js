@@ -857,6 +857,14 @@ const SCHEMA = [
   // by matching purchases in the ±30 day window). Older rows get 0.
   `ALTER TABLE lot_disposals ADD COLUMN IF NOT EXISTS disallowed_loss DECIMAL(14,4) DEFAULT 0`,
 
+  // Per-type once-per-day push dedup. Once a notification of a given
+  // type has fired a lock-screen alert today, subsequent cron sweeps
+  // and inline events skip the push (row still gets inserted so the
+  // bell shows every alert). Cleared implicitly by the "today" filter.
+  // Index lives in SOFT_SCHEMA since MariaDB pre-10.5 doesn't support
+  // IF NOT EXISTS on ADD INDEX.
+  `ALTER TABLE notifications ADD COLUMN IF NOT EXISTS pushed_at TIMESTAMP NULL`,
+
   `CREATE TABLE IF NOT EXISTS bill_cycles (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
@@ -953,6 +961,8 @@ const SOFT_SCHEMA = [
   // and the worker needs to see if the next occurrence has already been
   // spawned. Errors swallowed on subsequent runs where the index exists.
   `ALTER TABLE transactions ADD INDEX idx_recurring_parent (recurring_parent_id)`,
+  // Push-dedup lookup — per-user per-type "was this pushed today".
+  `ALTER TABLE notifications ADD INDEX idx_pushed_at (user_id, type, pushed_at)`,
   // Assets → loan-account link (added post-1.7). Silent no-op on fresh DBs
   // where the CREATE TABLE already declared these.
   `ALTER TABLE assets ADD INDEX idx_loan_account (loan_account_id)`,

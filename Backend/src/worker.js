@@ -50,10 +50,20 @@ async function schedulePeriodic() {
     { repeat: { every: intervalMin * 60 * 1000 }, jobId: "periodic-full-sync" }
   );
   console.log(`Scheduled periodic full sync every ${intervalMin} min.`);
+  // Notification sweeps run at three points every day, matching the
+  // Federal Reserve's ACH submission windows (approx 10:30 AM, 2:45 PM,
+  // 4:45 PM ET — rounded to :00 for cron sanity) and extended to
+  // Sat/Sun since Coinvane cares about budget/bill/goal alerts on
+  // weekends even though ACH doesn't. The push-fanout dedup (see
+  // notification-engine) keeps us from double-alerting the same type
+  // across runs, so 3x/day is a coverage improvement, not spam.
+  //   * Cron minutes+hours are in the WORKER container's local timezone.
+  //     Set TZ in docker-compose if you need to pin this to ET/etc;
+  //     otherwise it inherits the container's default (usually UTC).
   await syncQueue.add(
     "daily-notifications",
     { kind: "notifications" },
-    { repeat: { pattern: "0 8 * * *" }, jobId: "daily-notifications" }
+    { repeat: { pattern: "0 10,14,16 * * *" }, jobId: "daily-notifications" }
   );
   // Audit log gets pruned to a rolling 48h window so the table never grows
   // unbounded and the admin viewer stays cheap to query.
