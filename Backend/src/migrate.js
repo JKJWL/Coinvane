@@ -198,8 +198,6 @@ const SCHEMA = [
   // tracked via manual contributions. ON DELETE SET NULL so unlinking
   // an account just detaches the goal instead of cascading.
   `ALTER TABLE goals ADD COLUMN IF NOT EXISTS account_id INT NULL`,
-  // Assets can be backed by a loan account (car loan → the car). Optional.
-  `ALTER TABLE assets ADD COLUMN IF NOT EXISTS loan_account_id INT NULL`,
 
   `CREATE TABLE IF NOT EXISTS notes (
     id INT AUTO_INCREMENT PRIMARY KEY,
