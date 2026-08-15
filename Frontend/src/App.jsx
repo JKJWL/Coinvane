@@ -11229,6 +11229,18 @@ function PushDevicesPanel({ theme, darkMode, toast }) {
               </div>
             </div>
             <button type="button" disabled={busyId === d.id}
+              onClick={async () => {
+                setBusyId(d.id);
+                try {
+                  const r = await api.sendTestPush(d.id);
+                  toast?.(`Test push sent (${r.sent} delivered)`, "success");
+                } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+                finally { setBusyId(null); }
+              }}
+              className={`px-2 py-1 rounded-lg text-[11px] font-semibold text-violet-500 hover:bg-violet-500/10 disabled:opacity-40`}>
+              {busyId === d.id ? "…" : "Test"}
+            </button>
+            <button type="button" disabled={busyId === d.id}
               onClick={() => revoke(d.id)}
               className="px-2 py-1 rounded-lg text-[11px] font-semibold text-rose-500 hover:bg-rose-500/10 disabled:opacity-40">
               {busyId === d.id ? "…" : "Revoke"}

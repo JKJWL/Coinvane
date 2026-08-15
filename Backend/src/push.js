@@ -70,12 +70,22 @@ export function shouldPushNow(freq, weekday, context = "cron", now = new Date())
  * endpoint or the user revoked permission) so we don't keep hammering
  * dead URLs.
  */
-export async function sendPush(userId, { title, body, url, tag, icon, badge }) {
+export async function sendPush(userId, { title, body, url, tag, icon, badge, subscriptionId }) {
   if (!CONFIGURED) return { sent: 0, cleaned: 0 };
-  const subs = await query(
-    "SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?",
-    [userId]
-  );
+  // Optional subscriptionId narrows the fanout to exactly one device.
+  // Used by the per-device "send test" button so the caller can prove
+  // whether a specific installation (their iPhone, their laptop, etc.)
+  // receives + renders the push independently of other enrolled
+  // devices for the same user.
+  const subs = subscriptionId
+    ? await query(
+        "SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ? AND id = ?",
+        [userId, subscriptionId]
+      )
+    : await query(
+        "SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?",
+        [userId]
+      );
   if (!subs.length) return { sent: 0, cleaned: 0 };
 
   // If the caller didn't pass an explicit badge count, look up the

@@ -275,23 +275,27 @@ export default async function (app) {
       return reply.code(503).send({ error: "Push is disabled (VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY not set)" });
     }
     try {
+      const subId = Number(req.body?.subscriptionId) || undefined;
       const r = await sendPush(req.user.id, {
         title: "Coinvane test notification",
-        body: "If you can see this, push is wired up correctly.",
+        body: subId ? "Targeted to a single device." : "If you can see this, push is wired up correctly.",
         tag: "test_push",
         url: "/",
         // Force a nonzero badge so an installed PWA on iOS/Android
         // actually shows the red dot even when the user's real
         // unread count is 0.
         badge: 1,
+        subscriptionId: subId,
       });
       if (r.sent === 0) {
         return reply.code(409).send({
-          error: "No push-enabled devices for this account. Enable push in Settings first.",
+          error: subId
+            ? "That device didn't receive the push — it may have been revoked or the endpoint expired."
+            : "No push-enabled devices for this account. Enable push in Settings first.",
           cleaned: r.cleaned,
         });
       }
-      return { ok: true, ...r };
+      return { ok: true, targeted: !!subId, ...r };
     } catch (e) {
       req.log.warn({ err: e.message }, "test-push failed");
       return reply.code(500).send({ error: "Could not send push. Check server logs." });
