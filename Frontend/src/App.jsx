@@ -10231,6 +10231,7 @@ function RuleBuilderSheet({ open, onClose, rule, vocab, catList = [], accounts =
 
 // ─── Users Panel ──────────────────────────────────────────────────────────────
 function UsersPanel({ currentUser, theme, darkMode, toast }) {
+  const isDesktop = useIsDesktop();
   const [users, setUsers] = useState([]);
   const [toRemove, setToRemove] = useState(null); // user pending delete
   const [removing, setRemoving] = useState(false);
@@ -10589,7 +10590,7 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
                       <Mail className={`w-4 h-4 ${theme.textSubtle} hover:text-violet-500 transition-colors`} />
                     </button>
                   )}
-                  {isOwner && info?.pushEnabled && (
+                  {isOwner && isDesktop && info?.pushEnabled && (
                     <button
                       onClick={async () => {
                         try {
@@ -11095,7 +11096,7 @@ const WEEK_DAYS = [
 // PushSubscription is left alone (silently stops receiving). Users on
 // their current device see a "this browser" hint against the row that
 // matches — best-effort match by looking at navigator.userAgent.
-function PushDevicesPanel({ theme, darkMode, toast }) {
+function PushDevicesPanel({ theme, darkMode, toast, showAdvanced = false }) {
   const [rows, setRows] = useState(null); // null = loading
   const [busyId, setBusyId] = useState(null);
   const [diag, setDiag] = useState(null); // last SW badge event
@@ -11151,7 +11152,7 @@ function PushDevicesPanel({ theme, darkMode, toast }) {
     finally { setBusyId(null); }
   };
 
-  const diagBlock = diag ? (
+  const diagBlock = (showAdvanced && diag) ? (
     <div className={`border ${theme.border} rounded-xl px-3 py-2 text-[11px] space-y-1`}>
       <div className="flex items-center justify-between gap-2">
         <div className={`font-semibold uppercase tracking-wider text-[10px] ${theme.textSubtle}`}>
@@ -11228,18 +11229,20 @@ function PushDevicesPanel({ theme, darkMode, toast }) {
                 {d.lastUsedAt ? ` · last used ${new Date(d.lastUsedAt).toLocaleDateString()}` : " · never used"}
               </div>
             </div>
-            <button type="button" disabled={busyId === d.id}
-              onClick={async () => {
-                setBusyId(d.id);
-                try {
-                  const r = await api.sendTestPush(d.id);
-                  toast?.(`Test push sent (${r.sent} delivered)`, "success");
-                } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
-                finally { setBusyId(null); }
-              }}
-              className={`px-2 py-1 rounded-lg text-[11px] font-semibold text-violet-500 hover:bg-violet-500/10 disabled:opacity-40`}>
-              {busyId === d.id ? "…" : "Test"}
-            </button>
+            {showAdvanced && (
+              <button type="button" disabled={busyId === d.id}
+                onClick={async () => {
+                  setBusyId(d.id);
+                  try {
+                    const r = await api.sendTestPush(d.id);
+                    toast?.(`Test push sent (${r.sent} delivered)`, "success");
+                  } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+                  finally { setBusyId(null); }
+                }}
+                className={`px-2 py-1 rounded-lg text-[11px] font-semibold text-violet-500 hover:bg-violet-500/10 disabled:opacity-40`}>
+                {busyId === d.id ? "…" : "Test"}
+              </button>
+            )}
             <button type="button" disabled={busyId === d.id}
               onClick={() => revoke(d.id)}
               className="px-2 py-1 rounded-lg text-[11px] font-semibold text-rose-500 hover:bg-rose-500/10 disabled:opacity-40">
@@ -11917,7 +11920,8 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
             is left alone (it'll silently stop receiving). This is the
             "sign out this device from push" surface. */}
         {form.notification_push && (
-          <PushDevicesPanel theme={theme} darkMode={darkMode} toast={toast} />
+          <PushDevicesPanel theme={theme} darkMode={darkMode} toast={toast}
+            showAdvanced={isDesktop && (user?.role === "admin" || user?.role === "owner")} />
         )}
         {/* Biometric app-lock — mobile only. Rendered here inside the
             notifications block since it's device-scoped like push. */}
