@@ -280,14 +280,26 @@ export default async function (app) {
       return { ok: true }; // silent success
     }
 
-    // Per-email throttle: max 5 outstanding+consumed requests in the
-    // last hour. Prevents inbox flooding of a legitimate recipient
-    // by an attacker (or a stuck client) even when the IP throttle
-    // doesn't trip. Silent success on trip — matches the rest.
+    // Per-email throttle: max 5 requests in the last hour, but the
+    // counter RESETS on a successful sign-in. Reasoning: only
+    // allowlisted addresses can trigger the mail path in the first
+    // place (silent-success guard above), and a successful redeem
+    // is proof this is a real user, not a stuck client or an inbox
+    // flood attempt. Without reset, a user who requests 5 links then
+    // signs in gets locked out for the rest of the hour when they
+    // legitimately try again from another device.
+    // Silent success on trip — matches the rest.
+    const lastRedeem = await queryOne(
+      `SELECT MAX(used_at) AS t FROM email_signin_tokens
+       WHERE email = ? AND used_at IS NOT NULL`,
+      [rawEmail]
+    );
     const recent = await queryOne(
       `SELECT COUNT(*) AS c FROM email_signin_tokens
-       WHERE email = ? AND created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)`,
-      [rawEmail]
+       WHERE email = ?
+         AND created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)
+         AND created_at > COALESCE(?, '1970-01-01')`,
+      [rawEmail, lastRedeem?.t || null]
     );
     if (Number(recent?.c || 0) >= 5) {
       await audit(null, "signin_link.rate_limited", req, { email: rawEmail });
