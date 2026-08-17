@@ -53,10 +53,24 @@ const HANDOFF_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 const HANDOFF_LENGTH = 8;
 const HANDOFF_EXPIRES_MIN = 10;
 function newHandoffCode() {
-  const buf = cryptoNode.randomBytes(HANDOFF_LENGTH);
+  // Rejection sampling to keep the distribution uniform. `buf[i] % 30`
+  // would bias symbols 0-15 slightly (256 = 8*30 + 16 → those 16
+  // values get an extra representation each), which CodeQL flags as
+  // js/biased-cryptographic-random. We instead discard any byte in
+  // the biased tail (>= floor(256/30)*30 = 240) and pull fresh bytes
+  // as needed. In practice virtually every batch of 8 bytes fits
+  // without a redraw (probability of rejecting a byte = 16/256 ≈ 6%).
+  const A = HANDOFF_ALPHABET.length;
+  const MAX = Math.floor(256 / A) * A; // 240 for A=30
   let out = "";
-  for (let i = 0; i < HANDOFF_LENGTH; i++) {
-    out += HANDOFF_ALPHABET[buf[i] % HANDOFF_ALPHABET.length];
+  while (out.length < HANDOFF_LENGTH) {
+    const need = HANDOFF_LENGTH - out.length;
+    // Over-fetch a bit so the average case is one round-trip to the
+    // crypto RNG. `need * 2` covers the tail probability comfortably.
+    const buf = cryptoNode.randomBytes(need * 2);
+    for (let i = 0; i < buf.length && out.length < HANDOFF_LENGTH; i++) {
+      if (buf[i] < MAX) out += HANDOFF_ALPHABET[buf[i] % A];
+    }
   }
   return out;
 }
