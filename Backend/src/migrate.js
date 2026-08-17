@@ -865,6 +865,46 @@ const SCHEMA = [
   // IF NOT EXISTS on ADD INDEX.
   `ALTER TABLE notifications ADD COLUMN IF NOT EXISTS pushed_at TIMESTAMP NULL`,
 
+  // One-time email sign-in tokens (Sign In With One Time Link).
+  //   token_hash — SHA-256 hex of the random 48-byte token that was
+  //                mailed. We store the hash, not the token, so a DB
+  //                dump can't be used to hijack outstanding links.
+  //   email      — the address the link was mailed to. Not FK'd to
+  //                users because a valid allowlisted email might not
+  //                have a row yet (first-time sign-in via link).
+  //   requester_ip — for audit + rate-limit forensics; nullable if
+  //                behind a proxy that didn't forward.
+  //   used_at    — stamped on redeem; second attempt returns 410.
+  //   expires_at — creation + 15 min. Verify path rejects when past.
+  `CREATE TABLE IF NOT EXISTS email_signin_tokens (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    email VARCHAR(255) NOT NULL,
+    token_hash CHAR(64) NOT NULL UNIQUE,
+    expires_at TIMESTAMP NOT NULL,
+    used_at TIMESTAMP NULL,
+    requester_ip VARCHAR(45) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_email_created (email, created_at),
+    INDEX idx_expires (expires_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Cross-context sign-in handoff codes. Issued when the one-time
+  // sign-in link is redeemed in a browser tab; entered manually into
+  // the installed PWA on the same device (Safari tab and Home Screen
+  // PWA have separate storage on iOS, so this is the only way to
+  // bridge them without a native app). Stored as SHA-256 hex of the
+  // short user-facing code. Short-lived (10 min) and one-time-use.
+  `CREATE TABLE IF NOT EXISTS signin_handoff_codes (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    code_hash CHAR(64) NOT NULL UNIQUE,
+    user_id INT NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    used_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_expires_handoff (expires_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
   `CREATE TABLE IF NOT EXISTS bill_cycles (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,

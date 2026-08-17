@@ -11,7 +11,7 @@ export function setToken(t) {
 
 export function getToken() { return authToken; }
 
-async function request(method, path, body) {
+async function request(method, path, body, opts = {}) {
   const headers = {};
   if (authToken) headers.Authorization = `Bearer ${authToken}`;
   // Only declare a JSON body when we actually have one — otherwise Fastify's
@@ -24,7 +24,11 @@ async function request(method, path, body) {
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (res.status === 401) {
+  // Public endpoints (one-time-link request/verify, public-config) can
+  // return 401/403/410 as legitimate business responses — bad token,
+  // expired link, not authorized. Suppressing the auto-reload lets the
+  // caller surface those as inline errors instead of bouncing the page.
+  if (res.status === 401 && !opts.publicEndpoint) {
     setToken(null);
     window.location.reload();
     throw new Error("Unauthorized");
@@ -38,6 +42,10 @@ async function request(method, path, body) {
 export const api = {
   // auth — Google SSO only
   googleLogin: (id_token) => request("POST", "/auth/google", { id_token }),
+  publicConfig: () => request("GET", "/auth/public-config", undefined, { publicEndpoint: true }),
+  requestOneTimeLink: (email) => request("POST", "/auth/one-time-link/request", { email }, { publicEndpoint: true }),
+  verifyOneTimeLink: (token) => request("POST", "/auth/one-time-link/verify", { token }, { publicEndpoint: true }),
+  oneTimeLinkHandoff: (code) => request("POST", "/auth/one-time-link/handoff", { code }, { publicEndpoint: true }),
   me: () => request("GET", "/auth/me"),
   updateMe: (data) => request("PATCH", "/auth/me", data),
   sendTestEmail: () => request("POST", "/auth/me/test-email"),

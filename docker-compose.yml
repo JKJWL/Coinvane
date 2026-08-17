@@ -66,6 +66,11 @@ services:
       SMTP_PASS: ${SMTP_PASS}
       SMTP_FROM: ${SMTP_FROM}
       SIGNUP_MODE: ${SIGNUP_MODE}
+      # Sign in with a one-time link. Disabled by default; requires
+      # EMAIL_CONFIG=enabled + SMTP configured to actually send. See
+      # .env.example for full docs.
+      ONE_TIME_LINK_ENABLED: ${ONE_TIME_LINK_ENABLED:-false}
+      ONE_TIME_LINK_STRICT_IP: ${ONE_TIME_LINK_STRICT_IP:-true}
       # Worker-only: how often Plaid is polled, in minutes. The backend
       # ignores it. Default in code is 60. See .env.example for guidance.
       SYNC_INTERVAL_MINUTES: ${SYNC_INTERVAL_MINUTES:-60}

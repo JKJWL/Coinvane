@@ -603,6 +603,79 @@ function AuthScreen({ onAuth }) {
   const [busy, setBusy] = useState(false);
   const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 
+  // ── One-time email sign-in link (server-gated by ONE_TIME_LINK_ENABLED)
+  const [otlEnabled, setOtlEnabled] = useState(false);
+  const [otlOpen, setOtlOpen] = useState(false);
+  const [otlEmail, setOtlEmail] = useState("");
+  const [otlSending, setOtlSending] = useState(false);
+  const [otlSent, setOtlSent] = useState(false);
+  // Handoff-code input (for the "I signed in in Safari but I'm using
+  // the installed PWA" cross-context flow — iOS keeps Safari and
+  // Home-Screen PWA storage separate).
+  const [handoffOpen, setHandoffOpen] = useState(false);
+  const [handoffCode, setHandoffCode] = useState("");
+  const [handoffBusy, setHandoffBusy] = useState(false);
+  // Redeem-token state: when URL hash is #signin?t=<token>, verify and
+  // sign in. Runs BEFORE the Google button init so a valid link doesn't
+  // briefly flash the sign-in screen.
+  const [redeeming, setRedeeming] = useState(() => /^#signin\?t=/.test(window.location.hash));
+  // After verify succeeds, we hold the session pending until the user
+  // acknowledges (so we can show them the handoff code first, needed
+  // for iOS Safari -> Home Screen PWA). Contains { token, user,
+  // handoffCode, handoffExpiresMinutes } from the server.
+  const [pendingSession, setPendingSession] = useState(null);
+  // Am I running as an installed PWA (standalone display mode)?
+  // Used to skip the handoff-code screen when there's no other context
+  // the user might want to sign into.
+  const isStandalone = typeof window !== "undefined"
+    && (window.matchMedia?.("(display-mode: standalone)")?.matches
+        || window.navigator.standalone === true);
+
+  useEffect(() => {
+    api.publicConfig().then(c => setOtlEnabled(!!c.oneTimeLinkEnabled))
+      .catch(() => setOtlEnabled(false));
+  }, []);
+
+  // Guard: onAuth is a fresh object on every render (useAuth doesn't
+  // memoize), so we track "already dispatched" via a ref instead of
+  // deps to prevent a double-verify (would 410 on the second attempt
+  // and clobber the successful first attempt's session with an error).
+  const redeemStartedRef = useRef(false);
+  useEffect(() => {
+    if (!redeeming || redeemStartedRef.current) return;
+    redeemStartedRef.current = true;
+    const m = /^#signin\?t=(.+)$/.exec(window.location.hash);
+    const token = m ? decodeURIComponent(m[1]) : null;
+    // Strip the token from the URL immediately so it doesn't linger in
+    // browser history or get shared accidentally.
+    if (window.history && window.history.replaceState) {
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+    if (!token) { setRedeeming(false); return; }
+    (async () => {
+      try {
+        const res = await onAuth.verifyOneTimeLinkOnly(token);
+        // If we're already in the installed PWA (or on desktop where
+        // there's only one context), sign in immediately — no reason
+        // to make the user acknowledge a handoff code they'll never
+        // need. Only iOS-Safari-in-a-browser-tab-with-PWA-installed
+        // benefits from the extra step, and we can't reliably detect
+        // "PWA installed" from a browser tab, so we default to
+        // showing the code + a Continue button for non-standalone.
+        if (isStandalone) {
+          onAuth.commitSession(res);
+        } else {
+          setPendingSession(res);
+          setRedeeming(false);
+        }
+      } catch (e) {
+        setErr(e.message || "This sign-in link is invalid or has expired.");
+        setRedeeming(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [redeeming]);
+
   useEffect(() => {
     if (!CLIENT_ID) {
       setErr("Google Sign-In is not configured — set VITE_GOOGLE_CLIENT_ID in .env and rebuild.");
@@ -664,6 +737,48 @@ function AuthScreen({ onAuth }) {
         </div>
 
         <div className="space-y-5">
+          {redeeming ? (
+            <div className="flex flex-col items-center gap-3 py-4">
+              <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+                className="w-6 h-6 rounded-full border-2 border-slate-200 border-t-violet-500" />
+              <div className="text-sm text-slate-600">Verifying your one-time link…</div>
+            </div>
+          ) : pendingSession ? (
+            <div className="space-y-4">
+              <div>
+                <div className="text-lg font-semibold text-slate-900">Welcome back, {pendingSession.user?.name || "there"}!</div>
+                <div className="text-sm text-slate-600 mt-1">Choose how to continue.</div>
+              </div>
+              <button type="button"
+                onClick={() => onAuth.commitSession(pendingSession)}
+                className="w-full py-3 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600">
+                Continue in this browser
+              </button>
+              <div className="border-t border-slate-100 pt-4">
+                <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  Or: sign in in the installed app
+                </div>
+                <div className="text-xs text-slate-500 mt-1 leading-relaxed">
+                  Open Coinvane from your home screen and enter this code on the sign-in page.
+                  Code expires in {pendingSession.handoffExpiresMinutes} minutes.
+                </div>
+                <div className="mt-3 p-4 bg-slate-50 border border-slate-200 rounded-xl text-center">
+                  <div className="text-2xl font-mono font-bold tracking-[0.2em] text-slate-900 select-all">
+                    {pendingSession.handoffCode}
+                  </div>
+                </div>
+                <button type="button"
+                  onClick={() => {
+                    if (navigator.clipboard) {
+                      navigator.clipboard.writeText(pendingSession.handoffCode).catch(() => {});
+                    }
+                  }}
+                  className="mt-2 w-full py-2 rounded-xl text-xs font-medium text-slate-600 hover:bg-slate-50">
+                  Copy code
+                </button>
+              </div>
+            </div>
+          ) : (<>
           <p className="text-sm text-slate-600 text-center">
             Sign in with your Google account to continue.
           </p>
@@ -678,6 +793,122 @@ function AuthScreen({ onAuth }) {
               <div ref={btnRef} />
             )}
           </div>
+
+          {/* One-time email sign-in link. Rendered only when the server
+              says the feature is on (ONE_TIME_LINK_ENABLED + email
+              subsystem enabled). Silent success on request means the
+              button always says "Check your email" — anti-enumeration. */}
+          {otlEnabled && (
+            <div className="border-t border-slate-100 pt-4">
+              {!otlOpen && !otlSent && (
+                <button type="button" onClick={() => setOtlOpen(true)}
+                  className="w-full py-2.5 rounded-full border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50 hover:border-violet-300 transition">
+                  Sign in with a one-time link
+                </button>
+              )}
+              {otlOpen && !otlSent && (
+                <form className="space-y-2" onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (otlSending) return;
+                  const email = otlEmail.trim().toLowerCase();
+                  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+                    setErr("Enter a valid email address"); return;
+                  }
+                  setErr(""); setOtlSending(true);
+                  try {
+                    await api.requestOneTimeLink(email);
+                    setOtlSent(true);
+                  } catch (e2) {
+                    setErr(e2.message || "Could not send link");
+                  } finally { setOtlSending(false); }
+                }}>
+                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Email address</label>
+                  <input type="email" required value={otlEmail}
+                    onChange={e => setOtlEmail(e.target.value)}
+                    placeholder="you@example.com" autoComplete="email"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-violet-500" />
+                  <div className="flex gap-2 pt-1">
+                    <button type="button" onClick={() => { setOtlOpen(false); setOtlEmail(""); setErr(""); }}
+                      className="flex-1 py-2 rounded-xl text-sm text-slate-500 hover:bg-slate-50">Cancel</button>
+                    <button type="submit" disabled={otlSending}
+                      className="flex-1 py-2 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-60">
+                      {otlSending ? "Sending…" : "Send link"}
+                    </button>
+                  </div>
+                </form>
+              )}
+              {otlSent && (
+                <div className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-xl p-3 space-y-1">
+                  <div className="font-semibold">Check your email</div>
+                  <div className="text-xs text-emerald-800">
+                    If <span className="font-mono">{otlEmail}</span> is authorized, we sent a sign-in link to that address. It expires in 15 minutes.
+                  </div>
+                  <div className="flex items-center gap-3 pt-1">
+                    <button type="button"
+                      onClick={() => { setOtlSent(false); setOtlOpen(false); setOtlEmail(""); }}
+                      className="text-xs text-emerald-700 underline hover:no-underline">
+                      Use a different email
+                    </button>
+                    <span className="text-emerald-300">·</span>
+                    <button type="button"
+                      onClick={() => { setOtlSent(false); setOtlOpen(false); setOtlEmail(""); setHandoffOpen(true); }}
+                      className="text-xs text-emerald-700 underline hover:no-underline">
+                      Have a one-time code?
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Handoff-code input — visible always so the installed
+                  PWA on iOS (where a Safari-tab sign-in doesn't share
+                  storage) can pick up the session. Small link by
+                  default; expands to a code input on click. */}
+              {!otlOpen && !otlSent && !handoffOpen && (
+                <button type="button"
+                  onClick={() => setHandoffOpen(true)}
+                  className="w-full mt-2 text-xs text-slate-500 hover:text-violet-600 hover:underline">
+                  Have a sign-in code from another tab?
+                </button>
+              )}
+              {handoffOpen && (
+                <form className="space-y-2 mt-2" onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (handoffBusy) return;
+                  const code = handoffCode.trim().toUpperCase().replace(/\s+/g, "");
+                  if (code.length !== 8 || !/^[A-Z0-9]+$/.test(code)) {
+                    setErr("Enter the 8-character sign-in code");
+                    return;
+                  }
+                  setErr(""); setHandoffBusy(true);
+                  try {
+                    await onAuth.handoffCodeSignIn(code);
+                    // Success — App re-renders into authed shell.
+                  } catch (e2) {
+                    setErr(e2.message || "Invalid or expired code");
+                  } finally { setHandoffBusy(false); }
+                }}>
+                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Sign-in code</label>
+                  <input type="text" required value={handoffCode}
+                    onChange={e => setHandoffCode(e.target.value.toUpperCase())}
+                    placeholder="XXXX-XXXX"
+                    autoComplete="one-time-code"
+                    inputMode="text"
+                    maxLength={16}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm font-mono tracking-widest text-center focus:outline-none focus:border-violet-500" />
+                  <div className="flex gap-2 pt-1">
+                    <button type="button" onClick={() => { setHandoffOpen(false); setHandoffCode(""); setErr(""); }}
+                      className="flex-1 py-2 rounded-xl text-sm text-slate-500 hover:bg-slate-50">Cancel</button>
+                    <button type="submit" disabled={handoffBusy}
+                      className="flex-1 py-2 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-60">
+                      {handoffBusy ? "Signing in…" : "Sign in"}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          )}
+          </>)}
+
           {err && (
             <div className="text-sm text-rose-700 bg-rose-50 border border-rose-100 p-3 rounded-xl">
               {err}

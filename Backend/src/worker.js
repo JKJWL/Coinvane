@@ -235,6 +235,31 @@ new Worker("sync", async (job) => {
     if (total > 0) {
       console.log(`[audit] pruned ${minor.affectedRows} routine + ${major.affectedRows} major`);
     }
+
+    // One-time email sign-in tokens: prune rows past expiry + 24h so a
+    // used-but-recent link is still visible in the audit trail for a
+    // day. Runs on the same hourly cadence as the audit-log sweep to
+    // keep the retention curve tight.
+    try {
+      const otl = await query(
+        `DELETE FROM email_signin_tokens
+         WHERE expires_at < DATE_SUB(NOW(), INTERVAL 24 HOUR)`
+      );
+      if (otl.affectedRows) console.log(`[signin_link] pruned ${otl.affectedRows} expired tokens`);
+    } catch (e) {
+      // Table may not exist on a not-yet-migrated deploy.
+      console.warn(`[signin_link] cleanup skipped: ${e.message}`);
+    }
+    try {
+      const handoffs = await query(
+        `DELETE FROM signin_handoff_codes
+         WHERE expires_at < DATE_SUB(NOW(), INTERVAL 24 HOUR)`
+      );
+      if (handoffs.affectedRows) console.log(`[signin_link] pruned ${handoffs.affectedRows} expired handoff codes`);
+    } catch (e) {
+      console.warn(`[signin_link] handoff cleanup skipped: ${e.message}`);
+    }
+
     return { ok: true, pruned: total };
   }
 

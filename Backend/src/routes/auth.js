@@ -4,7 +4,8 @@ import { promises as fs } from "fs";
 import path from "path";
 import { query, queryOne } from "../db.js";
 import { enqueueMail } from "../queue.js";
-import { renderNotificationDigest, isEmailEnabled } from "../mailer.js";
+import { renderNotificationDigest, renderOneTimeLinkEmail, isEmailEnabled } from "../mailer.js";
+import cryptoNode from "node:crypto";
 import { audit } from "../audit.js";
 import { getAllowedEmails } from "../app-settings.js";
 import { plaid } from "../plaid-client.js";
@@ -25,6 +26,47 @@ const ATTACHMENTS_ROOT = process.env.ATTACHMENTS_ROOT || "/data/attachments";
 const SIGNUP_MODE = () => process.env.SIGNUP_MODE || "open";
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
+
+// ── One-time email sign-in link (Sign In With One Time Link) ────────
+// Gated by ONE_TIME_LINK_ENABLED env var so the feature stays off
+// until an operator explicitly turns it on. Requires EMAIL_CONFIG
+// enabled + working SMTP; the /request endpoint returns 503 with an
+// operator-facing message when SMTP is off. Tokens are 48 random
+// bytes (base64url = 64 chars, ~384 bits of entropy — collision-free
+// at any realistic scale) and stored only as SHA-256 hex so a DB
+// dump can't be used to hijack outstanding links.
+const ONE_TIME_LINK_ENABLED = () =>
+  String(process.env.ONE_TIME_LINK_ENABLED || "").toLowerCase() === "true";
+// Strict-IP binding: the IP that requested the link must match the IP
+// that opens it. Blocks a stolen-email attack where the attacker's IP
+// differs from the victim's. Also blocks legitimate cross-device flow
+// (request on laptop, click on phone). Default is strict per the
+// operator's choice; loosen by setting ONE_TIME_LINK_STRICT_IP=false.
+const ONE_TIME_LINK_STRICT_IP = () =>
+  String(process.env.ONE_TIME_LINK_STRICT_IP || "true").toLowerCase() !== "false";
+const ONE_TIME_LINK_EXPIRES_MIN = 15;
+const ONE_TIME_LINK_TOKEN_BYTES = 48;
+// Handoff-code alphabet omits look-alikes (0/O, 1/I/L). 8 chars * 30
+// symbols = ~656B combinations — infeasible to brute-force in a
+// 10-minute window with our 20/min rate limit.
+const HANDOFF_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+const HANDOFF_LENGTH = 8;
+const HANDOFF_EXPIRES_MIN = 10;
+function newHandoffCode() {
+  const buf = cryptoNode.randomBytes(HANDOFF_LENGTH);
+  let out = "";
+  for (let i = 0; i < HANDOFF_LENGTH; i++) {
+    out += HANDOFF_ALPHABET[buf[i] % HANDOFF_ALPHABET.length];
+  }
+  return out;
+}
+function sha256Hex(s) {
+  return cryptoNode.createHash("sha256").update(s).digest("hex");
+}
+function newOneTimeToken() {
+  // base64url so the token is URL-safe without percent-encoding
+  return cryptoNode.randomBytes(ONE_TIME_LINK_TOKEN_BYTES).toString("base64url");
+}
 
 async function emailAllowed(email) {
   // Allowlist now lives in the app_settings table (with fallback to the
@@ -169,6 +211,274 @@ export default async function (app) {
       { expiresIn: "30d" }
     );
     await audit(user.id, "auth.success", req, { email: user.email });
+    return { token, user: userPayload(user) };
+  });
+
+  // ── Public config for the login screen ────────────────────────────
+  // Tiny endpoint the AuthScreen hits to decide whether to render the
+  // "Sign in with a one-time link" button. Unauthenticated by design
+  // (login page can't have a session yet). Exposes NO user data —
+  // only feature-availability booleans. Rate-limited to keep it from
+  // being a probe endpoint.
+  app.get("/public-config", {
+    config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+  }, async () => {
+    return {
+      oneTimeLinkEnabled: ONE_TIME_LINK_ENABLED() && isEmailEnabled(),
+    };
+  });
+
+  // ── Request a one-time sign-in link ───────────────────────────────
+  // Anti-enumeration policy: ALWAYS returns {ok: true} regardless of
+  // whether the email is on the allowlist. Real work happens only for
+  // allowlisted addresses; unauthorized addresses get a silent no-op
+  // so an attacker can't probe the roster.
+  //
+  // Per-route rate limit (20/min/IP) sits alongside a per-email
+  // throttle enforced by counting rows in email_signin_tokens created
+  // in the last hour. 5 emails/hour/email is the ceiling.
+  app.post("/one-time-link/request", {
+    config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
+    // Feature gate + SMTP gate. 503 on SMTP-off is intentional: an
+    // operator who left the feature on but broke SMTP should see a
+    // real error, not silent success. Only ONE_TIME_LINK_ENABLED
+    // being off produces the 404 (feature is genuinely not exposed).
+    if (!ONE_TIME_LINK_ENABLED()) {
+      return reply.code(404).send({ error: "Feature disabled" });
+    }
+    if (!isEmailEnabled()) {
+      return reply.code(503).send({ error: "Email is disabled on the server (EMAIL_CONFIG must be enabled)" });
+    }
+
+    const rawEmail = String(req.body?.email || "").trim().toLowerCase();
+    // Light shape validation — mirrors the allowlist parser. Malformed
+    // input just falls through to the silent-success path.
+    const looksLikeEmail = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{1,64}$/.test(rawEmail);
+    if (!looksLikeEmail) {
+      return { ok: true }; // silent success
+    }
+
+    // Not on allowlist? Silent success, no work performed. Audit the
+    // attempt so an operator can spot probing patterns.
+    if (!(await emailAllowed(rawEmail))) {
+      await audit(null, "signin_link.rejected", req, { reason: "not_in_allowlist", email: rawEmail });
+      return { ok: true }; // silent success
+    }
+
+    // Per-email throttle: max 5 outstanding+consumed requests in the
+    // last hour. Prevents inbox flooding of a legitimate recipient
+    // by an attacker (or a stuck client) even when the IP throttle
+    // doesn't trip. Silent success on trip — matches the rest.
+    const recent = await queryOne(
+      `SELECT COUNT(*) AS c FROM email_signin_tokens
+       WHERE email = ? AND created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)`,
+      [rawEmail]
+    );
+    if (Number(recent?.c || 0) >= 5) {
+      await audit(null, "signin_link.rate_limited", req, { email: rawEmail });
+      return { ok: true }; // silent success
+    }
+
+    // Generate token, store hash, mail raw token in link.
+    const rawToken = newOneTimeToken();
+    const tokenHash = sha256Hex(rawToken);
+    await query(
+      `INSERT INTO email_signin_tokens (email, token_hash, expires_at, requester_ip)
+       VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE), ?)`,
+      [rawEmail, tokenHash, ONE_TIME_LINK_EXPIRES_MIN, req.ip || null]
+    );
+
+    const appUrl = process.env.APP_URL || "https://coinvane.local";
+    // The `#signin?t=` URL fragment is read by the SPA on load. Using
+    // a fragment (rather than a query param) means the raw token
+    // never appears in server access logs or referrer headers.
+    const url = `${appUrl.replace(/\/$/, "")}/#signin?t=${rawToken}`;
+    try {
+      const mail = renderOneTimeLinkEmail({
+        url, requesterIp: req.ip || null,
+        expiresMinutes: ONE_TIME_LINK_EXPIRES_MIN,
+      });
+      await enqueueMail({ to: rawEmail, ...mail });
+    } catch (e) {
+      // Log but still return success to the client — mail-queue
+      // failure should not reveal to the requester that the email
+      // is on the allowlist.
+      req.log.warn({ err: e.message, email: rawEmail }, "one-time-link mail enqueue failed");
+    }
+    await audit(null, "signin_link.requested", req, { email: rawEmail });
+    return { ok: true };
+  });
+
+  // ── Verify + redeem a one-time sign-in link ───────────────────────
+  // Called by the SPA when it lands on /#signin?t=<token>. Hashes the
+  // incoming token, looks up an unused-unexpired row, marks it used,
+  // finds-or-creates the user by email (same dedup semantics as the
+  // Google Sign-In path so no matter which method a user tried first,
+  // both land on the same users row), and issues the same 30-day JWT.
+  app.post("/one-time-link/verify", {
+    config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
+    if (!ONE_TIME_LINK_ENABLED()) {
+      return reply.code(404).send({ error: "Feature disabled" });
+    }
+    const rawToken = String(req.body?.token || "").trim();
+    if (!rawToken || rawToken.length < 32 || rawToken.length > 512) {
+      return reply.code(400).send({ error: "Invalid token" });
+    }
+    const tokenHash = sha256Hex(rawToken);
+    const row = await queryOne(
+      `SELECT id, email, expires_at, used_at, requester_ip
+       FROM email_signin_tokens WHERE token_hash = ?`,
+      [tokenHash]
+    );
+    if (!row) {
+      await audit(null, "signin_link.invalid", req, { reason: "unknown_token" });
+      return reply.code(401).send({ error: "This link is invalid or has already been used." });
+    }
+    if (row.used_at) {
+      await audit(null, "signin_link.invalid", req, { reason: "already_used", email: row.email });
+      return reply.code(410).send({ error: "This link has already been used. Request a new one." });
+    }
+    if (new Date(row.expires_at).getTime() < Date.now()) {
+      await audit(null, "signin_link.invalid", req, { reason: "expired", email: row.email });
+      return reply.code(410).send({ error: "This link has expired. Request a new one." });
+    }
+
+    // ── Strict IP binding ─────────────────────────────────────────
+    // The IP that requested the link must match the IP that clicks
+    // it. Blocks a stolen-email replay where the attacker's public
+    // IP differs from the victim's. Loosen with ONE_TIME_LINK_STRICT_IP=false
+    // if the cross-device flow (request desktop, click phone) is
+    // more important than this protection.
+    if (ONE_TIME_LINK_STRICT_IP()) {
+      const currentIp = req.ip || null;
+      if (row.requester_ip && currentIp && row.requester_ip !== currentIp) {
+        await audit(null, "signin_link.invalid", req, {
+          reason: "ip_mismatch", email: row.email,
+          requesterIp: row.requester_ip, clickIp: currentIp,
+        });
+        return reply.code(403).send({
+          error: "This link must be opened on the same network it was requested from. Request a new one on this device.",
+        });
+      }
+    }
+
+    // Re-check allowlist at redeem time. Someone could have been on
+    // the allowlist when the link was minted, then removed before the
+    // click; deny in that case. Defense in depth.
+    const email = String(row.email || "").toLowerCase();
+    if (!(await emailAllowed(email))) {
+      await audit(null, "signin_link.rejected", req, { reason: "not_in_allowlist_at_redeem", email });
+      return reply.code(403).send({ error: "This email is no longer authorized." });
+    }
+
+    // Consume the token FIRST — even if we bail on user creation
+    // below, the token is spent. Prevents replay.
+    await query("UPDATE email_signin_tokens SET used_at = NOW() WHERE id = ?", [row.id]);
+
+    // Find or create user by email — SAME lookup semantics as Google
+    // Sign-In so the two paths converge on one row per email
+    // regardless of which came first.
+    let user = await queryOne("SELECT * FROM users WHERE email = ?", [email]);
+    if (!user) {
+      const userCount = (await queryOne("SELECT COUNT(*) AS c FROM users"))?.c || 0;
+      let role = "user";
+      if (userCount === 0) {
+        role = "owner"; // first user is always owner
+      } else if (SIGNUP_MODE() === "closed") {
+        return reply.code(403).send({ error: "Signups are disabled" });
+      }
+      const name = email.split("@")[0];
+      const r = await query(
+        `INSERT INTO users (email, name, role) VALUES (?, ?, ?)`,
+        [email, name, role]
+      );
+      await seedCategoriesFor(r.insertId);
+      user = await queryOne("SELECT * FROM users WHERE id = ?", [r.insertId]);
+    }
+
+    const token = app.jwt.sign(
+      { id: user.id, email: user.email, role: user.role },
+      { expiresIn: "30d" }
+    );
+
+    // Issue a short handoff code alongside the JWT. Purpose: iOS
+    // separates Safari's storage from the installed PWA's storage,
+    // and there is no browser API that hands the JWT across that
+    // boundary. So we ALSO mint a short user-friendly code that
+    // the user can type into the PWA's login screen to sign in
+    // there without needing another email. Optional — Android
+    // users won't see it because the manifest's handle_links
+    // routes the click straight into the PWA.
+    const handoffRaw = newHandoffCode();
+    const handoffHash = sha256Hex(handoffRaw);
+    try {
+      await query(
+        `INSERT INTO signin_handoff_codes (code_hash, user_id, expires_at)
+         VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE))`,
+        [handoffHash, user.id, HANDOFF_EXPIRES_MIN]
+      );
+    } catch (e) {
+      // Handoff is best-effort — a DB hiccup shouldn't fail the sign-in.
+      req.log.warn({ err: e.message }, "handoff code insert failed");
+    }
+
+    await audit(user.id, "signin_link.verified", req, { email: user.email });
+    await audit(user.id, "auth.success", req, { email: user.email, method: "one_time_link" });
+    return {
+      token, user: userPayload(user),
+      handoffCode: handoffRaw,
+      handoffExpiresMinutes: HANDOFF_EXPIRES_MIN,
+    };
+  });
+
+  // ── Redeem a handoff code from the installed PWA ─────────────────
+  // Second step of the cross-context sign-in flow. Browser tab already
+  // consumed the one-time-link token and got a JWT; the code lets the
+  // user paste that same session into the installed PWA on the same
+  // device (or a different one). One-shot; expires quickly.
+  app.post("/one-time-link/handoff", {
+    config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
+    if (!ONE_TIME_LINK_ENABLED()) {
+      return reply.code(404).send({ error: "Feature disabled" });
+    }
+    const raw = String(req.body?.code || "").trim().toUpperCase();
+    if (!raw || raw.length !== HANDOFF_LENGTH || !/^[A-Z0-9]+$/.test(raw)) {
+      return reply.code(400).send({ error: "Invalid code" });
+    }
+    const codeHash = sha256Hex(raw);
+    const row = await queryOne(
+      `SELECT id, user_id, expires_at, used_at
+       FROM signin_handoff_codes WHERE code_hash = ?`,
+      [codeHash]
+    );
+    if (!row) {
+      await audit(null, "signin_link.handoff_invalid", req, { reason: "unknown_code" });
+      return reply.code(401).send({ error: "This code is invalid or has already been used." });
+    }
+    if (row.used_at) {
+      await audit(null, "signin_link.handoff_invalid", req, { reason: "already_used" });
+      return reply.code(410).send({ error: "This code has already been used." });
+    }
+    if (new Date(row.expires_at).getTime() < Date.now()) {
+      await audit(null, "signin_link.handoff_invalid", req, { reason: "expired" });
+      return reply.code(410).send({ error: "This code has expired. Sign in again from the browser." });
+    }
+    // Consume first — replay prevention.
+    await query("UPDATE signin_handoff_codes SET used_at = NOW() WHERE id = ?", [row.id]);
+    const user = await queryOne("SELECT * FROM users WHERE id = ?", [row.user_id]);
+    if (!user) {
+      // User was deleted between issue and redeem — treat as invalid.
+      return reply.code(401).send({ error: "This code is no longer valid." });
+    }
+    const token = app.jwt.sign(
+      { id: user.id, email: user.email, role: user.role },
+      { expiresIn: "30d" }
+    );
+    await audit(user.id, "signin_link.handoff_redeemed", req, { email: user.email });
+    await audit(user.id, "auth.success", req, { email: user.email, method: "handoff_code" });
     return { token, user: userPayload(user) };
   });
 

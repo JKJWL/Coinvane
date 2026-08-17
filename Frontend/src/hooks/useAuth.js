@@ -29,7 +29,35 @@ export function useAuth() {
     return res.user;
   };
 
+  // Redeem a one-time email sign-in token. Returns the full server
+  // response — { token, user, handoffCode, handoffExpiresMinutes } —
+  // WITHOUT committing the session. The caller decides when to call
+  // commitSession() so it can first show the handoff code to the user
+  // (needed for iOS Safari -> installed PWA cross-context sign-in).
+  const verifyOneTimeLinkOnly = async (linkToken) => {
+    return await api.verifyOneTimeLink(linkToken);
+  };
+
+  // Redeem a handoff code from within the installed PWA. Server hands
+  // back a full session so this commits immediately.
+  const handoffCodeSignIn = async (code) => {
+    const res = await api.oneTimeLinkHandoff(code);
+    setToken(res.token);
+    setUser(res.user);
+    return res.user;
+  };
+
+  // Commit a { token, user } pair (e.g. from verifyOneTimeLinkOnly).
+  const commitSession = ({ token, user: u }) => {
+    setToken(token);
+    setUser(u);
+  };
+
   const logout = () => { setToken(null); setUser(null); };
 
-  return { user, loading, googleSignIn, logout, refresh, setUser };
+  return {
+    user, loading, googleSignIn,
+    verifyOneTimeLinkOnly, handoffCodeSignIn, commitSession,
+    logout, refresh, setUser,
+  };
 }

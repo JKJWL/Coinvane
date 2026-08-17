@@ -79,6 +79,20 @@ PLAID_WEBHOOK_URL=https://${DOMAIN}/api/plaid/webhook
 # ─── Misc ────────────────────────────────────────────────────────
 SIGNUP_MODE=closed
 
+# Sign in with a one-time link (email-based passwordless auth).
+# Flip to "true" AFTER you've enabled + tested the email subsystem
+# below — the request endpoint returns 503 if EMAIL_CONFIG=disabled.
+# Google Sign-In stays available regardless. Both methods dedupe on
+# email so a user can use either without creating a duplicate account.
+ONE_TIME_LINK_ENABLED=false
+
+# Bind the one-time link to the requesting IP. true (default) requires
+# the same public IP on click as on request — blocks stolen-email
+# replay from a different network but breaks cross-device flow
+# (request desktop, click phone). Set to false if your users are on
+# mobile networks or need cross-device.
+ONE_TIME_LINK_STRICT_IP=true
+
 # How often the worker polls Plaid for new transactions, in minutes.
 # Webhook-driven syncs fire instantly regardless of this value. Going
 # below ~15 min mostly burns Plaid API quota — see .env.example.

@@ -203,3 +203,65 @@ export function renderNotificationDigest({ userName, notifications, disclaimer }
 </body></html>`,
   };
 }
+
+/**
+ * One-time sign-in link email. Rendered when a user (or someone
+ * pretending to be them) hits POST /auth/one-time-link/request.
+ * The `url` is the full link including token — never log it.
+ * `requesterIp` is included in the body so the recipient can spot
+ * an unfamiliar-network request.
+ */
+export function renderOneTimeLinkEmail({ url, requesterIp, expiresMinutes = 15 }) {
+  const appUrl = process.env.APP_URL || "https://coinvane.local";
+  const ipLine = requesterIp ? `Requested from IP <code style="font-family:monospace;background:#f1f5f9;padding:1px 6px;border-radius:4px">${requesterIp}</code>.` : "";
+  return {
+    subject: `Your Coinvane sign-in link`,
+    text: [
+      `Sign in to Coinvane`,
+      "",
+      `Click the link below to sign in. It expires in ${expiresMinutes} minutes and can only be used once.`,
+      "",
+      url,
+      "",
+      requesterIp ? `Requested from IP ${requesterIp}.` : "",
+      `If you didn't request this, ignore this email — someone typed your address by mistake or is trying to sign in as you. No account changes have been made.`,
+      "",
+      `Coinvane · ${appUrl}`,
+    ].filter(Boolean).join("\n"),
+    html: `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+  <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f8fafc;padding:32px 16px">
+    <tr><td align="center">
+      <table cellpadding="0" cellspacing="0" border="0" width="560" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(15,23,42,.05)">
+        <tr><td style="background:linear-gradient(135deg,#c4b5fd 0%,#8b5cf6 100%);padding:24px 28px;color:#ffffff">
+          <table cellpadding="0" cellspacing="0" border="0">
+            <tr>
+              <td style="background:#ffffff;border-radius:8px;width:36px;height:36px;text-align:center;vertical-align:middle;font-size:20px;font-weight:700;color:#7c3aed">$</td>
+              <td style="padding-left:12px;font-size:18px;font-weight:700;letter-spacing:-0.02em">Coinvane</td>
+            </tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:28px">
+          <div style="font-size:20px;font-weight:700;color:#0f172a;margin:0 0 6px 0">Sign in to Coinvane</div>
+          <div style="font-size:14px;color:#64748b;margin:0 0 20px 0;line-height:1.5">
+            Click the button below to sign in. This link expires in <strong>${expiresMinutes} minutes</strong> and can only be used once.
+          </div>
+          <div style="margin:24px 0">
+            <a href="${url}" style="display:inline-block;background:#8b5cf6;color:#ffffff;text-decoration:none;font-weight:600;font-size:15px;padding:13px 26px;border-radius:10px">Sign in to Coinvane</a>
+          </div>
+          <div style="font-size:12px;color:#94a3b8;line-height:1.5;margin-top:16px">
+            Or paste this URL into your browser:<br>
+            <span style="word-break:break-all;color:#64748b">${url}</span>
+          </div>
+          <div style="margin-top:24px;padding-top:16px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">
+            ${ipLine}
+            If you didn't request this, ignore this email — someone typed your address by mistake or is trying to sign in as you. No account changes have been made.
+          </div>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body></html>`,
+  };
+}
