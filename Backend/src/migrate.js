@@ -900,10 +900,14 @@ const SCHEMA = [
     user_id INT NOT NULL,
     expires_at TIMESTAMP NOT NULL,
     used_at TIMESTAMP NULL,
+    issued_ip VARCHAR(45) NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     INDEX idx_expires_handoff (expires_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  // Existing deployments — add issued_ip to any signin_handoff_codes
+  // table that pre-dates the strict-IP binding. Idempotent.
+  `ALTER TABLE signin_handoff_codes ADD COLUMN IF NOT EXISTS issued_ip VARCHAR(45) NULL`,
 
   `CREATE TABLE IF NOT EXISTS bill_cycles (
     id INT AUTO_INCREMENT PRIMARY KEY,

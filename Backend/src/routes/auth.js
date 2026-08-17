@@ -440,10 +440,15 @@ export default async function (app) {
     const handoffRaw = newHandoffCode();
     const handoffHash = sha256Hex(handoffRaw);
     try {
+      // issued_ip is the IP that redeemed the one-time link. When
+      // ONE_TIME_LINK_STRICT_IP is on, /handoff enforces that the
+      // redemption of THIS code must come from the same IP — same
+      // rule as the primary link, so an over-the-shoulder code copy
+      // can't be used from a different network.
       await query(
-        `INSERT INTO signin_handoff_codes (code_hash, user_id, expires_at)
-         VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE))`,
-        [handoffHash, user.id, HANDOFF_EXPIRES_MIN]
+        `INSERT INTO signin_handoff_codes (code_hash, user_id, expires_at, issued_ip)
+         VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE), ?)`,
+        [handoffHash, user.id, HANDOFF_EXPIRES_MIN, req.ip || null]
       );
     } catch (e) {
       // Handoff is best-effort — a DB hiccup shouldn't fail the sign-in.
@@ -476,7 +481,7 @@ export default async function (app) {
     }
     const codeHash = sha256Hex(raw);
     const row = await queryOne(
-      `SELECT id, user_id, expires_at, used_at
+      `SELECT id, user_id, expires_at, used_at, issued_ip
        FROM signin_handoff_codes WHERE code_hash = ?`,
       [codeHash]
     );
@@ -491,6 +496,25 @@ export default async function (app) {
     if (new Date(row.expires_at).getTime() < Date.now()) {
       await audit(null, "signin_link.handoff_invalid", req, { reason: "expired" });
       return reply.code(410).send({ error: "This code has expired. Sign in again from the browser." });
+    }
+
+    // ── Strict IP binding on the handoff too ──────────────────────
+    // Same rule as the primary link: the IP that received the code
+    // must match the IP that redeems it. Blocks the copy-and-share
+    // attack where an over-the-shoulder viewer / screenshot leak
+    // could redeem the code from a different network. Same escape
+    // hatch (ONE_TIME_LINK_STRICT_IP=false loosens everywhere).
+    if (ONE_TIME_LINK_STRICT_IP()) {
+      const currentIp = req.ip || null;
+      if (row.issued_ip && currentIp && row.issued_ip !== currentIp) {
+        await audit(null, "signin_link.handoff_invalid", req, {
+          reason: "ip_mismatch",
+          issuedIp: row.issued_ip, redeemIp: currentIp,
+        });
+        return reply.code(403).send({
+          error: "This code must be entered on the same network it was issued on.",
+        });
+      }
     }
     // Consume first — replay prevention.
     await query("UPDATE signin_handoff_codes SET used_at = NOW() WHERE id = ?", [row.id]);
