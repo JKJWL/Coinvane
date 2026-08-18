@@ -496,6 +496,13 @@ function PlaidLinkButton({ onSuccess, full = false }) {
   const [tokenError, setTokenError] = useState(false);
   const [exchanging, setExchanging] = useState(false);
   const autoOpenedRef = useRef(false);
+  // Stage 3 — merge candidates returned by /plaid/exchange when a
+  // freshly-linked Plaid account matches an imported manual account
+  // by name + institution. Modal walks the user through per-candidate
+  // Merge or Keep-Separate. Empty until an exchange comes back with a
+  // non-empty list.
+  const [mergeCandidates, setMergeCandidates] = useState([]);
+  const [mergeBusy, setMergeBusy] = useState(false);
 
   const fetchToken = useCallback(async () => {
     setTokenError(false);
@@ -523,12 +530,20 @@ function PlaidLinkButton({ onSuccess, full = false }) {
     onSuccess: async (public_token, metadata) => {
       setExchanging(true);
       try {
-        await api.exchangePublicToken(public_token, metadata);
+        const res = await api.exchangePublicToken(public_token, metadata);
         sessionStorage.removeItem("plaid_link_token");
         toast?.(`Connected ${metadata?.institution?.name || "your bank"} successfully`, "success");
         // Refetch a fresh token in case user wants to link another bank
         fetchToken();
         onSuccess?.();
+        // If any freshly-linked accounts match imported manual ones,
+        // pop the merge modal. User confirms per row; overlap-window
+        // transaction dedup is handled server-side on the next sync
+        // (tryAdoptManual in sync.js). Silently skip when nothing to
+        // do so a normal Plaid link stays a single click.
+        if (Array.isArray(res?.mergeCandidates) && res.mergeCandidates.length > 0) {
+          setMergeCandidates(res.mergeCandidates);
+        }
       } catch (e) {
         toast?.("Could not save connection: " + (e.message || "server error"), "error");
       } finally {
@@ -574,6 +589,7 @@ function PlaidLinkButton({ onSuccess, full = false }) {
                    "Connect Bank";
 
   return (
+    <>
     <motion.button
       whileTap={{ scale: 0.97 }}
       onClick={click}
@@ -593,6 +609,82 @@ function PlaidLinkButton({ onSuccess, full = false }) {
       )}
       {label}
     </motion.button>
+
+    {/* Stage 3 merge modal — appears when Plaid link returns
+        matching imported manual accounts. User confirms or skips
+        per candidate. Rendered as a fixed-position overlay so it
+        works from any tab. */}
+    {mergeCandidates.length > 0 && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60"
+        onClick={() => setMergeCandidates([])}>
+        <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+          onClick={e => e.stopPropagation()}
+          className="w-full max-w-lg bg-white rounded-2xl shadow-2xl p-5 space-y-4">
+          <div>
+            <div className="text-lg font-bold text-slate-900">Re-link imported account?</div>
+            <div className="text-xs text-slate-500 mt-1 leading-relaxed">
+              You have {mergeCandidates.length === 1 ? "an imported manual account that matches" : `${mergeCandidates.length} imported manual accounts that match`} what you just linked from Plaid. Merging moves the imported history onto the fresh Plaid connection so future syncs update the same row. Overlapping transactions (last ~30 days) will be deduplicated automatically on the next sync.
+            </div>
+          </div>
+          <div className="space-y-3 max-h-[50vh] overflow-y-auto">
+            {mergeCandidates.map((c) => (
+              <div key={c.manual.id + ":" + c.plaid.id}
+                className="rounded-xl border border-slate-200 p-3 space-y-2">
+                <div className="text-sm font-semibold text-slate-900">
+                  {c.plaid.name}
+                  {c.plaid.institution && (
+                    <span className="text-xs text-slate-500 font-normal"> · {c.plaid.institution}</span>
+                  )}
+                </div>
+                <div className="text-xs text-slate-600 grid grid-cols-2 gap-x-3 gap-y-0.5">
+                  {c.manual.transactions > 0 && <div><span className="font-mono">{c.manual.transactions}</span> transactions</div>}
+                  {c.manual.budgets > 0 && <div><span className="font-mono">{c.manual.budgets}</span> budgets</div>}
+                  {c.manual.goals > 0 && <div><span className="font-mono">{c.manual.goals}</span> goals</div>}
+                  {c.manual.loans > 0 && <div><span className="font-mono">{c.manual.loans}</span> loans</div>}
+                  {c.manual.assets > 0 && <div><span className="font-mono">{c.manual.assets}</span> assets</div>}
+                  {c.manual.bills > 0 && <div><span className="font-mono">{c.manual.bills}</span> bills</div>}
+                  {c.manual.reconciliations > 0 && <div><span className="font-mono">{c.manual.reconciliations}</span> reconciliations</div>}
+                  {c.manual.holdings > 0 && <div><span className="font-mono">{c.manual.holdings}</span> holdings</div>}
+                </div>
+                <div className="flex gap-2 pt-1">
+                  <button type="button" disabled={mergeBusy}
+                    onClick={() => setMergeCandidates(prev => prev.filter(x => x !== c))}
+                    className="flex-1 py-1.5 rounded-lg text-xs text-slate-500 hover:bg-slate-100 disabled:opacity-40">
+                    Keep separate
+                  </button>
+                  <button type="button" disabled={mergeBusy}
+                    onClick={async () => {
+                      setMergeBusy(true);
+                      try {
+                        const r = await api.mergeManualIntoPlaid(c.manual.id, c.plaid.id);
+                        const moved = Object.entries(r.moves || {})
+                          .filter(([, n]) => n > 0)
+                          .map(([k, n]) => `${n} ${k}`)
+                          .join(", ") || "no rows";
+                        toast?.(`Merged into ${c.plaid.name}: ${moved}`, "success");
+                        setMergeCandidates(prev => prev.filter(x => x !== c));
+                        onSuccess?.();
+                      } catch (e) {
+                        toast?.("Merge failed: " + (e.message || ""), "error");
+                      } finally {
+                        setMergeBusy(false);
+                      }
+                    }}
+                    className="flex-1 py-1.5 rounded-lg text-xs font-semibold bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-40">
+                    {mergeBusy ? "Merging…" : "Merge"}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <button type="button" onClick={() => setMergeCandidates([])}
+            className="w-full py-2 rounded-xl text-sm font-medium text-slate-500 hover:bg-slate-50">
+            Done
+          </button>
+        </motion.div>
+      </div>
+    )}
+    </>
   );
 }
 
@@ -7089,6 +7181,233 @@ const PDF_REPORTS = [
   { id: "tax",        label: "Tax summary (year-end)",     filename: "coinvane-tax-summary.pdf",  download: (api) => api.exportTaxSummaryPDF() },
   { id: "register",   label: "Register (plain print)",     filename: "coinvane-register.pdf",     download: (api) => api.exportRegisterPDF() },
 ];
+// Full-instance .cvn backup panel — collapsed by default; expands to a
+// passphrase input (optional). Empty passphrase = plaintext ZIP; any
+// text = AES-256-GCM at rest with a PBKDF2-derived key. The file is
+// downloaded directly by the browser — no server-side staging.
+function BackupExportPanel({ theme, darkMode, toast }) {
+  const [open, setOpen] = useState(false);
+  const [passphrase, setPassphrase] = useState("");
+  const [confirmPass, setConfirmPass] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const run = async () => {
+    setErr("");
+    if (passphrase && passphrase !== confirmPass) {
+      setErr("Passphrases don't match.");
+      return;
+    }
+    if (passphrase && passphrase.length < 8) {
+      setErr("Use at least 8 characters for the passphrase.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await api.exportCvn(passphrase || null);
+      toast?.(`Backup saved: ${r.filename} (${Math.round(r.bytes / 1024)} KB)`, "success");
+      setOpen(false); setPassphrase(""); setConfirmPass("");
+    } catch (e) {
+      setErr(e.message || "Export failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <motion.button whileTap={{ scale: 0.97 }} type="button"
+        onClick={() => setOpen(true)}
+        className={`text-sm font-semibold px-3 py-2 rounded-xl ${darkMode ? "bg-violet-500/15 text-violet-300 border border-violet-500/30" : "bg-violet-50 text-violet-700 border border-violet-200"}`}>
+        Download .cvn backup
+      </motion.button>
+    );
+  }
+  return (
+    <div className={`p-3 rounded-xl border ${theme.border} ${theme.surface} space-y-2`}>
+      <div>
+        <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1`}>
+          Passphrase (optional)
+        </label>
+        <input type="password" value={passphrase} disabled={busy}
+          onChange={e => setPassphrase(e.target.value)}
+          placeholder="Leave blank for unencrypted backup"
+          className={`w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`} />
+        <div className={`text-[11px] ${theme.textSubtle} mt-1 leading-relaxed`}>
+          If provided: AES-256-GCM encryption with a PBKDF2-derived key. You'll need this same passphrase to restore. There is <strong>no recovery</strong> if forgotten. Empty = plaintext ZIP (still portable, but sensitive if the file leaks).
+        </div>
+      </div>
+      {passphrase && (
+        <div>
+          <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1`}>
+            Confirm passphrase
+          </label>
+          <input type="password" value={confirmPass} disabled={busy}
+            onChange={e => setConfirmPass(e.target.value)}
+            className={`w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`} />
+        </div>
+      )}
+      {err && (
+        <div className={`text-xs px-2 py-1.5 rounded-lg ${darkMode ? "bg-rose-500/15 text-rose-300 border border-rose-500/30" : "bg-rose-50 text-rose-700 border border-rose-200"}`}>
+          {err}
+        </div>
+      )}
+      <div className="flex gap-2 pt-1">
+        <button type="button" onClick={() => { setOpen(false); setPassphrase(""); setConfirmPass(""); setErr(""); }}
+          disabled={busy}
+          className={`flex-1 py-2 rounded-xl text-sm ${theme.textSubtle} hover:bg-slate-500/5 disabled:opacity-60`}>
+          Cancel
+        </button>
+        <button type="button" onClick={run} disabled={busy}
+          className="flex-1 py-2 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-60">
+          {busy ? "Building…" : "Download"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Full-instance .cvn RESTORE panel. Two-step: preview -> confirm.
+// Preview validates the file (parses ZIP, verifies checksum, decrypts
+// if encrypted, checks passphrase) and shows the user WHAT will
+// import. Only after they hit Restore do we actually insert. Blocks
+// on a non-empty target with a link to Clear all data.
+function BackupImportPanel({ theme, darkMode, toast }) {
+  const [open, setOpen] = useState(false);
+  const [file, setFile] = useState(null);
+  const [passphrase, setPassphrase] = useState("");
+  const [preview, setPreview] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [done, setDone] = useState(null); // {imported: {...}}
+
+  const reset = () => {
+    setOpen(false); setFile(null); setPassphrase("");
+    setPreview(null); setErr(""); setDone(null);
+  };
+
+  const runPreview = async () => {
+    setErr(""); setPreview(null);
+    if (!file) { setErr("Pick a .cvn file first."); return; }
+    setBusy(true);
+    try {
+      const p = await api.previewCvnImport(file, passphrase || null);
+      setPreview(p);
+    } catch (e) { setErr(e.message || "Preview failed"); }
+    finally { setBusy(false); }
+  };
+
+  const runImport = async () => {
+    setErr("");
+    setBusy(true);
+    try {
+      const r = await api.importCvn(file, passphrase || null);
+      setDone(r);
+    } catch (e) { setErr(e.message || "Import failed"); }
+    finally { setBusy(false); }
+  };
+
+  if (!open) {
+    return (
+      <motion.button whileTap={{ scale: 0.97 }} type="button"
+        onClick={() => setOpen(true)}
+        className={`text-sm font-semibold px-3 py-2 rounded-xl ${theme.surface} border ${theme.border}`}>
+        Restore from .cvn backup…
+      </motion.button>
+    );
+  }
+  if (done) {
+    // Sum imported counts for a headline number.
+    const totals = done.imported || {};
+    const grand = Object.values(totals).reduce((a, b) => a + Number(b || 0), 0);
+    return (
+      <div className={`p-3 rounded-xl border ${theme.border} ${darkMode ? "bg-emerald-500/10 border-emerald-500/30" : "bg-emerald-50 border-emerald-200"} space-y-2`}>
+        <div className="text-sm font-semibold text-emerald-700">Backup restored — {grand} rows imported.</div>
+        <div className="text-xs text-emerald-800 grid grid-cols-2 gap-x-4 gap-y-0.5">
+          {Object.entries(totals).map(([k, v]) => (
+            <div key={k}><span className="font-mono">{v}</span> {k}</div>
+          ))}
+        </div>
+        <div className="text-[11px] text-emerald-800 pt-1">
+          Refresh the page to see the imported data across the app.
+        </div>
+        <button type="button" onClick={() => window.location.reload()}
+          className="text-xs font-semibold text-emerald-700 underline hover:no-underline">
+          Reload now
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className={`p-3 rounded-xl border ${theme.border} ${theme.surface} space-y-2`}>
+      <div className="text-sm font-semibold">Restore from .cvn</div>
+      <div className={`text-xs ${theme.textSubtle} leading-relaxed`}>
+        Refuses to run unless your account is empty of data (categories are exempt — seeded defaults stay). Use <em>Clear all data</em> in Danger Zone if you need to start over. Your login, permissions, and settings stay untouched.
+      </div>
+      <div>
+        <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1`}>Backup file</label>
+        <input type="file" accept=".cvn,application/x-coinvane-export,application/zip"
+          disabled={busy}
+          onChange={e => { setFile(e.target.files?.[0] || null); setPreview(null); setErr(""); }}
+          className="text-xs w-full" />
+      </div>
+      <div>
+        <label className={`text-[11px] font-semibold ${theme.textSubtle} uppercase tracking-wider block mb-1`}>Passphrase (only if the backup was encrypted)</label>
+        <input type="password" value={passphrase} disabled={busy}
+          onChange={e => setPassphrase(e.target.value)}
+          placeholder="Leave blank for unencrypted backups"
+          className={`w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`} />
+      </div>
+      {err && (
+        <div className={`text-xs px-2 py-1.5 rounded-lg ${darkMode ? "bg-rose-500/15 text-rose-300 border border-rose-500/30" : "bg-rose-50 text-rose-700 border border-rose-200"}`}>
+          {err}
+        </div>
+      )}
+      {preview && (
+        <div className={`text-xs px-2 py-2 rounded-lg border ${theme.border}`}>
+          <div className={`font-semibold ${theme.textMuted}`}>Ready to restore:</div>
+          <div className={`grid grid-cols-2 gap-x-3 gap-y-0.5 mt-1 ${theme.textMuted}`}>
+            {Object.entries(preview.stats || {}).filter(([k]) => k !== "transactionsDateRange").map(([k, v]) => (
+              <div key={k}><span className="font-mono">{v}</span> {k}</div>
+            ))}
+          </div>
+          {preview.stats?.transactionsDateRange && (
+            <div className={`text-[11px] mt-1 ${theme.textSubtle}`}>
+              Transactions: {preview.stats.transactionsDateRange.from} → {preview.stats.transactionsDateRange.to}
+            </div>
+          )}
+          <div className={`text-[11px] mt-1 ${theme.textSubtle}`}>
+            Attachments: {preview.manifest?.attachmentCount || 0} · Encrypted: {preview.manifest?.encrypted ? "yes" : "no"}
+          </div>
+          {!preview.targetEmpty && (
+            <div className={`text-[11px] mt-2 px-2 py-1.5 rounded-lg ${darkMode ? "bg-rose-500/15 text-rose-300" : "bg-rose-50 text-rose-700"}`}>
+              Blocked: your account has {preview.blockedByCount} row(s) in <span className="font-mono">{preview.blockedByTable}</span>. Clear all data first.
+            </div>
+          )}
+        </div>
+      )}
+      <div className="flex gap-2 pt-1">
+        <button type="button" onClick={reset} disabled={busy}
+          className={`flex-1 py-2 rounded-xl text-sm ${theme.textSubtle} hover:bg-slate-500/5 disabled:opacity-60`}>
+          Cancel
+        </button>
+        {!preview ? (
+          <button type="button" onClick={runPreview} disabled={busy || !file}
+            className="flex-1 py-2 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-60">
+            {busy ? "Checking…" : "Preview"}
+          </button>
+        ) : (
+          <button type="button" onClick={runImport}
+            disabled={busy || !preview.targetEmpty}
+            className="flex-1 py-2 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-60">
+            {busy ? "Restoring…" : "Restore"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function PdfExportDropdown({ exportingPdf, setExportingPdf, theme, darkMode, toast }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
@@ -12100,6 +12419,25 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
         <div className={`text-xs ${theme.textSubtle}`}>
           CSV columns: date, merchant, category, amount, account, note, pending.
           On import, the account column is matched to your existing accounts by name; unknown names import as manual rows.
+        </div>
+
+        {/* ── Full data backup (.cvn) ─────────────────────────────
+            User-owned backup / migration file. Contains every table
+            (transactions, categories, budgets, goals, notes, bills,
+            loans, assets, reconciliations, investments, automation
+            rules, settings + receipt attachments). Excludes account
+            identity (email, google_id, role) and per-server state
+            (Plaid tokens, push subs, webauthn creds).
+            Optional passphrase → AES-256-GCM at rest. */}
+        <div className={`border-t ${theme.border} pt-3 mt-3 space-y-2`}>
+          <div>
+            <div className="text-sm font-semibold">Back up everything (.cvn)</div>
+            <div className={`text-xs ${theme.textSubtle}`}>
+              Downloads a single <span className="font-mono">.cvn</span> file with your entire Coinvane instance — transactions, budgets, goals, notes, bills, loans, assets, receipts, settings. Portable to another Coinvane server. Sign-in identity, Plaid tokens, and device sessions are deliberately excluded.
+            </div>
+          </div>
+          <BackupExportPanel theme={theme} darkMode={darkMode} toast={toast} />
+          <BackupImportPanel theme={theme} darkMode={darkMode} toast={toast} />
         </div>
 
         {/* ── Quicken / MS Money / Mint migration ── */}

@@ -909,6 +909,14 @@ const SCHEMA = [
   // table that pre-dates the strict-IP binding. Idempotent.
   `ALTER TABLE signin_handoff_codes ADD COLUMN IF NOT EXISTS issued_ip VARCHAR(45) NULL`,
 
+  // .cvn import — record the source's original account name so that
+  // when the user later re-links via Plaid, we can auto-detect a
+  // manual account that used to be Plaid-linked pre-import and
+  // suggest a merge. Immutable after import (user renames of the
+  // manual account row don't affect this).
+  `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS imported_original_name VARCHAR(255) NULL`,
+  `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS imported_original_institution VARCHAR(255) NULL`,
+
   `CREATE TABLE IF NOT EXISTS bill_cycles (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,

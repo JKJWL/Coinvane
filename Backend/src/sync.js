@@ -158,6 +158,25 @@ export async function syncTransactions(userId, itemId, accessToken) {
         }
         continue;
       }
+      // ── Adopt an IMPORTED / manually-entered row if the incoming
+      //    Plaid txn matches one. Same-account, exact amount, ±3-day
+      //    date window, similar merchant. Prevents dupes when a user
+      //    restores a .cvn backup and then reconnects Plaid — Plaid
+      //    typically backfills 30-90 days, and every one of those
+      //    days is already in the imported data. Without this adopt,
+      //    the same swipe would appear twice on the register (once
+      //    from the .cvn, once from the fresh Plaid sync).
+      const adoptedImportedId = await tryAdoptManual(
+        userId, accId, -t.amount, t.date, t.transaction_id,
+        merchant, finalCat, t.pending ? 1 : 0, finalIsTransfer
+      );
+      if (adoptedImportedId) {
+        adoptedIds.add(adoptedImportedId);
+        // No inline push here — the row was already visible to the
+        // user in their imported history; they don't want another
+        // "large transaction" alert for something 60 days old.
+        continue;
+      }
     }
 
     await query(
@@ -362,6 +381,90 @@ async function tryAdoptScheduled(
       }
     } catch { /* recurring spawn is best-effort; adoption already committed */ }
   }
+  return match.id;
+}
+
+/**
+ * Adopt-manual: when a Plaid transaction arrives and a MANUAL row
+ * (plaid_transaction_id IS NULL, is_scheduled = 0) with the same
+ * account + amount + date-vicinity + similar merchant already exists,
+ * stamp Plaid's id on the existing row instead of inserting a duplicate.
+ *
+ * Purpose: user restores a .cvn backup then reconnects Plaid. Plaid
+ * backfills 30-90 days; every one of those days is already in the
+ * imported data. Without this hook, the same swipe would appear
+ * twice on the register — once from .cvn, once from fresh Plaid.
+ *
+ * Match criteria (tighter than tryAdoptScheduled since imported rows
+ * came from Plaid originally and should match ~exactly):
+ *   - same user + same account
+ *   - is_scheduled = 0, plaid_transaction_id IS NULL
+ *   - same sign
+ *   - amount within $0.02 (guards against float noise; imported Plaid
+ *     data is decimal-exact but a user-typed row for the same purchase
+ *     might round)
+ *   - date within ±3 days (pending → posted shift, imported "pending"
+ *     might have been earlier than the posted date Plaid returns)
+ *   - merchant exact case-insensitive OR either contains the other as
+ *     a substring (Plaid sometimes returns "WHOLE FOODS MKT #10245"
+ *     where the user typed "Whole Foods")
+ *   - closest date-delta wins; lowest id breaks ties
+ *
+ * On adoption we PRESERVE the user's local edits (note, check_number,
+ * flag_color, category-if-manual, reconciliation_id, attachment_path,
+ * has_attachment, cleared_at, voided_at, split_parent_id, recurring
+ * fields) — the row already lived in the user's register; the only
+ * thing Plaid teaches us is a) that it's the real thing and b) the
+ * pending status. We update plaid_transaction_id + pending; leave
+ * everything else alone.
+ */
+async function tryAdoptManual(
+  userId, accountId, signedAmount, incomingDate,
+  plaidTxnId, merchant, category, pending, isTransfer
+) {
+  const AMOUNT_EPS = 0.02;   // dollars
+  const DAY_WINDOW = 3;      // days
+  const signClause = signedAmount >= 0 ? "amount >= 0" : "amount < 0";
+  const merchantLower = String(merchant || "").toLowerCase();
+  const rows = await query(
+    `SELECT id, date, merchant, category
+     FROM transactions
+     WHERE user_id = ? AND account_id = ?
+       AND plaid_transaction_id IS NULL
+       AND (is_scheduled = 0 OR is_scheduled IS NULL)
+       AND ${signClause}
+       AND ABS(amount - ?) <= ?
+       AND date BETWEEN DATE_SUB(?, INTERVAL ? DAY)
+                    AND DATE_ADD(?, INTERVAL ? DAY)
+     ORDER BY ABS(DATEDIFF(date, ?)) ASC, id ASC`,
+    [userId, accountId, signedAmount, AMOUNT_EPS,
+     incomingDate, DAY_WINDOW, incomingDate, DAY_WINDOW, incomingDate]
+  );
+  // Merchant matching in JS — SQL LIKE with two-way substring is awkward
+  // to portable-write and the row-count from the amount+date filter is
+  // small so this is cheap.
+  const match = rows.find(r => {
+    const rm = String(r.merchant || "").toLowerCase();
+    if (!rm && !merchantLower) return true;
+    if (!rm || !merchantLower) return false;
+    return rm === merchantLower
+        || rm.includes(merchantLower)
+        || merchantLower.includes(rm);
+  });
+  if (!match) return null;
+
+  // Adopt: stamp Plaid's id + refresh pending status. Preserve every
+  // user-editable field (note, category if the user re-categorized,
+  // check_number, flag, cleared_at, reconciliation link, attachment,
+  // splits, recurring metadata).
+  await query(
+    `UPDATE transactions SET
+       plaid_transaction_id = ?,
+       pending = ?,
+       is_transfer = GREATEST(is_transfer, ?)
+     WHERE id = ? AND user_id = ?`,
+    [plaidTxnId, pending, isTransfer, match.id, userId]
+  );
   return match.id;
 }
 

@@ -54,6 +54,69 @@ export const api = {
   // Nuke every user_id-scoped row, revoke every Plaid item, unlink
   // attachments on disk. The user row stays so sign-in still works.
   clearMyData: (confirm) => request("POST", "/auth/me/clear-data", { confirm }),
+  // Backup — full data export as a .cvn file. Bypasses request()
+  // because the response is a binary ZIP stream, not JSON. Passphrase
+  // is optional; empty/null means plaintext.
+  exportCvn: async (passphrase) => {
+    const res = await fetch(`${API_URL}/backup/export`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ passphrase: passphrase || null }),
+    });
+    if (res.status === 401) { setToken(null); window.location.reload(); throw new Error("Unauthorized"); }
+    if (!res.ok) {
+      // Try to read the body as text for a useful error message
+      let msg = res.statusText;
+      try { const t = await res.text(); if (t) msg = t; } catch { /* ok */ }
+      throw new Error(msg || "Export failed");
+    }
+    const cd = res.headers.get("content-disposition") || "";
+    const m = /filename="?([^"]+)"?/i.exec(cd);
+    const filename = m?.[1] || `coinvane-${new Date().toISOString().slice(0,10)}.cvn`;
+    const blob = await res.blob();
+    // Trigger browser download without leaving the page.
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    return { filename, bytes: blob.size };
+  },
+  // .cvn import — two-step: preview validates + returns stats, then
+  // import actually inserts. Both use multipart because the file is
+  // binary. Passphrase is a separate form field so it isn't part of
+  // the file byte stream.
+  previewCvnImport: async (file, passphrase) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    if (passphrase) fd.append("passphrase", passphrase);
+    const res = await fetch(`${API_URL}/backup/import/preview`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${authToken}` },
+      body: fd,
+    });
+    if (res.status === 401) { setToken(null); window.location.reload(); throw new Error("Unauthorized"); }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || res.statusText);
+    return data;
+  },
+  importCvn: async (file, passphrase) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    if (passphrase) fd.append("passphrase", passphrase);
+    const res = await fetch(`${API_URL}/backup/import`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${authToken}` },
+      body: fd,
+    });
+    if (res.status === 401) { setToken(null); window.location.reload(); throw new Error("Unauthorized"); }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || res.statusText);
+    return data;
+  },
   // Web Push (D10)
   getVapidPublicKey: () => request("GET", "/auth/push/vapid-public-key"),
   registerPushSubscription: (sub) => request("POST", "/auth/me/push-subscriptions", sub),
@@ -290,6 +353,8 @@ export const api = {
   listPlaidItems: () => request("GET", "/plaid/items"),
   deletePlaidItem: (id) => request("DELETE", `/plaid/items/${id}`),
   syncPlaid: () => request("POST", "/plaid/sync"),
+  mergeManualIntoPlaid: (manualAccountId, plaidAccountId) =>
+    request("POST", "/plaid/merge-manual", { manualAccountId, plaidAccountId }),
 
   // merchant rules — danger zone
   clearMerchantRules: () => request("DELETE", "/transactions/merchant-rules"),

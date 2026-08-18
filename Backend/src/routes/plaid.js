@@ -5,6 +5,7 @@ import { encrypt } from "../crypto.js";
 import { verifyPlaidWebhook } from "../plaid-webhook-verify.js";
 import { enqueueSync } from "../queue.js";
 import { fullSyncItem } from "../sync.js";
+import { audit } from "../audit.js";
 
 export default async function (app) {
   app.post("/link-token", { preHandler: [app.authenticate] }, async (req) => {
@@ -56,7 +57,142 @@ export default async function (app) {
     try { await fullSyncItem(req.user.id, itemRow.id); }
     catch (e) { req.log.warn({ err: e.message }, "initial sync error"); }
 
-    return { ok: true, item_id, plaid_item_pk: itemRow.id };
+    // ── Stage 3: .cvn import → Plaid re-link auto-merge candidates ──
+    // After the initial sync creates the Plaid-linked account rows,
+    // look for manual accounts (plaid_item_id IS NULL) that came from
+    // a .cvn import (imported_original_name set) whose name +
+    // institution match a freshly-created Plaid account of this item.
+    // We NEVER auto-merge — the response includes the candidate list
+    // and the client shows a confirmation modal per match. Same-name
+    // matching is case-insensitive with whitespace normalization so
+    // "Chase Checking" adopts "  chase  checking  " but not "Chase
+    // Savings".
+    const norm = s => String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
+    const plaidAccts = await query(
+      `SELECT id, name, institution, type, subtype, balance
+       FROM accounts WHERE user_id = ? AND plaid_item_id = ?`,
+      [req.user.id, itemRow.id]
+    );
+    const manualAccts = await query(
+      `SELECT id, name, institution, type, subtype, balance,
+              imported_original_name, imported_original_institution
+       FROM accounts
+       WHERE user_id = ? AND plaid_item_id IS NULL
+         AND imported_original_name IS NOT NULL`,
+      [req.user.id]
+    );
+    const candidates = [];
+    for (const p of plaidAccts) {
+      const pName = norm(p.name);
+      const pInst = norm(p.institution);
+      const m = manualAccts.find(x =>
+        norm(x.imported_original_name) === pName
+        && (
+          // Prefer full match, but tolerate empty institution on one
+          // side (Plaid sometimes returns a null institution on the
+          // account object, or the import didn't carry it).
+          norm(x.imported_original_institution) === pInst
+          || !pInst || !norm(x.imported_original_institution)
+        )
+      );
+      if (m) {
+        // Count what would move on merge, so the UI can show
+        // "Merges 483 transactions + 3 budgets + 1 goal..."
+        const [txn, bud, gol, loa, ass, bil, rec, hol] = await Promise.all([
+          queryOne(`SELECT COUNT(*) AS c FROM transactions WHERE user_id = ? AND account_id = ?`, [req.user.id, m.id]),
+          queryOne(`SELECT COUNT(*) AS c FROM budgets       WHERE user_id = ? AND account_id = ?`, [req.user.id, m.id]),
+          queryOne(`SELECT COUNT(*) AS c FROM goals         WHERE user_id = ? AND account_id = ?`, [req.user.id, m.id]),
+          queryOne(`SELECT COUNT(*) AS c FROM loans         WHERE user_id = ? AND linked_account_id = ?`, [req.user.id, m.id]),
+          queryOne(`SELECT COUNT(*) AS c FROM assets        WHERE user_id = ? AND loan_account_id = ?`, [req.user.id, m.id]),
+          queryOne(`SELECT COUNT(*) AS c FROM bills         WHERE user_id = ? AND account_id = ?`, [req.user.id, m.id]),
+          queryOne(`SELECT COUNT(*) AS c FROM reconciliations WHERE user_id = ? AND account_id = ?`, [req.user.id, m.id]),
+          queryOne(`SELECT COUNT(*) AS c FROM holdings      WHERE user_id = ? AND account_id = ?`, [req.user.id, m.id]),
+        ]);
+        candidates.push({
+          manual: {
+            id: m.id, name: m.name, institution: m.institution,
+            transactions: Number(txn?.c || 0),
+            budgets: Number(bud?.c || 0),
+            goals: Number(gol?.c || 0),
+            loans: Number(loa?.c || 0),
+            assets: Number(ass?.c || 0),
+            bills: Number(bil?.c || 0),
+            reconciliations: Number(rec?.c || 0),
+            holdings: Number(hol?.c || 0),
+          },
+          plaid: {
+            id: p.id, name: p.name, institution: p.institution,
+            type: p.type, subtype: p.subtype,
+          },
+        });
+      }
+    }
+
+    return { ok: true, item_id, plaid_item_pk: itemRow.id, mergeCandidates: candidates };
+  });
+
+  // ── POST /plaid/merge-manual ──────────────────────────────────────
+  // Merges an imported manual account into a freshly-connected Plaid
+  // account. Reparents every FK reference (transactions, budgets,
+  // goals, loans, assets, bills, reconciliations, holdings, holding
+  // lots) from the manual id to the Plaid id, then deletes the manual
+  // account row. On the next Plaid sync, tryAdoptManual in sync.js
+  // will dedup any overlap in the 30–90-day Plaid backfill window by
+  // stamping plaid_transaction_id onto matching imported rows instead
+  // of inserting duplicates.
+  //
+  // Both accounts must belong to the caller; the manual must actually
+  // be manual (plaid_item_id NULL) and the Plaid must actually be
+  // Plaid-linked. Otherwise 400 — silently succeeds is dangerous.
+  app.post("/merge-manual", { preHandler: [app.authenticate] }, async (req, reply) => {
+    const manualId = Number(req.body?.manualAccountId);
+    const plaidId  = Number(req.body?.plaidAccountId);
+    if (!manualId || !plaidId || manualId === plaidId) {
+      return reply.code(400).send({ error: "manualAccountId and plaidAccountId required and must differ" });
+    }
+    const [manual, plaidAcct] = await Promise.all([
+      queryOne(`SELECT id, plaid_item_id, name FROM accounts WHERE id = ? AND user_id = ?`, [manualId, req.user.id]),
+      queryOne(`SELECT id, plaid_item_id, name FROM accounts WHERE id = ? AND user_id = ?`, [plaidId, req.user.id]),
+    ]);
+    if (!manual || !plaidAcct) return reply.code(404).send({ error: "account not found" });
+    if (manual.plaid_item_id !== null) {
+      return reply.code(400).send({ error: "Source account is already Plaid-linked, nothing to merge" });
+    }
+    if (plaidAcct.plaid_item_id === null) {
+      return reply.code(400).send({ error: "Target account is not Plaid-linked" });
+    }
+
+    // Reparent every user-scoped table that carries an account FK.
+    // Order doesn't matter — none of these UPDATEs affect each other.
+    const moves = {};
+    for (const [table, col] of [
+      ["transactions",    "account_id"],
+      ["budgets",         "account_id"],
+      ["goals",           "account_id"],
+      ["loans",           "linked_account_id"],
+      ["assets",          "loan_account_id"],
+      ["bills",           "account_id"],
+      ["reconciliations", "account_id"],
+      ["holdings",        "account_id"],
+      ["holding_lots",    "account_id"],
+    ]) {
+      const r = await query(
+        `UPDATE ${table} SET ${col} = ? WHERE user_id = ? AND ${col} = ?`,
+        [plaidId, req.user.id, manualId]
+      );
+      moves[table] = r.affectedRows || 0;
+    }
+
+    // Now safe to delete the manual shell — nothing references it.
+    await query(`DELETE FROM accounts WHERE id = ? AND user_id = ?`, [manualId, req.user.id]);
+
+    await audit(req.user.id, "account.merged", req, {
+      manualId, plaidId,
+      manualName: manual.name, plaidName: plaidAcct.name,
+      moves,
+    }, { major: true });
+
+    return { ok: true, moves };
   });
 
   app.get("/items", { preHandler: [app.authenticate] }, async (req) => {

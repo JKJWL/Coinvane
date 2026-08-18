@@ -29,6 +29,8 @@
     "geoip-lite": "^1.4.10",
     "papaparse": "^5.4.1",
     "web-push": "^3.6.7",
-    "@simplewebauthn/server": "^11.0.0"
+    "@simplewebauthn/server": "^11.0.0",
+    "archiver": "^7.0.1",
+    "yauzl": "^3.2.0"
   }
 }

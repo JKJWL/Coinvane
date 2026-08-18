@@ -27,6 +27,7 @@ import reconciliationsRoutes from "./routes/reconciliations.js";
 import taxRoutes from "./routes/tax.js";
 import reportsRoutes from "./routes/reports.js";
 import assetsRoutes from "./routes/assets.js";
+import backupRoutes from "./routes/backup.js";
 // Register every automation action with the engine at startup so any
 // runRulesForTrigger() call made from a route handler can dispatch.
 import "./automation-actions.js";
@@ -194,6 +195,7 @@ await app.register(reconciliationsRoutes, { prefix: "/api/reconciliations" });
 await app.register(taxRoutes,          { prefix: "/api/tax" });
 await app.register(reportsRoutes,      { prefix: "/api/reports" });
 await app.register(assetsRoutes,       { prefix: "/api/assets" });
+await app.register(backupRoutes,       { prefix: "/api/backup" });
 
 const port = Number(process.env.PORT || 4000);
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
