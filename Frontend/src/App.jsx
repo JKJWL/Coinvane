@@ -21,7 +21,7 @@ import {
 import { usePlaidLink } from "react-plaid-link";
 import { useAuth } from "./hooks/useAuth.js";
 import { DataProvider, useData } from "./context/DateContext.jsx";
-import { api } from "./api/client.js";
+import { api, setToken } from "./api/client.js";
 import { enablePush, disablePush, resurrectPushIfEnabled, pushSupported, isIosSafariNotInstalled } from "./push.js";
 import { enrollBiometric, unlockBiometric, webauthnSupported, biometricMethodName } from "./webauthn.js";
 
@@ -695,6 +695,17 @@ function AuthScreen({ onAuth }) {
   const [busy, setBusy] = useState(false);
   const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 
+  // ── Microsoft Sign-In (server-gated by MICROSOFT_CLIENT_ID)
+  // MSAL is dynamically imported on first click so users who don't
+  // have MS configured don't pay the bundle-size cost. The client id
+  // comes from /public-config (source of truth) with a build-time
+  // env fallback for people who prefer to bake it into the bundle.
+  const [msEnabled, setMsEnabled] = useState(false);
+  const [msClientId, setMsClientId] = useState(
+    import.meta.env.VITE_MICROSOFT_CLIENT_ID || null
+  );
+  const [msBusy, setMsBusy] = useState(false);
+
   // ── One-time email sign-in link (server-gated by ONE_TIME_LINK_ENABLED)
   const [otlEnabled, setOtlEnabled] = useState(false);
   const [otlOpen, setOtlOpen] = useState(false);
@@ -724,8 +735,13 @@ function AuthScreen({ onAuth }) {
         || window.navigator.standalone === true);
 
   useEffect(() => {
-    api.publicConfig().then(c => setOtlEnabled(!!c.oneTimeLinkEnabled))
-      .catch(() => setOtlEnabled(false));
+    api.publicConfig().then(c => {
+      setOtlEnabled(!!c.oneTimeLinkEnabled);
+      setMsEnabled(!!c.microsoftEnabled);
+      // Prefer the server-provided client id; fall back to the build-
+      // time env var if the server didn't return one (e.g. older backend).
+      if (c.microsoftClientId) setMsClientId(c.microsoftClientId);
+    }).catch(() => { setOtlEnabled(false); setMsEnabled(false); });
   }, []);
 
   // Guard: onAuth is a fresh object on every render (useAuth doesn't
@@ -872,10 +888,10 @@ function AuthScreen({ onAuth }) {
             </div>
           ) : (<>
           <p className="text-sm text-slate-600 text-center">
-            Sign in with your Google account to continue.
+            Choose how to sign in.
           </p>
           <div className="flex justify-center min-h-[44px] items-center">
-            {busy ? (
+            {(busy || msBusy) ? (
               <div className="flex items-center gap-2 text-sm text-slate-500">
                 <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
                   className="w-4 h-4 rounded-full border-2 border-slate-200 border-t-violet-500" />
@@ -885,6 +901,75 @@ function AuthScreen({ onAuth }) {
               <div ref={btnRef} />
             )}
           </div>
+
+          {/* Microsoft Sign-In. Sits between Google and the one-time
+              link, per the login-page ordering the operator chose. Only
+              renders when the server says a client id is configured
+              (msEnabled). MSAL itself is dynamically imported on first
+              click so the ~90KB library doesn't inflate the initial
+              bundle for users who never touch this button. */}
+          {msEnabled && !busy && !msBusy && (
+            <button type="button"
+              onClick={async () => {
+                if (!msClientId) {
+                  setErr("Microsoft Sign-In is misconfigured — no client id available.");
+                  return;
+                }
+                setErr(""); setMsBusy(true);
+                try {
+                  const { PublicClientApplication } = await import("@azure/msal-browser");
+                  const msal = new PublicClientApplication({
+                    auth: {
+                      clientId: msClientId,
+                      // "common" endpoint = any work/school tenant PLUS
+                      // personal MSA accounts. Matches the "Any Azure AD
+                      // directory + personal Microsoft accounts" type
+                      // on the Entra registration. The backend
+                      // verifier accepts any Microsoft tenant as long
+                      // as aud matches our client id and iss/tid agree.
+                      authority: "https://login.microsoftonline.com/common",
+                      // Redirect URI must be one of the SPA redirect URIs
+                      // registered on the Entra app. window.location.origin
+                      // + "/auth" is what the operator's setup instructions
+                      // asked them to register (dev + prod).
+                      redirectUri: window.location.origin + "/auth",
+                    },
+                    cache: {
+                      // localStorage so a page reload doesn't lose the
+                      // MSAL context. Our own session lives in localStorage
+                      // too (coinvane_token) so this matches the trust model.
+                      cacheLocation: "localStorage",
+                    },
+                  });
+                  await msal.initialize();
+                  const result = await msal.loginPopup({
+                    scopes: ["openid", "profile", "email"],
+                    prompt: "select_account",
+                  });
+                  if (!result?.idToken) throw new Error("Microsoft did not return an ID token");
+                  await onAuth.microsoftSignIn(result.idToken);
+                } catch (e) {
+                  // MSAL cancellation isn't an error worth surfacing —
+                  // just clear busy state and let the user try again.
+                  const msg = e?.errorCode === "user_cancelled"
+                    ? ""
+                    : (e?.message || "Microsoft sign-in failed");
+                  if (msg) setErr(msg);
+                } finally {
+                  setMsBusy(false);
+                }
+              }}
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-full border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50 hover:border-violet-300 transition">
+              {/* Microsoft's 4-square glyph — inline SVG, no external asset */}
+              <svg viewBox="0 0 21 21" className="w-4 h-4" aria-hidden="true">
+                <rect x="1"  y="1"  width="9" height="9" fill="#F25022"/>
+                <rect x="11" y="1"  width="9" height="9" fill="#7FBA00"/>
+                <rect x="1"  y="11" width="9" height="9" fill="#00A4EF"/>
+                <rect x="11" y="11" width="9" height="9" fill="#FFB900"/>
+              </svg>
+              Continue with Microsoft
+            </button>
+          )}
 
           {/* One-time email sign-in link. Rendered only when the server
               says the feature is on (ONE_TIME_LINK_ENABLED + email
@@ -13123,9 +13208,52 @@ function Shell({ user, onLogout, refreshUser }) {
   );
 }
 
+// ─── Logout landing page ──────────────────────────────────────────────────────
+// Registered as the Front-channel logout URL on the Entra app so
+// Microsoft can hit /logout in a hidden iframe / redirect during a
+// global sign-out. Also usable directly if the user pastes /logout
+// into their address bar. Clears our session synchronously on mount
+// and shows a friendly confirmation.
+function LogoutScreen() {
+  useEffect(() => {
+    try { setToken(null); } catch { /* localStorage disabled — non-fatal */ }
+  }, []);
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-violet-900 flex items-center justify-center p-4 safe-pt safe-pb">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+        transition={{ type: "spring", damping: 20, stiffness: 200 }}
+        className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8 text-center space-y-5"
+      >
+        <div className="w-11 h-11 mx-auto rounded-xl bg-violet-500 flex items-center justify-center shadow-sm shadow-violet-500/40">
+          <DollarSign className="w-6 h-6 text-white" />
+        </div>
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">You've been signed out</h1>
+          <p className="text-sm text-slate-600 mt-2">
+            Your Coinvane session on this device has ended.
+          </p>
+        </div>
+        <button type="button"
+          onClick={() => { window.location.replace("/"); }}
+          className="w-full py-3 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600">
+          Sign back in
+        </button>
+      </motion.div>
+    </div>
+  );
+}
+
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function App() {
   const auth = useAuth();
+  // /logout is a real path (SPA fallback in nginx serves index.html for
+  // it, then this branch renders LogoutScreen). Kept out of the auth
+  // check so an already-signed-out user landing here still sees the
+  // confirmation instead of being bounced to the sign-in page.
+  if (typeof window !== "undefined" && window.location.pathname === "/logout") {
+    return <LogoutScreen />;
+  }
   if (auth.loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">

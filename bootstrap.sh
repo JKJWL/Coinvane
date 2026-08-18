@@ -31,6 +31,7 @@ echo "→ Need a few values you must provide:"
 read -rp "  Domain (e.g. coinvane.example.com — without https://): " DOMAIN
 read -rp "  Your Gmail address (only this email will be allowed in): " ALLOWED_EMAIL
 read -rp "  Google OAuth Client ID (xxxxx.apps.googleusercontent.com): " GOOGLE_CLIENT_ID
+read -rp "  Microsoft Entra Client ID (Application ID, or blank to skip MS Sign-In): " MICROSOFT_CLIENT_ID
 read -rp "  Plaid Client ID: " PLAID_CLIENT_ID
 read -rsp "  Plaid Production Secret (input hidden): " PLAID_SECRET
 echo
@@ -68,6 +69,12 @@ ENCRYPTION_KEY=${ENCRYPTION_KEY}
 GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
 VITE_GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
 ALLOWED_EMAILS=${ALLOWED_EMAIL}
+
+# ─── Microsoft SSO (optional) ────────────────────────────────────
+# Blank = feature hidden. See .env.example for the app-registration
+# walkthrough. Both vars take the same Application (client) ID.
+MICROSOFT_CLIENT_ID=${MICROSOFT_CLIENT_ID}
+VITE_MICROSOFT_CLIENT_ID=${MICROSOFT_CLIENT_ID}
 
 # ─── Plaid ───────────────────────────────────────────────────────
 PLAID_CLIENT_ID=${PLAID_CLIENT_ID}

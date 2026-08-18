@@ -21,6 +21,9 @@ const SCHEMA = [
   // ── ALTER statements for upgrading existing databases ────────────
   // MariaDB 10.0+ supports IF NOT EXISTS on ADD COLUMN
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id VARCHAR(64) UNIQUE`,
+  // Microsoft (Entra / MSA) sign-in — mirrors google_id. `sub` claim
+  // from the ID token is a stable per-app identifier, ~ opaque GUID.
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS microsoft_id VARCHAR(64) UNIQUE`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS picture VARCHAR(512)`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS dark_mode BOOLEAN DEFAULT FALSE`,
   // Income tracker (Feature 4)

@@ -29,6 +29,16 @@ export function useAuth() {
     return res.user;
   };
 
+  // Exchange a Microsoft (MSAL) ID token for our JWT. Same shape as
+  // googleSignIn — server-side allowlist + user upsert converges on
+  // the same users row as Google + One-Time-Link via email dedup.
+  const microsoftSignIn = async (idToken) => {
+    const res = await api.microsoftLogin(idToken);
+    setToken(res.token);
+    setUser(res.user);
+    return res.user;
+  };
+
   // Redeem a one-time email sign-in token. Returns the full server
   // response — { token, user, handoffCode, handoffExpiresMinutes } —
   // WITHOUT committing the session. The caller decides when to call
@@ -56,7 +66,7 @@ export function useAuth() {
   const logout = () => { setToken(null); setUser(null); };
 
   return {
-    user, loading, googleSignIn,
+    user, loading, googleSignIn, microsoftSignIn,
     verifyOneTimeLinkOnly, handoffCodeSignIn, commitSession,
     logout, refresh, setUser,
   };

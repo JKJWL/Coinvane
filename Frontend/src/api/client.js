@@ -40,8 +40,9 @@ async function request(method, path, body, opts = {}) {
 }
 
 export const api = {
-  // auth — Google SSO only
+  // auth — Google SSO, Microsoft SSO, and one-time email link
   googleLogin: (id_token) => request("POST", "/auth/google", { id_token }),
+  microsoftLogin: (id_token) => request("POST", "/auth/microsoft", { id_token }),
   publicConfig: () => request("GET", "/auth/public-config", undefined, { publicEndpoint: true }),
   requestOneTimeLink: (email) => request("POST", "/auth/one-time-link/request", { email }, { publicEndpoint: true }),
   verifyOneTimeLink: (token) => request("POST", "/auth/one-time-link/verify", { token }, { publicEndpoint: true }),

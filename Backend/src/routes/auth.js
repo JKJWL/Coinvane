@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { OAuth2Client } from "google-auth-library";
+import { verifyMicrosoftIdToken } from "../microsoft-verify.js";
 import { promises as fs } from "fs";
 import path from "path";
 import { query, queryOne } from "../db.js";
@@ -26,6 +27,10 @@ const ATTACHMENTS_ROOT = process.env.ATTACHMENTS_ROOT || "/data/attachments";
 const SIGNUP_MODE = () => process.env.SIGNUP_MODE || "open";
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
+// Microsoft Entra "personal Microsoft accounts only" registration.
+// No client secret — the frontend uses MSAL popup + PKCE and we
+// verify the returned ID token against Microsoft's JWKS.
+const MICROSOFT_CLIENT_ID = process.env.MICROSOFT_CLIENT_ID;
 
 // ── One-time email sign-in link (Sign In With One Time Link) ────────
 // Gated by ONE_TIME_LINK_ENABLED env var so the feature stays off
@@ -228,6 +233,84 @@ export default async function (app) {
     return { token, user: userPayload(user) };
   });
 
+  // ── Microsoft Sign-In (personal MSA accounts only) ──────────────
+  // Same shape as /google: the frontend runs the MSAL popup, hands us
+  // the returned ID token, we verify it against Microsoft's JWKS
+  // (issuer + audience + signature + expiry), then find-or-create the
+  // user by email — SAME dedup semantics as Google + One-Time-Link so
+  // all three methods land on one users row per address.
+  app.post("/microsoft", {
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
+    if (!MICROSOFT_CLIENT_ID) {
+      return reply.code(500).send({ error: "Microsoft Sign-In is not configured on the server" });
+    }
+    const { id_token } = req.body || {};
+    if (!id_token) return reply.code(400).send({ error: "id_token required" });
+
+    let payload;
+    try {
+      payload = await verifyMicrosoftIdToken(id_token, MICROSOFT_CLIENT_ID);
+    } catch (e) {
+      req.log.warn({ err: e.message, ip: req.ip }, "microsoft verify failed");
+      await audit(null, "auth.invalid_token", req, { reason: e.message, provider: "microsoft" });
+      return reply.code(401).send({ error: "Invalid Microsoft credential" });
+    }
+
+    // MSA ID tokens: `sub` is the durable per-app user id, `email` is
+    // present when the "email" optional claim is configured on the app
+    // registration (walkthrough asked the operator to enable it).
+    // `preferred_username` is the fallback — for MSA it's the account
+    // email in every case we've observed.
+    const msId = payload.sub;
+    const email = String(payload.email || payload.preferred_username || "").toLowerCase();
+    const name = payload.name || (email ? email.split("@")[0] : "User");
+    if (!email) {
+      await audit(null, "auth.rejected", req, { reason: "no_email_claim", provider: "microsoft" });
+      return reply.code(401).send({ error: "Microsoft account has no email — enable the 'email' optional claim on your app registration" });
+    }
+
+    // ── Hard allowlist enforcement ────────────────────────────────
+    if (!(await emailAllowed(email))) {
+      req.log.warn({ email, ip: req.ip }, "sign-in rejected: email not in allowlist");
+      await audit(null, "auth.rejected", req, { reason: "not_in_allowlist", email, provider: "microsoft" });
+      return reply.code(403).send({ error: "This Microsoft account is not authorized to access this instance." });
+    }
+
+    // Try by microsoft_id first (fast path for repeat sign-in), then by
+    // email (converges with Google + One-Time-Link on the same row).
+    let user = await queryOne("SELECT * FROM users WHERE microsoft_id = ?", [msId]);
+    if (!user) user = await queryOne("SELECT * FROM users WHERE email = ?", [email]);
+
+    if (user) {
+      if (!user.microsoft_id) {
+        await query("UPDATE users SET microsoft_id = ? WHERE id = ?", [msId, user.id]);
+      }
+      user = await queryOne("SELECT * FROM users WHERE id = ?", [user.id]);
+    } else {
+      const userCount = (await queryOne("SELECT COUNT(*) AS c FROM users"))?.c || 0;
+      let role = "user";
+      if (userCount === 0) {
+        role = "owner"; // first user is always owner (single-instance pattern)
+      } else if (SIGNUP_MODE() === "closed") {
+        return reply.code(403).send({ error: "Signups are disabled" });
+      }
+      const r = await query(
+        `INSERT INTO users (email, microsoft_id, name, role) VALUES (?, ?, ?, ?)`,
+        [email, msId, name, role]
+      );
+      await seedCategoriesFor(r.insertId);
+      user = await queryOne("SELECT * FROM users WHERE id = ?", [r.insertId]);
+    }
+
+    const token = app.jwt.sign(
+      { id: user.id, email: user.email, role: user.role },
+      { expiresIn: "30d" }
+    );
+    await audit(user.id, "auth.success", req, { email: user.email, method: "microsoft" });
+    return { token, user: userPayload(user) };
+  });
+
   // ── Public config for the login screen ────────────────────────────
   // Tiny endpoint the AuthScreen hits to decide whether to render the
   // "Sign in with a one-time link" button. Unauthenticated by design
@@ -239,6 +322,12 @@ export default async function (app) {
   }, async () => {
     return {
       oneTimeLinkEnabled: ONE_TIME_LINK_ENABLED() && isEmailEnabled(),
+      // Microsoft is enabled when the client id is set. The client id
+      // itself is also exposed so the frontend doesn't need its own
+      // VITE_MICROSOFT_CLIENT_ID (though we still support it as an
+      // alternative — .env.example lists both).
+      microsoftEnabled: !!MICROSOFT_CLIENT_ID,
+      microsoftClientId: MICROSOFT_CLIENT_ID || null,
     };
   });
 
