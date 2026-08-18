@@ -56,6 +56,10 @@ services:
       PLAID_REDIRECT_URI: ${PLAID_REDIRECT_URI}
       PLAID_WEBHOOK_URL: ${PLAID_WEBHOOK_URL}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      # Microsoft Sign-In (Entra ID + personal MSA). Blank = feature
+      # hidden on the login page. See .env.example for the app-
+      # registration walkthrough.
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
       ALLOWED_EMAILS: ${ALLOWED_EMAILS}
       CORS_ORIGIN: ${CORS_ORIGIN}
       APP_URL: ${APP_URL}
@@ -104,6 +108,9 @@ services:
       args:
         VITE_API_URL: /api
         VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID}
+        # Optional: bakes the Microsoft client id into the built bundle
+        # as a fallback for the /auth/public-config runtime fetch.
+        VITE_MICROSOFT_CLIENT_ID: ${VITE_MICROSOFT_CLIENT_ID:-}
     container_name: coinvane-web
     restart: unless-stopped
     depends_on:
