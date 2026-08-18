@@ -942,20 +942,27 @@ function AuthScreen({ onAuth }) {
                     },
                   });
                   await msal.initialize();
-                  const result = await msal.loginPopup({
+                  // Full-page redirect (NOT popup). Modern browsers
+                  // block MSAL's window.closed polling across the COOP
+                  // boundary between our origin and login.microsoftonline.com
+                  // (Microsoft doesn't set a matching Cross-Origin-Opener-
+                  // Policy on its login pages, so popup handoff fails
+                  // silently). Redirect flow bypasses the popup entirely —
+                  // browser navigates to MS, then back to /auth where
+                  // MsRedirectScreen catches the response.
+                  await msal.loginRedirect({
                     scopes: ["openid", "profile", "email"],
                     prompt: "select_account",
                   });
-                  if (!result?.idToken) throw new Error("Microsoft did not return an ID token");
-                  await onAuth.microsoftSignIn(result.idToken);
+                  // loginRedirect never returns — the browser navigates
+                  // away. Nothing else runs.
                 } catch (e) {
-                  // MSAL cancellation isn't an error worth surfacing —
-                  // just clear busy state and let the user try again.
-                  const msg = e?.errorCode === "user_cancelled"
-                    ? ""
+                  // eslint-disable-next-line no-console
+                  console.error("[MS Sign-In] failure:", e);
+                  const msg = e?.errorCode
+                    ? `${e.errorCode}: ${e.errorMessage || e.message || "sign-in failed"}`
                     : (e?.message || "Microsoft sign-in failed");
-                  if (msg) setErr(msg);
-                } finally {
+                  setErr(msg);
                   setMsBusy(false);
                 }
               }}
@@ -13208,6 +13215,90 @@ function Shell({ user, onLogout, refreshUser }) {
   );
 }
 
+// ─── Microsoft Sign-In redirect landing page ─────────────────────────────────
+// After msal.loginRedirect(), the browser navigates to Microsoft, the user
+// signs in, then Microsoft redirects back to /auth#code=<...>&state=<...>.
+// This component runs when we detect that URL shape, calls MSAL's
+// handleRedirectPromise to exchange the code for an ID token (using PKCE
+// state MSAL stashed in localStorage before the redirect), then hands the
+// ID token to our backend for the standard find-or-create + JWT dance.
+function MsRedirectScreen() {
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const cfg = await api.publicConfig();
+        if (!cfg.microsoftClientId) {
+          throw new Error("Microsoft Sign-In is not configured on the server");
+        }
+        const { PublicClientApplication } = await import("@azure/msal-browser");
+        // Config must match the loginRedirect call byte-for-byte — MSAL
+        // uses these to locate the state it stashed before redirect.
+        const msal = new PublicClientApplication({
+          auth: {
+            clientId: cfg.microsoftClientId,
+            authority: "https://login.microsoftonline.com/common",
+            redirectUri: window.location.origin + "/auth",
+          },
+          cache: { cacheLocation: "localStorage" },
+        });
+        await msal.initialize();
+        const result = await msal.handleRedirectPromise();
+        if (cancelled) return;
+        if (!result?.idToken) {
+          throw new Error("Microsoft sign-in did not return an ID token");
+        }
+        const res = await api.microsoftLogin(result.idToken);
+        setToken(res.token);
+        // Full page reload wipes the /auth#code=... URL and re-mounts
+        // App, which now sees the JWT in localStorage and drops into
+        // the authed shell.
+        window.location.replace("/");
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error("[MS Redirect]", e);
+        if (!cancelled) {
+          setError(e?.errorMessage || e?.message || "Microsoft sign-in failed");
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-violet-900 flex items-center justify-center p-4 safe-pt safe-pb">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+        transition={{ type: "spring", damping: 20, stiffness: 200 }}
+        className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8 text-center space-y-5"
+      >
+        <div className="w-11 h-11 mx-auto rounded-xl bg-violet-500 flex items-center justify-center shadow-sm shadow-violet-500/40">
+          <DollarSign className="w-6 h-6 text-white" />
+        </div>
+        {error ? (
+          <>
+            <div>
+              <h1 className="text-xl font-bold text-slate-900">Microsoft sign-in failed</h1>
+              <p className="text-sm text-rose-600 mt-2 break-words">{error}</p>
+            </div>
+            <button type="button"
+              onClick={() => { window.location.replace("/"); }}
+              className="w-full py-3 rounded-xl text-sm font-semibold bg-violet-500 text-white hover:bg-violet-600">
+              Back to sign-in
+            </button>
+          </>
+        ) : (
+          <div className="flex flex-col items-center gap-3">
+            <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+              className="w-8 h-8 rounded-full border-2 border-slate-200 border-t-violet-500" />
+            <div className="text-sm text-slate-600">Completing Microsoft sign-in…</div>
+          </div>
+        )}
+      </motion.div>
+    </div>
+  );
+}
+
 // ─── Logout landing page ──────────────────────────────────────────────────────
 // Registered as the Front-channel logout URL on the Entra app so
 // Microsoft can hit /logout in a hidden iframe / redirect during a
@@ -13253,6 +13344,16 @@ export default function App() {
   // confirmation instead of being bounced to the sign-in page.
   if (typeof window !== "undefined" && window.location.pathname === "/logout") {
     return <LogoutScreen />;
+  }
+  // /auth with an MSAL response fragment: Microsoft has redirected the
+  // browser back to us after sign-in. Bypass the normal auth check and
+  // let MsRedirectScreen finish the code-for-token exchange before
+  // hitting our backend. Matches ?code=… or #code=… (MSAL v3 defaults
+  // to fragment mode for SPA registrations).
+  if (typeof window !== "undefined"
+      && window.location.pathname === "/auth"
+      && /[#?&](code|error)=/.test(window.location.hash + window.location.search)) {
+    return <MsRedirectScreen />;
   }
   if (auth.loading) {
     return (
