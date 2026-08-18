@@ -1,7 +1,7 @@
 # Coinvane
 
-> Self-hosted personal finance · React PWA · Plaid · Google SSO · zero-knowledge
-> at-rest encryption · Docker Compose deploy
+> Self-hosted personal finance · React PWA · Plaid · Google + Microsoft SSO ·
+> passwordless email sign-in · zero-knowledge at-rest encryption · Docker Compose deploy
 >
 > Copyright © 2026 Jack Jewell and contributors ·
 > Source: <https://github.com/JKJWL/Coinvane> ·
@@ -121,8 +121,8 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 - **Per-type toggles** — large transactions, income received ("Congrats You Got Paid!"), approaching budget limit, budget exceeded, goal milestones, bill reminders, cashflow low-balance, overall budget usage %. Each independently on/offable.
 - **Configurable thresholds** — large-transaction $ amount, income $ amount, budget-warning percentage, bill-reminder days-before, cashflow minimum-balance, budget-usage % are all editable in Settings.
 - **Email frequency** — instant / daily / weekly (with a weekly send-day picker). Daily and instant are functionally identical until the engine runs more than once a day.
-- **Web Push (OS-level notifications)** — real lock-screen / notification-tray alerts on desktop, Android, and iOS PWAs. Enable per-device from Settings; per-device revoke via the "Enrolled devices" list. Push frequency is its own instant / daily / weekly setting — instant fires the moment a triggering event lands via sync, daily/weekly ride the same cron as email. Requires VAPID keys in `.env` — see [Web Push setup](#web-push-notifications).
-- **Biometric app-lock (mobile only)** — require FaceID / TouchID / fingerprint / device passcode to reveal the app on your phone. Doesn't touch your JWT — an expired session still falls back to Google SSO. Locks on every fresh open + after 5 min of being backgrounded. Disabling the lock or removing an enrolled device requires a fresh biometric verification. See [Biometric app-lock](#biometric-app-lock) for platform notes.
+- **Web Push (OS-level notifications)** — real lock-screen / notification-tray alerts on desktop, Android, and iOS PWAs. Enable per-device from Settings; per-device revoke via the "Enrolled devices" list. Push is **instant-only** — inline hooks fire the moment a manual or Plaid transaction lands; a background sweep runs three times a day (ACH windows: 10 AM / 2 PM / 4 PM local) to catch anything the inline path missed. Weighted single-push collapse means multi-alert sweeps produce ONE OS-level banner (the bell still shows every entry), and per-type per-day dedup caps repeat categories. Installed PWAs get an unread-count badge on the home-screen icon via the Web Badging API. Requires VAPID keys in `.env` — see [Web Push setup](#web-push-notifications).
+- **Biometric app-lock (mobile only)** — require FaceID / TouchID / fingerprint / device passcode to reveal the app on your phone. Doesn't touch your JWT — an expired session still falls back to whichever sign-in methods are configured. Locks on every fresh open + after 5 min of being backgrounded. Disabling the lock or removing an enrolled device requires a fresh biometric verification. See [Biometric app-lock](#biometric-app-lock) for platform notes.
 - **Admin broadcast banner** — instance-wide message admins can post that shows up as a dismissible yellow / amber / rose slip on every user's desktop app (info / warning / critical severity). Useful for maintenance windows or pushed-update notices.
 - **Privacy mode** — blurs dollar amounts on the dominant surfaces (hero net worth, KPI cards, account balances, transaction amounts). Hover/focus reveals.
 - **Clear all data** — nuclear reset in Settings → Danger zone. Wipes every transaction / account / budget / goal / note / attachment / Plaid item / push subscription / biometric credential tied to your login, and revokes every Plaid connection. The users row itself stays so you can start fresh without re-going-through-the-allowlist. Guarded by a typed-email confirmation.
@@ -210,13 +210,92 @@ Coinvane can push OS-level alerts to a user's lock screen or notification tray v
 - **Every user's own network** must reach the same hosts — `pushManager.subscribe()` calls them from the browser. Pihole, NextDNS, AdGuard, or corporate proxies that block `fcm.googleapis.com` as "Google telemetry" produce a `AbortError: Registration failed - push service error` when the user tries to enable push. Allowlist those hosts on your DNS filter if you run one.
 - If any of the three VAPID vars is blank, push is silently disabled — the rest of the app runs normally, users just see "not configured on the server" if they try to enable push in Settings.
 
-**Cadence**: each user picks instant / daily / weekly independently (in Settings → Push frequency). Instant pushes fire the moment a triggering Plaid transaction lands (large-txn or income), daily/weekly batch through the 8 AM cron.
+**Cadence**: push is **instant-only**. The old daily / weekly options were removed — batching a lock-screen alert defeats the point. Manual transactions and Plaid-synced transactions both fire pushes the moment they land; a background sweep runs three times a day (10 AM / 2 PM / 4 PM local, matching Federal Reserve ACH windows) to catch anything the inline hook missed.
+
+When multiple notifications fire in one sweep, only the highest-priority one produces an OS-level push (weighted by category — large-txn > cashflow-low > budget-exceeded > bill-reminder > ...); the bell still shows every alert. Per-type per-day dedup means the same category can only produce one push per day even across three cron runs plus inline events, so nobody gets three "large transaction" alerts in one afternoon.
+
+**PWA icon badge**: the unread notification count paints a red dot on the installed app's home-screen icon (Web Badging API). Works on Android Chrome, iOS 16.4+ Safari (installed PWA only), and desktop PWA installs on macOS / Windows / ChromeOS. Silent no-op on browsers that don't support the API.
 
 **Manage devices**: users can revoke any enrolled browser individually from the Settings panel; a revoked device silently stops receiving push. Removing a device does NOT log the user out — it just stops push to that browser.
 
+### Sign-in methods
+
+Coinvane supports three passwordless authentication paths. All three are gated by the same email allowlist, and all three converge on the same `users` row for a given email (via a `UNIQUE` constraint), so a user can freely switch between them without creating duplicate accounts.
+
+#### Google SSO (always available)
+
+Requires a Google Cloud OAuth Client ID — see [Google Cloud OAuth setup](#google-cloud-oauth-setup). ID-token verification flow, no client secret needed.
+
+#### Microsoft SSO (optional)
+
+Powered by MSAL popup + PKCE on the frontend and JWKS verification on the backend. Matches the Google trust model — no client secret.
+
+**Setup**:
+
+1. Sign in to <https://portal.azure.com> with any Microsoft account (no paid subscription needed).
+2. In the top search bar type **App registrations** → click it under Services.
+3. **+ New registration**:
+   - Name: `Coinvane`
+   - Supported account types: **"Accounts in any organizational directory (Any Microsoft Entra ID tenant — Multitenant) and personal Microsoft accounts"**
+   - Redirect URI: platform dropdown → **Single-page application (SPA)**, value → `https://your-domain.example/auth`
+   - Click Register.
+4. On the app's **Overview** page, copy **Application (client) ID** into `MICROSOFT_CLIENT_ID` and `VITE_MICROSOFT_CLIENT_ID` in your `.env`.
+5. **Authentication** panel of the app:
+   - Under Single-page application → **Add URI** → `http://localhost:5173/auth` (for local dev, if you use it)
+   - **Front-channel logout URL** → `https://your-domain.example/logout` (Coinvane serves a logout landing page at that path)
+   - Under Implicit grant and hybrid flows — leave both checkboxes **unchecked** (auth code + PKCE only).
+6. **Token configuration** panel → **+ Add optional claim** → select **ID** → check **email** → **Add**. If it prompts to also add the Graph `email` permission, click **Yes**.
+7. **API permissions**: `Microsoft Graph → User.Read` is already listed — that's all you need. Personal accounts self-consent on first sign-in.
+
+**Trust model**: the backend verifier accepts any Microsoft tenant, but every token has to be minted for *your specific* client id (that's the actual security gate). Belt + suspenders: it also validates the issuer's shape (`login.microsoftonline.com/{guid}/v2.0`) and self-consistency (`tid` claim inside the token must match the tenant GUID in `iss`). v1.0 tokens (`sts.windows.net`) are deliberately rejected — MSAL 3.x is v2.0-only.
+
+**No client secret**: MSAL popup + PKCE. Same value in both `MICROSOFT_CLIENT_ID` and `VITE_MICROSOFT_CLIENT_ID`; the backend verifies, the frontend builds the popup. The frontend also reads the id from `/auth/public-config` at runtime, so `VITE_MICROSOFT_CLIENT_ID` is optional — you can leave it blank if you'd rather not bake it into the built bundle.
+
+**No `MICROSOFT_TENANT_ID`**: multi-tenant + personal is the tested config. If you want to lock down to a specific tenant, it's a small edit to `Backend/src/microsoft-verify.js` (tighten the issuer regex and change the frontend `authority` from `/common` to `/{your-tenant-guid}`).
+
+#### Sign in with a one-time link (optional)
+
+Passwordless flow that emails a SHA-256-hashed sign-in link. Great as a fallback if a user loses access to their Google / Microsoft account, or as the primary method if you dislike depending on either.
+
+**Requirements**: `EMAIL_CONFIG=enabled` in `.env` with working SMTP credentials (Resend, Postmark, SES, or your own mail server). Without SMTP, `/one-time-link/request` returns 503.
+
+**Setup**:
+
+1. In `.env`, set `ONE_TIME_LINK_ENABLED=true`.
+2. Choose IP binding strictness with `ONE_TIME_LINK_STRICT_IP`:
+   - `true` (default): the IP that requested the link must match the IP that clicks it. Blocks stolen-email replay from a different network but breaks cross-device flow (request desktop, click phone) and mobile IPv6/CGNAT rotation.
+   - `false`: record the IP for audit but don't enforce.
+3. Restart backend + worker: `docker compose up -d --force-recreate backend worker`.
+
+**Flow**:
+- User enters their email on the login page.
+- Server ALWAYS responds "check your email" regardless of whether the email is on the allowlist (anti-enumeration).
+- If allowlisted, an email arrives with a link like `https://your-domain.example/#signin?t=<token>`. Token is a 48-byte random value, base64url-encoded; only its SHA-256 hash is stored server-side. 15-minute expiry, one-time use.
+- Click the link → SPA reads the token from the URL fragment (never sent to the server as a query string, never in Referer / access logs), calls `/one-time-link/verify`, gets a JWT. URL history is scrubbed via `replaceState`.
+
+**Handoff codes (iOS Safari → installed PWA bridge)**: iOS keeps Safari's storage separate from the installed PWA's storage. If a user opens the link in Safari but wants their session in the Home Screen PWA, `/verify` returns an 8-character code alongside the JWT. The user enters that code in the PWA's "Have a sign-in code?" field to receive a fresh session there — no second email required. Code alphabet omits look-alikes (`0/O`, `1/I/L`), generated with rejection sampling to avoid modulo bias in the cryptographic RNG. 10-minute expiry. IP-bound when `ONE_TIME_LINK_STRICT_IP=true`.
+
+Android auto-opens installed PWAs via the manifest's `handle_links: "preferred"`, so the handoff step doesn't surface on Android.
+
+**Rate limits**: 20/min per IP on `/request`, 5/hour per email (row-count; RESETS on a successful sign-in so allowlisted users aren't locked out after a few attempts). 30/min per IP on `/verify` and `/handoff`.
+
+### .cvn backup format
+
+Coinvane's proprietary full-instance backup format. A `.cvn` file is a ZIP archive containing everything a user needs to restore their entire Coinvane setup on a fresh instance — every transaction, category, budget, goal, note, bill, loan, asset, holding, and receipt attachment. What's DELIBERATELY excluded: identity fields (email, Google/Microsoft ids, role, biometric credentials), Plaid access tokens (per-server secrets that can't travel), and every session / device / audit table.
+
+**Export**: Settings → Data → Export .cvn. Optional passphrase encrypts the data blob and every attachment individually with AES-256-GCM, key derived via PBKDF2-SHA256 (200 000 iterations, 16-byte salt stored in the manifest). Notes are decrypted from the source server's `ENCRYPTION_KEY` before packing so the file is portable across instances.
+
+**Import**: Settings → Data → Import .cvn. **Refuses on non-empty accounts** — the import path is designed for restore-to-fresh, not merge. Seeded default categories are exempt from the emptiness check. Notes are re-encrypted with the destination server's `ENCRYPTION_KEY`. Attachments are unpacked to `${ATTACHMENTS_ROOT}/${userId}/`.
+
+**Schema-drift resilient**: import uses `SHOW COLUMNS` introspection to filter unknown columns per table, so newer / older .cvn files still restore cleanly as long as the core tables are compatible. New columns added post-export just don't populate; missing columns in a future schema are silently ignored.
+
+**Plaid re-link auto-merge (Stage 3)**: after restoring a `.cvn`, when the user re-links a bank through Plaid, the backend compares each fresh Plaid account to imported manual accounts by name + institution (case-insensitive). Matches surface as merge candidates in the UI. Confirming a merge reparents all references (transactions, budgets, goals, loans, assets, bills, reconciliations, holdings) to the new Plaid-linked account and deletes the manual shell. Transaction dedup during Plaid's 30-90-day backfill window is handled automatically via content match.
+
+**Rate limits**: 3/min on `/backup/export`, 10/min on `/backup/import/preview`, 3 per 5 min on `/backup/import`.
+
 ### Biometric app-lock
 
-Optional per-device screen lock on top of Google SSO. When enabled, the app requires FaceID / TouchID / fingerprint / Windows Hello (whichever the OS offers) to reveal data. The JWT is untouched — an expired session still falls back to Google SSO, so no one gets locked out of their own login.
+Optional per-device screen lock on top of whichever sign-in method the user chose. When enabled, the app requires FaceID / TouchID / fingerprint / Windows Hello (whichever the OS offers) to reveal data. The JWT is untouched — an expired session still falls back to the sign-in screen with all three methods available, so no one gets locked out of their own login.
 
 **Platform support**:
 
@@ -245,7 +324,12 @@ The OS picks the mechanism. Coinvane calls WebAuthn with `userVerification: requ
 - **Notes** — free-form notes, content encrypted at rest
 - **Mobile PWA** — install to iPhone home screen, full-screen, frosted iOS-style nav, Dynamic Island safe
 - **Multi-device** — dark mode, theme, and every per-user setting follow you across devices
-- **Google SSO** — no passwords stored; locked to an email allowlist so only you can sign in
+- **Passwordless auth** — three sign-in methods, all allowlist-gated, all deduplicated on email so a user can freely switch between them:
+  - **Google SSO** (built-in)
+  - **Microsoft SSO** (Entra ID + personal MSA — Xbox / Outlook.com / Live)
+  - **Sign in with a one-time link** (email-based, opt-in, requires SMTP)
+  See [Sign-in methods](#sign-in-methods) for setup.
+- **Full instance backup** — export EVERYTHING (transactions, categories, budgets, goals, notes, bills, loans, assets, holdings, settings, attachments) as a portable `.cvn` file. Optional passphrase (AES-256-GCM + PBKDF2). Import into a fresh Coinvane instance to restore. See [.cvn backup format](#cvn-backup-format).
 - **PDF report dropdown** — Settings → Data → *Export report (PDF)* opens a menu with 7 branded reports, all server-side rendered (no headless browser):
   1. **Full report** — cover + summary + accounts + budgets + goals + last 500 transactions + decrypted notes
   2. **Monthly** — single-month income / expense / cashflow / category breakdown
@@ -266,7 +350,7 @@ The OS picks the mechanism. Coinvane calls WebAuthn with `userVerification: requ
 | Backend     | Node.js 20, Fastify 5, MariaDB 11, BullMQ + Redis, Plaid SDK v27, Nodemailer 8, `@fastify/multipart` for receipt uploads, `web-push` for OS notifications, `@simplewebauthn/server` for biometric app-lock |
 | Frontend    | React 18, Vite 6, Tailwind 3, Framer Motion 11, Recharts 2, `@simplewebauthn/browser` |
 | Server-side rendering | pdfkit (PDF export), papaparse (CSV import), geoip-lite (offline IP→location for audit log) |
-| Auth        | Google Sign-In (ID-token verification, no client secret needed) |
+| Auth        | Google + Microsoft SSO (ID-token verification, no client secrets), optional passwordless email one-time link |
 | Encryption  | AES-256-GCM for Plaid access tokens + note content     |
 | Infra       | Docker Compose (5 services)                            |
 | Reverse proxy | Caddy with auto-HTTPS (Let's Encrypt) — recommended  |
@@ -278,7 +362,10 @@ The OS picks the mechanism. Coinvane calls WebAuthn with `userVerification: requ
 ### Prerequisites
 
 - Docker + Docker Compose
-- A Google Cloud OAuth 2.0 Client ID (see [Google setup](#google-cloud-oauth-setup))
+- **At least one** of:
+  - A Google Cloud OAuth 2.0 Client ID (see [Google setup](#google-cloud-oauth-setup))
+  - A Microsoft Entra Application (client) ID (see [Microsoft SSO](#microsoft-sso-optional))
+  - Working SMTP + `ONE_TIME_LINK_ENABLED=true` (see [Sign in with a one-time link](#sign-in-with-a-one-time-link-optional))
 - A Plaid account with sandbox keys, at minimum (see [Plaid setup](#plaid-setup))
 - `openssl` for secret generation
 - `bash` for the bootstrap script (Linux/macOS, or WSL/Git Bash on Windows)
@@ -293,10 +380,12 @@ cd coinvane
 
 `bootstrap.sh` will:
 - Generate cryptographically-random secrets (JWT, encryption key, DB passwords)
-- Prompt you for your Gmail address, Google Client ID, Plaid Client ID, and Plaid Secret
+- Prompt you for your email address, Google Client ID, Microsoft Client ID (blank to skip), Plaid Client ID, and Plaid Secret
 - Write a properly-permissioned `.env` (chmod 600)
 - Print your `ENCRYPTION_KEY` once — **save it in a password manager**. If you lose
   this key, all Plaid access tokens and encrypted note content become unrecoverable.
+
+Sign-in methods that require additional configuration after bootstrap (Microsoft SSO, one-time link) can be turned on later by editing `.env` and rebuilding — see [Sign-in methods](#sign-in-methods).
 
 ### 2. Build and start
 
@@ -315,10 +404,7 @@ This creates all tables. Idempotent — safe to re-run after upgrades.
 
 ### 4. Sign in
 
-Open http://localhost:8080 (or whatever you've configured), click **Continue with
-Google**, and sign in with the email you whitelisted. The first sign-in
-automatically becomes the **owner** of the instance — single-owner pattern, no UI
-to transfer (manual `UPDATE users SET role='owner'` if you ever need to).
+Open http://localhost:8080 (or whatever you've configured) and sign in using whichever method(s) you configured — Google, Microsoft, or a one-time link. The first sign-in on a fresh instance automatically becomes the **owner** of the instance regardless of method — single-owner pattern, no UI to transfer (manual `UPDATE users SET role='owner'` if you ever need to). Subsequent sign-ins from the same email address using a different method just link to the same user (dedup by email).
 
 ---
 
@@ -562,9 +648,9 @@ For institutions Plaid doesn't support (e.g., smaller credit unions):
 
 This app is designed to be exposed to the public internet safely.
 
-- **Email allowlist** — only Google accounts on the list can sign in; anyone else gets 403 regardless of whether Google would otherwise let them through. Live-editable from the Admin panel (DB-backed in `app_settings.allowed_emails`); falls back to the `ALLOWED_EMAILS` env on fresh deploys.
+- **Email allowlist** — only emails on the list can sign in via ANY of the three methods (Google, Microsoft, one-time link); anyone else gets 403 regardless of whether the identity provider would otherwise let them through. Live-editable from the Admin panel (DB-backed in `app_settings.allowed_emails`); falls back to the `ALLOWED_EMAILS` env on fresh deploys.
 - **Three-tier role model** — Owner / Admin / Member. Owner is exclusive per instance and the only role that can edit cross-cutting config (sync interval, allowlist, role promotions, sample emails). Admins are scoped to two destructive actions (delete members, clear notifications), both audit-logged as major.
-- **Rate limiting** — 200 req/min global, 10 req/min on `/api/auth/google`, 60 req/min on every admin route, 300 req/min on the public `/api/plaid/webhook`, plus explicit per-route caps on the filesystem-touching receipt endpoints (60/120/60 req/min for upload / view / delete).
+- **Rate limiting** — 200 req/min global, 10 req/min on `/api/auth/google` and `/api/auth/microsoft`, 20/min on `/api/auth/one-time-link/request` (plus 5/hour per email), 30/min on `/verify` and `/handoff`, 60 req/min on every admin route, 300 req/min on the public `/api/plaid/webhook`, plus explicit per-route caps on the filesystem-touching receipt endpoints (60/120/60 req/min for upload / view / delete) and the `.cvn` backup endpoints (3/min export, 10/min preview, 3 per 5 min import).
 - **Helmet** — HSTS, X-Frame-Options DENY, strict Referrer-Policy, no `X-Powered-By`.
 - **Strict CORS** — refuses to start in production if `CORS_ORIGIN` isn't set.
 - **JWT 30-day expiration** — sessions auto-expire; sign back in with one Google click. Role changes require a re-login to take effect (JWTs aren't auto-refreshed).
@@ -573,8 +659,7 @@ This app is designed to be exposed to the public internet safely.
 - **Error masking** — production 5xx responses return a generic message; stack traces stay in logs.
 - **Tiered audit log** — every sign-in (success and failure) recorded with IP, user-agent, and offline GeoIP location. Routine entries prune at 48 h; major entries (role changes, user deletes, settings edits, bulk notification wipes) survive 7 days.
 - **Body limit** — 512 KB on JSON, 5 MB on the CSV import route + receipt-upload route only. Receipt uploads are additionally mime-whitelisted to PNG/JPG at the route handler.
-- **CSP** — nginx serves a strict Content-Security-Policy locking script sources
-  to self, Google, and Plaid.
+- **CSP** — nginx serves a strict Content-Security-Policy locking script sources to self, Google, and Plaid; `connect-src` additionally allows `login.microsoftonline.com` + `login.live.com` for MSAL's OIDC/JWKS fetches (MSAL itself is bundled into our own JS, so no third-party `script-src` origin is required for Microsoft SSO).
 - **No client-side caching** — every response (HTML, JS, CSS, API, images) is
   served with `Cache-Control: no-store, no-cache, must-revalidate`. Cost is a
   tiny per-page-load bandwidth hit on a single-file React app; benefit is that
@@ -665,6 +750,33 @@ Then rebuild without cache: `docker compose build --no-cache frontend`.
 In browser DevTools console: `import.meta.env.VITE_GOOGLE_CLIENT_ID` should
 return the full ID.
 
+### Microsoft sign-in popup errors with "AADSTS50011: redirect URI mismatch"
+
+The redirect URI Coinvane sends (`window.location.origin + "/auth"`) isn't in
+your Entra app's registered SPA redirect URIs. In the Azure portal → your app →
+Authentication → **Single-page application**, add each origin you sign in from:
+
+- Production: `https://your-domain.example/auth`
+- Local dev (only if you test locally): `http://localhost:5173/auth`
+
+Trailing slashes and paths matter — `.../auth` and `.../auth/` are different URIs.
+
+### Microsoft sign-in returns 401 "Microsoft account has no email"
+
+The `email` optional claim isn't configured on your Entra app. In the Azure
+portal → your app → **Token configuration** → **+ Add optional claim** → **ID**
+→ check **email** → **Add**. If it prompts to also add the Graph email
+permission, click Yes. Sign in again.
+
+### "This link must be opened on the same network it was requested from" (one-time-link)
+
+`ONE_TIME_LINK_STRICT_IP=true` is enforcing that the IP requesting the link must
+match the IP clicking it. This blocks cross-device flow (request desktop, click
+phone) and mobile IPv6/CGNAT rotation. If your users need cross-device or you're
+on a mobile carrier that rotates IPs, set `ONE_TIME_LINK_STRICT_IP=false` in
+`.env` and restart the backend. Trade-off: a stolen-email attacker on a
+different network could redeem the link.
+
 ### "Plaid doesn't support connections between [bank] and Coinvane"
 
 The institution doesn't support every product you're requesting. This app uses
@@ -674,11 +786,11 @@ error for a bank that should work, check the backend logs:
 docker compose logs --tail=100 backend | grep -i plaid
 ```
 
-### "Internal server error" after Google sign-in
+### "Internal server error" after sign-in
 
 Almost always: migrations haven't been run. `docker compose exec backend npm run migrate`.
 
-Or: `GOOGLE_CLIENT_ID` is missing/wrong in the backend env. `docker compose exec backend printenv GOOGLE_CLIENT_ID`.
+Or: the relevant client-id env var is missing/wrong in the backend. `docker compose exec backend printenv GOOGLE_CLIENT_ID` (or `MICROSOFT_CLIENT_ID`).
 
 ### Caddy: "Timeout during connect" on certificate issue
 
@@ -729,10 +841,13 @@ coinvane/
 │   │   ├── mailer.js              # SMTP / Nodemailer + notification-digest template
 │   │   ├── quicken-import.js      # QIF / OFX / QFX parsers with MS Money split-record support
 │   │   ├── mny-import.js          # Native .mny reader (mdbtools + optional sunriise unlock)
-│   │   ├── push.js                # Web Push helper (VAPID + 410-cleanup + shouldPushNow cadence gate)
+│   │   ├── push.js                # Web Push helper (VAPID + 410-cleanup + weighted pickTopPush + per-type per-day dedup)
 │   │   ├── webauthn.js            # Biometric app-lock ceremonies (register + authenticate)
+│   │   ├── microsoft-verify.js    # Microsoft ID-token verifier (multi-tenant Entra + personal MSA, JWKS-cached)
+│   │   ├── cvn-export.js          # .cvn full-instance export builder (ZIP + optional AES-256-GCM)
+│   │   ├── cvn-import.js          # .cvn restore with SHOW-COLUMNS schema-drift-proof safeInsert
 │   │   └── routes/
-│   │       ├── auth.js            # Google SSO, /me, members, role updates, test-email
+│   │       ├── auth.js            # Google SSO + Microsoft SSO + One-Time-Link + WebAuthn, /me, members, role updates, test-email/push
 │   │       ├── accounts.js
 │   │       ├── transactions.js    # Plus CSV import/export, merchant rules
 │   │       ├── budgets.js
@@ -747,6 +862,9 @@ coinvane/
 │   │       ├── tax.js             # Year-end IRS Schedule roll-up
 │   │       ├── reports.js         # Custom pivot builder + saved reports
 │   │       ├── assets.js          # Vehicles / valuables + depreciation + damage log + loan link
+│   │       ├── backup.js          # .cvn export + import (preview + apply) + Plaid re-link auto-merge candidates
+│   │       ├── bills.js           # Recurring bill templates + cycle rollover + auto-match on Plaid sync
+│   │       ├── loans.js           # Debt payoff tracking + amortization + linked-account payment mirroring
 │   │       └── export.js          # PDF dropdown: full / monthly / yoy / budgets / bills-loans / tax-summary / register / amortization
 │   ├── vendor/                    # Optional runtime dependencies (sunriise.jar for encrypted .mny)
 │   ├── Dockerfile
@@ -790,12 +908,16 @@ coinvane/
 | `ENCRYPTION_KEY`          | Yes      | 32-byte (64 hex chars), AES-256 for Plaid tokens + notes. **BACK UP** |
 | `GOOGLE_CLIENT_ID`        | Yes      | Backend ID-token verification                                        |
 | `VITE_GOOGLE_CLIENT_ID`   | Yes      | Frontend Google button (build-time, same value as above)             |
-| `ALLOWED_EMAILS`          | Recommended | Comma-separated Gmail allowlist used until the owner edits it in the Admin panel; after that the DB-backed allowlist takes over. Empty = anyone with a Google account can sign in. |
+| `MICROSOFT_CLIENT_ID`     | Optional | Entra Application (client) ID. When set, a "Continue with Microsoft" button appears on the sign-in page. See [Microsoft SSO](#microsoft-sso-optional). |
+| `VITE_MICROSOFT_CLIENT_ID` | Optional | Same value baked into the frontend bundle. Optional — the frontend also reads the id from `/auth/public-config` at runtime, so leaving this blank still works. |
+| `ONE_TIME_LINK_ENABLED`   | Optional | `false` (default) hides the passwordless email option; `true` shows it. Requires `EMAIL_CONFIG=enabled`. See [Sign in with a one-time link](#sign-in-with-a-one-time-link-optional). |
+| `ONE_TIME_LINK_STRICT_IP` | Optional | `true` (default) enforces same-IP for link request/click and handoff-code issue/redeem. `false` records the IP for audit but doesn't enforce. Loosen if your users need cross-device flow or are on mobile networks with rotating IPv6. |
+| `ALLOWED_EMAILS`          | Recommended | Comma-separated allowlist (Google, Microsoft, and one-time-link addresses all match against this list). Used until the owner edits it in the Admin panel; after that the DB-backed allowlist takes over. Empty = anyone with a supported sign-in method can register. |
 | `PLAID_CLIENT_ID` / `PLAID_SECRET` / `PLAID_ENV` | Yes | Plaid keys; env is `sandbox` or `production`               |
 | `PLAID_REDIRECT_URI`      | Production-only | OAuth return URL, must match Plaid dashboard exactly         |
 | `PLAID_WEBHOOK_URL`       | Optional | Auto-sync push endpoint; verified by signature                       |
 | `APP_URL` / `CORS_ORIGIN` | Yes      | Your full HTTPS URL; CORS won't start without it in production. `APP_URL` is also used as the "Open Coinvane" link target in notification emails. |
-| `SIGNUP_MODE`             | Optional | `open` (default) — any allowlisted Google account can sign up. `closed` — no new users; existing users may still sign in. Use `closed` after your household roster is finalised to harden the deployment. |
+| `SIGNUP_MODE`             | Optional | `open` (default) — any allowlisted email can sign up via any configured method. `closed` — no new users; existing users may still sign in. Use `closed` after your household roster is finalised to harden the deployment. |
 | `SYNC_INTERVAL_MINUTES`   | Optional | Initial polling cadence for Plaid; default 60. Owners can override this live from the Admin panel (the DB value wins). Webhook-driven syncs fire regardless. |
 | `EMAIL_CONFIG`            | Optional | `disabled` (default) or `enabled`. Master kill-switch for outbound email. UI greys out email-notification settings when disabled. |
 | `SMTP_*`                  | Optional | SMTP credentials, only consulted when `EMAIL_CONFIG=enabled`. Leave `SMTP_HOST` blank to log emails to console for testing. |
