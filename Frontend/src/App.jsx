@@ -933,6 +933,11 @@ function AuthScreen({ onAuth }) {
                       // + "/auth" is what the operator's setup instructions
                       // asked them to register (dev + prod).
                       redirectUri: window.location.origin + "/auth",
+                      // See MsRedirectScreen for the rationale. Must
+                      // match byte-for-byte across both configs so the
+                      // localStorage state MSAL wrote before redirect
+                      // is honoured on the way back.
+                      navigateToLoginRequestUrl: false,
                     },
                     cache: {
                       // localStorage so a page reload doesn't lose the
@@ -13240,6 +13245,14 @@ function MsRedirectScreen() {
             clientId: cfg.microsoftClientId,
             authority: "https://login.microsoftonline.com/common",
             redirectUri: window.location.origin + "/auth",
+            // MSAL v3 defaults this to true — after handleRedirectPromise
+            // processes the response it navigates the browser back to
+            // whatever URL was active when loginRedirect was called (in
+            // our case "/"). That would happen BEFORE our code can hand
+            // the ID token to the backend, so the sign-in silently
+            // never completes. Turning it off lets our own code decide
+            // when to navigate (which we do at the end of the flow).
+            navigateToLoginRequestUrl: false,
           },
           cache: { cacheLocation: "localStorage" },
         });
