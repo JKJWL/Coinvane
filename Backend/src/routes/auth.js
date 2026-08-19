@@ -27,6 +27,17 @@ const ATTACHMENTS_ROOT = process.env.ATTACHMENTS_ROOT || "/data/attachments";
 const SIGNUP_MODE = () => process.env.SIGNUP_MODE || "open";
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
+// Explicit enable/disable for Google — mirrors the MS pattern.
+// Blank (default) → derived from GOOGLE_CLIENT_ID presence
+// "true"           → enabled (still requires GOOGLE_CLIENT_ID)
+// "false"          → hides the button AND makes POST /auth/google 404
+//                    even when a client id is set (useful for a
+//                    temporary lockdown without unsetting credentials)
+const GOOGLE_SSO_ENABLED = () => {
+  const raw = process.env.GOOGLE_SSO_ENABLED;
+  if (raw === undefined || raw === "") return !!GOOGLE_CLIENT_ID;
+  return String(raw).toLowerCase() === "true" && !!GOOGLE_CLIENT_ID;
+};
 // Microsoft Entra sign-in.
 // No client secret — the frontend uses MSAL redirect + PKCE and we
 // verify the returned ID token against Microsoft's JWKS.
@@ -197,8 +208,13 @@ export default async function (app) {
   app.post("/google", {
     config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
   }, async (req, reply) => {
-    if (!googleClient) {
-      return reply.code(500).send({ error: "Google Sign-In is not configured on the server" });
+    // Feature-gated identically to MS: when GOOGLE_SSO_ENABLED() is
+    // false (either explicit env or no client id), we 404 instead of
+    // 500 so the endpoint looks absent — the frontend hides the
+    // button on public-config.googleEnabled=false, so a well-behaved
+    // client never gets here.
+    if (!GOOGLE_SSO_ENABLED() || !googleClient) {
+      return reply.code(404).send({ error: "Not found" });
     }
     const { id_token } = req.body || {};
     if (!id_token) return reply.code(400).send({ error: "id_token required" });
@@ -369,6 +385,11 @@ export default async function (app) {
     config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
   }, async () => {
     return {
+      // Google is enabled only when BOTH a client id is set and the
+      // GOOGLE_SSO_ENABLED flag isn't explicitly false. Frontend hides
+      // the Google button entirely when this is false — no dead UI.
+      googleEnabled: GOOGLE_SSO_ENABLED(),
+      googleClientId: GOOGLE_SSO_ENABLED() ? GOOGLE_CLIENT_ID : null,
       oneTimeLinkEnabled: ONE_TIME_LINK_ENABLED() && isEmailEnabled(),
       // Microsoft is enabled only when BOTH a client id is set and the
       // MICROSOFT_SSO_ENABLED flag isn't explicitly false. Frontend

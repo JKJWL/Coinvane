@@ -39,12 +39,22 @@ const REQUIRED = ["JWT_SECRET", "ENCRYPTION_KEY", "DB_USER", "DB_PASSWORD", "DB_
 for (const k of REQUIRED) {
   if (!process.env[k]) { console.error(`FATAL: missing env var ${k}`); process.exit(1); }
 }
-if (isProd && !process.env.GOOGLE_CLIENT_ID) {
-  console.error("FATAL: GOOGLE_CLIENT_ID is required in production");
-  process.exit(1);
+// At least ONE sign-in method must be configured in production, or
+// nobody can sign in. Google, Microsoft, and One-Time Link are each
+// independently optional; the operator picks any combination.
+if (isProd) {
+  const googleOn = !!process.env.GOOGLE_CLIENT_ID
+    && String(process.env.GOOGLE_SSO_ENABLED ?? "").toLowerCase() !== "false";
+  const msOn = !!process.env.MICROSOFT_CLIENT_ID
+    && String(process.env.MICROSOFT_SSO_ENABLED ?? "").toLowerCase() !== "false";
+  const otlOn = String(process.env.ONE_TIME_LINK_ENABLED ?? "").toLowerCase() === "true";
+  if (!googleOn && !msOn && !otlOn) {
+    console.error("FATAL: no sign-in method configured — set at least one of GOOGLE_CLIENT_ID, MICROSOFT_CLIENT_ID, or ONE_TIME_LINK_ENABLED=true");
+    process.exit(1);
+  }
 }
 if (isProd && !process.env.ALLOWED_EMAILS) {
-  console.warn("WARNING: ALLOWED_EMAILS is empty — anyone with a Google account can sign in!");
+  console.warn("WARNING: ALLOWED_EMAILS is empty — anyone with a Google/Microsoft account (or matching email for one-time-link) can sign in!");
 }
 if (isProd && !process.env.CORS_ORIGIN) {
   console.error("FATAL: CORS_ORIGIN must be set in production");

@@ -1,7 +1,8 @@
 # Coinvane
 
-> Self-hosted personal finance · React PWA · Plaid · Google + Microsoft SSO ·
-> passwordless email sign-in · zero-knowledge at-rest encryption · Docker Compose deploy
+> Self-hosted personal finance · React PWA · optional Plaid bank sync ·
+> pick-your-own sign-in (Google / Microsoft / passwordless email) ·
+> zero-knowledge at-rest encryption · Docker Compose deploy
 >
 > Copyright © 2026 Jack Jewell and contributors ·
 > Source: <https://github.com/JKJWL/Coinvane> ·
@@ -10,8 +11,15 @@
 > Security policy: [SECURITY.md](SECURITY.md)
 
 A self-hosted personal-finance app for one person (or a small household).
-Bank sync via Plaid, transactions stored encrypted on your own server,
-mobile PWA you can install on your phone. AGPL, no telemetry, no ads.
+Optional bank sync via Plaid (skip it for a fully manual-only setup),
+transactions stored encrypted on your own server, mobile PWA you can
+install on your phone. AGPL, no telemetry, no ads.
+
+**Everything external is optional.** Pick any combination of sign-in
+methods (Google, Microsoft, one-time email link — at least one required),
+turn Plaid on or off, turn email on or off, turn Web Push on or off.
+`bootstrap.sh` asks about each individually and writes an `.env` matching
+your choices.
 
 ### A note on the license
 
@@ -51,7 +59,7 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 ## Features
 
 ### Accounts & transactions
-- **Bank sync** — connect any institution Plaid supports (most US banks, brokerages, credit unions). Polls Plaid on a configurable interval (default every 60 min, editable from the in-app Admin panel without a redeploy), plus webhook-driven near-real-time updates when your bank pushes them.
+- **Bank sync (optional)** — connect any institution Plaid supports (most US banks, brokerages, credit unions). Polls Plaid on a configurable interval (default every 60 min, editable from the in-app Admin panel without a redeploy), plus webhook-driven near-real-time updates when your bank pushes them. **Or skip Plaid entirely** (`PLAID_ENABLED=false`, or leave the credentials blank) to run Coinvane as a manual-only budgeting app — the frontend hides every Plaid affordance, the backend 404s every Plaid route, and the worker skips periodic syncs. You still get manual entry, CSV/QIF/OFX/QFX/.mny import, and `.cvn` restore for a full experience with zero external service dependency.
 - **Pending transactions** — when your bank reports a charge as pending, it shows up immediately with an amber "Pending" badge so you can tell authorized-but-not-yet-settled spending apart from posted activity.
 - **Manual accounts** — for banks Plaid doesn't support; balances auto-adjust when you record transactions.
 - **Transactions** — date-grouped activity feed with filter by account / category, sort options, tap-to-edit.
@@ -220,11 +228,23 @@ When multiple notifications fire in one sweep, only the highest-priority one pro
 
 ### Sign-in methods
 
-Coinvane supports three passwordless authentication paths. All three are gated by the same email allowlist, and all three converge on the same `users` row for a given email (via a `UNIQUE` constraint), so a user can freely switch between them without creating duplicate accounts.
+Coinvane supports three passwordless authentication paths. **All three are independently optional** — you must enable at least one, but you can pick any combination. All three are gated by the same email allowlist, and all three converge on the same `users` row for a given email (via a `UNIQUE` constraint), so a user can freely switch between them without creating duplicate accounts.
 
-#### Google SSO (always available)
+Bootstrap.sh asks about each one interactively. If you skipped a method during bootstrap you can add it later by editing `.env` and rebuilding (backend + frontend, since the Google client id is a build-time `VITE_*` var).
+
+#### Google SSO (optional)
 
 Requires a Google Cloud OAuth Client ID — see [Google Cloud OAuth setup](#google-cloud-oauth-setup). ID-token verification flow, no client secret needed.
+
+##### Google SSO control variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GOOGLE_CLIENT_ID` | (blank) | Google OAuth Client ID. Blank = feature off. |
+| `VITE_GOOGLE_CLIENT_ID` | (blank) | Same value baked into the frontend bundle. Optional — the frontend also reads the id from `/auth/public-config` at runtime, so leaving this blank still works. |
+| `GOOGLE_SSO_ENABLED` | (blank → derive from client id) | Explicit on/off. `false` hides the Google button on the login page AND makes `POST /auth/google` return 404, even when the client id is set — useful for a temporary lockdown without unsetting the id. |
+
+Changing `GOOGLE_SSO_ENABLED` only requires a **backend restart**; the frontend reads it at runtime from `/auth/public-config`. Changing the client id itself requires a frontend rebuild because `VITE_GOOGLE_CLIENT_ID` is baked in at build time.
 
 #### Microsoft SSO (optional)
 
@@ -341,10 +361,10 @@ The OS picks the mechanism. Coinvane calls WebAuthn with `userVerification: requ
 - **Notes** — free-form notes, content encrypted at rest
 - **Mobile PWA** — install to iPhone home screen, full-screen, frosted iOS-style nav, Dynamic Island safe
 - **Multi-device** — dark mode, theme, and every per-user setting follow you across devices
-- **Passwordless auth** — three sign-in methods, all allowlist-gated, all deduplicated on email so a user can freely switch between them:
-  - **Google SSO** (built-in)
+- **Passwordless auth** — three independently optional sign-in methods, all allowlist-gated, all deduplicated on email so a user can freely switch between them (pick any combination, at least one required):
+  - **Google SSO** (optional)
   - **Microsoft SSO** (Entra ID + personal MSA — Xbox / Outlook.com / Live)
-  - **Sign in with a one-time link** (email-based, opt-in, requires SMTP)
+  - **Sign in with a one-time link** (email-based, requires SMTP)
   See [Sign-in methods](#sign-in-methods) for setup.
 - **Full instance backup** — export EVERYTHING (transactions, categories, budgets, goals, notes, bills, loans, assets, holdings, settings, attachments) as a portable `.cvn` file. Optional passphrase (AES-256-GCM + PBKDF2). Import into a fresh Coinvane instance to restore. See [.cvn backup format](#cvn-backup-format).
 - **PDF report dropdown** — Settings → Data → *Export report (PDF)* opens a menu with 7 branded reports, all server-side rendered (no headless browser):
@@ -367,7 +387,7 @@ The OS picks the mechanism. Coinvane calls WebAuthn with `userVerification: requ
 | Backend     | Node.js 20, Fastify 5, MariaDB 11, BullMQ + Redis, Plaid SDK v27, Nodemailer 8, `@fastify/multipart` for receipt uploads, `web-push` for OS notifications, `@simplewebauthn/server` for biometric app-lock |
 | Frontend    | React 18, Vite 6, Tailwind 3, Framer Motion 11, Recharts 2, `@simplewebauthn/browser` |
 | Server-side rendering | pdfkit (PDF export), papaparse (CSV import), geoip-lite (offline IP→location for audit log) |
-| Auth        | Google + Microsoft SSO (ID-token verification, no client secrets), optional passwordless email one-time link |
+| Auth        | Pick any combination: Google SSO, Microsoft SSO (ID-token verification, no client secrets), passwordless email one-time link. At least one required. |
 | Encryption  | AES-256-GCM for Plaid access tokens + note content     |
 | Infra       | Docker Compose (5 services)                            |
 | Reverse proxy | Caddy with auto-HTTPS (Let's Encrypt) — recommended  |
@@ -379,11 +399,14 @@ The OS picks the mechanism. Coinvane calls WebAuthn with `userVerification: requ
 ### Prerequisites
 
 - Docker + Docker Compose
-- **At least one** of:
-  - A Google Cloud OAuth 2.0 Client ID (see [Google setup](#google-cloud-oauth-setup))
-  - A Microsoft Entra Application (client) ID (see [Microsoft SSO](#microsoft-sso-optional))
-  - Working SMTP + `ONE_TIME_LINK_ENABLED=true` (see [Sign in with a one-time link](#sign-in-with-a-one-time-link-optional))
-- A Plaid account with sandbox keys, at minimum (see [Plaid setup](#plaid-setup))
+- **At least one** sign-in method (bootstrap.sh will ask):
+  - Google Cloud OAuth 2.0 Client ID (see [Google setup](#google-cloud-oauth-setup))
+  - Microsoft Entra Application (client) ID (see [Microsoft SSO](#microsoft-sso-optional))
+  - Working SMTP + one-time-link enabled (see [Sign in with a one-time link](#sign-in-with-a-one-time-link-optional))
+- **Optional** (bootstrap.sh asks about each — skip freely):
+  - Plaid account for automatic bank sync (see [Plaid setup](#plaid-setup)) — without Plaid, Coinvane runs manual-only with CSV/QIF/OFX/QFX/.mny import
+  - SMTP credentials for email digests + one-time-link
+  - VAPID key pair for Web Push (bootstrap.sh auto-generates if you enable it)
 - `openssl` for secret generation
 - `bash` for the bootstrap script (Linux/macOS, or WSL/Git Bash on Windows)
 
@@ -395,14 +418,20 @@ cd coinvane
 ./bootstrap.sh
 ```
 
-`bootstrap.sh` will:
-- Generate cryptographically-random secrets (JWT, encryption key, DB passwords)
-- Prompt you for your email address, Google Client ID, Microsoft Client ID (blank to skip), Plaid Client ID, and Plaid Secret
-- Write a properly-permissioned `.env` (chmod 600)
-- Print your `ENCRYPTION_KEY` once — **save it in a password manager**. If you lose
-  this key, all Plaid access tokens and encrypted note content become unrecoverable.
+`bootstrap.sh` walks you through every optional feature and writes `.env`:
+- **Generates** cryptographically-random secrets (JWT, encryption key, DB passwords) automatically
+- **Prompts** for your domain, email allowlist, and each optional feature individually — enable only what you want:
+  - Google SSO (asks for Client ID; enter blank to skip)
+  - Microsoft SSO (asks for Client ID; enter blank to skip)
+  - Sign-in with a one-time link (skippable — requires SMTP)
+  - SMTP for email digests + one-time-link
+  - Plaid bank sync (skip to run Coinvane manual-only)
+  - Web Push notifications (auto-generates VAPID keys via docker)
+- **Requires at least one sign-in method** — exits with an error if you skip Google + Microsoft + one-time-link
+- **Writes** a properly-permissioned `.env` (chmod 600)
+- **Prints** your `ENCRYPTION_KEY` once — **save it in a password manager**. If you lose this key, all Plaid access tokens and encrypted note content become unrecoverable.
 
-Sign-in methods that require additional configuration after bootstrap (Microsoft SSO, one-time link) can be turned on later by editing `.env` and rebuilding — see [Sign-in methods](#sign-in-methods).
+Any feature you skipped during bootstrap can be turned on later by editing `.env` and rebuilding — see [Sign-in methods](#sign-in-methods).
 
 ### 2. Build and start
 
@@ -421,7 +450,7 @@ This creates all tables. Idempotent — safe to re-run after upgrades.
 
 ### 4. Sign in
 
-Open http://localhost:8080 (or whatever you've configured) and sign in using whichever method(s) you configured — Google, Microsoft, or a one-time link. The first sign-in on a fresh instance automatically becomes the **owner** of the instance regardless of method — single-owner pattern, no UI to transfer (manual `UPDATE users SET role='owner'` if you ever need to). Subsequent sign-ins from the same email address using a different method just link to the same user (dedup by email).
+Open http://localhost:8080 (or whatever you've configured) and sign in using whichever method(s) you configured — Google, Microsoft, or a one-time link. The **first sign-in on a fresh instance automatically becomes the owner** of the instance regardless of method — single-owner pattern, no UI to transfer (manual `UPDATE users SET role='owner'` if you ever need to). Subsequent sign-ins from the same email address using a different method just link to the same user (dedup by email), so you can freely add or drop methods later without losing your account.
 
 ---
 
@@ -539,13 +568,13 @@ Substitute `<your-user>` with whatever username you created in step 1, and
 cd ~                # your-user's home directory
 git clone https://github.com/JKJWL/Coinvane.git coinvane
 cd coinvane
-./bootstrap.sh      # prompts for domain, Google ID, Plaid keys, etc.
+./bootstrap.sh      # walks you through every optional feature; enable only what you want
 docker compose build
 docker compose up -d
 docker compose exec backend npm run migrate
 ```
 
-Visit `https://<your-domain>` and sign in.
+Visit `https://<your-domain>` and sign in using whichever method you enabled during bootstrap. The first sign-in becomes the instance owner.
 
 ### 8. Encrypted nightly backups
 
@@ -592,6 +621,12 @@ openssl enc -d -aes-256-cbc -pbkdf2 -pass file:.backup-key \
 
 ## Google Cloud OAuth setup
 
+**Google is optional.** Skip this section if you're going with Microsoft
+SSO or one-time-link only — the sign-in page hides the Google button
+entirely when `GOOGLE_CLIENT_ID` is blank (or `GOOGLE_SSO_ENABLED=false`).
+
+If you DO want Google Sign-In:
+
 1. **Create a project**: https://console.cloud.google.com → "Select a project" → "New Project" → name it `Coinvane`.
 
 2. **Configure consent screen**: APIs & Services → OAuth consent screen
@@ -627,6 +662,22 @@ openssl enc -d -aes-256-cbc -pbkdf2 -pass file:.backup-key \
 ---
 
 ## Plaid setup
+
+**Plaid is optional.** If you don't want automatic bank sync (or if
+you just want to try Coinvane first), leave `PLAID_CLIENT_ID` /
+`PLAID_SECRET` blank (or set `PLAID_ENABLED=false`) — the app runs
+manual-only:
+
+- Frontend hides every Plaid affordance (Connect Bank, Sync buttons,
+  Connected Banks panel, admin Plaid-counts card)
+- Backend returns 404 for every `/api/plaid/*` route
+- Worker skips scheduling periodic sync jobs
+
+You still get manual entry, CSV/QIF/OFX/QFX/`.mny` import, and `.cvn`
+restore. If you later want to add Plaid, edit `.env` + restart the
+backend and worker; no rebuild needed.
+
+If you DO want Plaid:
 
 1. **Sign up** at https://dashboard.plaid.com — sandbox is free.
 
@@ -670,7 +721,7 @@ This app is designed to be exposed to the public internet safely.
 - **Rate limiting** — 200 req/min global, 10 req/min on `/api/auth/google` and `/api/auth/microsoft`, 20/min on `/api/auth/one-time-link/request` (plus 5/hour per email), 30/min on `/verify` and `/handoff`, 60 req/min on every admin route, 300 req/min on the public `/api/plaid/webhook`, plus explicit per-route caps on the filesystem-touching receipt endpoints (60/120/60 req/min for upload / view / delete) and the `.cvn` backup endpoints (3/min export, 10/min preview, 3 per 5 min import).
 - **Helmet** — HSTS, X-Frame-Options DENY, strict Referrer-Policy, no `X-Powered-By`.
 - **Strict CORS** — refuses to start in production if `CORS_ORIGIN` isn't set.
-- **JWT 30-day expiration** — sessions auto-expire; sign back in with one Google click. Role changes require a re-login to take effect (JWTs aren't auto-refreshed).
+- **JWT 30-day expiration** — sessions auto-expire; sign back in with whichever method you use. Role changes require a re-login to take effect (JWTs aren't auto-refreshed).
 - **Encryption at rest** — Plaid access tokens and note content encrypted with AES-256-GCM.
 - **Prepared statements** — every DB query uses parameterized `?` placeholders; no string concatenation, no SQL injection surface.
 - **Error masking** — production 5xx responses return a generic message; stack traces stay in logs.
@@ -754,18 +805,40 @@ A few notes:
 
 ## Troubleshooting
 
-### "Google Sign-In is not configured" on the auth screen
+### The Google Sign-In button doesn't appear on the login page
 
-`VITE_GOOGLE_CLIENT_ID` isn't reaching the frontend bundle. Vite reads env vars
-**at build time** from build args — they must be passed through Docker. Confirm
-both:
-- `.env` has `VITE_GOOGLE_CLIENT_ID=...`
-- `docker-compose.yml` frontend `args:` includes `VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID}`
+Google is optional now. The button renders only when `/auth/public-config`
+returns `googleEnabled: true`, which requires both:
+
+- `GOOGLE_CLIENT_ID` set (not blank) in the backend env
+- `GOOGLE_SSO_ENABLED` is either blank or `true` (not `false`)
+
+Check the backend's view of both:
+
+```bash
+docker compose exec backend printenv GOOGLE_CLIENT_ID GOOGLE_SSO_ENABLED
+```
+
+And confirm the runtime config in a browser:
+
+```
+curl -s https://your-domain/api/auth/public-config | grep googleEnabled
+```
+
+`googleEnabled: false` means one of the two conditions failed. Fix the
+env and `docker compose up -d --force-recreate backend` — no frontend
+rebuild needed for the enable flag itself (the frontend reads it at
+runtime).
+
+If `VITE_GOOGLE_CLIENT_ID` isn't reaching the frontend bundle (browser
+DevTools console: `import.meta.env.VITE_GOOGLE_CLIENT_ID` returns
+undefined), Vite reads env vars **at build time** from build args:
+- `.env` must have `VITE_GOOGLE_CLIENT_ID=...`
+- `docker-compose.yml` frontend `args:` must include `VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID}`
 
 Then rebuild without cache: `docker compose build --no-cache frontend`.
-
-In browser DevTools console: `import.meta.env.VITE_GOOGLE_CLIENT_ID` should
-return the full ID.
+The runtime value from `/auth/public-config` also feeds the frontend, so
+in most cases the build-time bake-in is redundant.
 
 ### Microsoft sign-in errors with "AADSTS70002: The provided request must include a 'client_secret'"
 
@@ -960,8 +1033,9 @@ coinvane/
 | `DB_NAME` / `DB_USER` / `DB_PASSWORD` / `DB_ROOT_PASSWORD` | Yes | MariaDB credentials |
 | `JWT_SECRET`              | Yes      | 64-byte hex, signs auth tokens                                       |
 | `ENCRYPTION_KEY`          | Yes      | 32-byte (64 hex chars), AES-256 for Plaid tokens + notes. **BACK UP** |
-| `GOOGLE_CLIENT_ID`        | Yes      | Backend ID-token verification                                        |
-| `VITE_GOOGLE_CLIENT_ID`   | Yes      | Frontend Google button (build-time, same value as above)             |
+| `GOOGLE_CLIENT_ID`        | Optional | Google OAuth Client ID. Blank = Google button hidden on the login page. At least ONE of Google / Microsoft / one-time-link must be enabled. See [Google SSO](#google-sso-optional). |
+| `VITE_GOOGLE_CLIENT_ID`   | Optional | Same value baked into the frontend bundle. Optional — the frontend also reads the id from `/auth/public-config` at runtime, so leaving this blank still works. |
+| `GOOGLE_SSO_ENABLED`      | Optional | `false` hides the button + rejects `POST /auth/google` even when the client id is set. Blank/unset = enabled when a client id is present. |
 | `MICROSOFT_CLIENT_ID`     | Optional | Entra Application (client) ID. When set (and `MICROSOFT_SSO_ENABLED` isn't false), a "Continue with Microsoft" button appears on the sign-in page. See [Microsoft SSO](#microsoft-sso-optional). |
 | `VITE_MICROSOFT_CLIENT_ID` | Optional | Same value baked into the frontend bundle. Optional — the frontend also reads the id from `/auth/public-config` at runtime, so leaving this blank still works. |
 | `MICROSOFT_SSO_ENABLED`   | Optional | `false` hides the button + rejects `POST /auth/microsoft` even when the client id is set. Blank/unset = enabled when a client id is present. |
@@ -971,8 +1045,9 @@ coinvane/
 | `ONE_TIME_LINK_ENABLED`   | Optional | `false` (default) hides the passwordless email option; `true` shows it. Requires `EMAIL_CONFIG=enabled`. See [Sign in with a one-time link](#sign-in-with-a-one-time-link-optional). |
 | `ONE_TIME_LINK_STRICT_IP` | Optional | `true` (default) enforces same-IP for link request/click and handoff-code issue/redeem. `false` records the IP for audit but doesn't enforce. Loosen if your users need cross-device flow or are on mobile networks with rotating IPv6. |
 | `ALLOWED_EMAILS`          | Recommended | Comma-separated allowlist (Google, Microsoft, and one-time-link addresses all match against this list). Used until the owner edits it in the Admin panel; after that the DB-backed allowlist takes over. Empty = anyone with a supported sign-in method can register. |
-| `PLAID_CLIENT_ID` / `PLAID_SECRET` / `PLAID_ENV` | Yes | Plaid keys; env is `sandbox` or `production`               |
-| `PLAID_REDIRECT_URI`      | Production-only | OAuth return URL, must match Plaid dashboard exactly         |
+| `PLAID_ENABLED`           | Optional | `false` forces manual-only mode (hides every Plaid affordance, backend 404s `/api/plaid/*`, worker skips periodic sync). Blank = derived from `PLAID_CLIENT_ID` + `PLAID_SECRET` (enabled when both set). |
+| `PLAID_CLIENT_ID` / `PLAID_SECRET` / `PLAID_ENV` | Optional | Plaid keys; env is `sandbox` or `production`. Skip these entirely to run Coinvane as a manual-only budgeting app — you still get manual entry, CSV/QIF/OFX/QFX/.mny import, and `.cvn` restore. |
+| `PLAID_REDIRECT_URI`      | Only if Plaid+production | OAuth return URL, must match Plaid dashboard exactly         |
 | `PLAID_WEBHOOK_URL`       | Optional | Auto-sync push endpoint; verified by signature                       |
 | `APP_URL` / `CORS_ORIGIN` | Yes      | Your full HTTPS URL; CORS won't start without it in production. `APP_URL` is also used as the "Open Coinvane" link target in notification emails. |
 | `SIGNUP_MODE`             | Optional | `open` (default) — any allowlisted email can sign up via any configured method. `closed` — no new users; existing users may still sign in. Use `closed` after your household roster is finalised to harden the deployment. |

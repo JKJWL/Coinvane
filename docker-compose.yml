@@ -60,7 +60,11 @@ services:
       PLAID_ENV: ${PLAID_ENV}
       PLAID_REDIRECT_URI: ${PLAID_REDIRECT_URI}
       PLAID_WEBHOOK_URL: ${PLAID_WEBHOOK_URL}
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      # Explicit on/off switch for Google. Blank = derive from client id
+      # (on if set, off if blank). "false" hides the button even when
+      # the client id is set — useful for temporary lockdown.
+      GOOGLE_SSO_ENABLED: ${GOOGLE_SSO_ENABLED:-}
       # Microsoft Sign-In (Entra ID + personal MSA). Blank = feature
       # hidden on the login page. See .env.example for the app-
       # registration walkthrough and the full control-var reference.

@@ -704,7 +704,15 @@ function AuthScreen({ onAuth }) {
   const btnRef = useRef(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+  // Google is now optional (matches MS + one-time-link). Server drives
+  // enable/disable via /public-config.googleEnabled; the build-time
+  // VITE_GOOGLE_CLIENT_ID is only a fallback client id — the enable
+  // decision still comes from the server so an operator flipping
+  // GOOGLE_SSO_ENABLED doesn't need a frontend rebuild.
+  const [googleEnabled, setGoogleEnabled] = useState(false);
+  const [googleClientId, setGoogleClientId] = useState(
+    import.meta.env.VITE_GOOGLE_CLIENT_ID || null
+  );
 
   // ── Microsoft Sign-In (server-gated by MICROSOFT_CLIENT_ID)
   // MSAL is dynamically imported on first click so users who don't
@@ -760,12 +768,14 @@ function AuthScreen({ onAuth }) {
     api.publicConfig().then(c => {
       setOtlEnabled(!!c.oneTimeLinkEnabled);
       setMsEnabled(!!c.microsoftEnabled);
+      setGoogleEnabled(!!c.googleEnabled);
       // Prefer server-provided values; fall back to build-time env
       // vars if the server didn't return one (e.g. older backend).
+      if (c.googleClientId) setGoogleClientId(c.googleClientId);
       if (c.microsoftClientId) setMsClientId(c.microsoftClientId);
       if (c.microsoftTenant) setMsTenant(c.microsoftTenant);
       if (c.microsoftRedirectUri) setMsRedirectUri(c.microsoftRedirectUri);
-    }).catch(() => { setOtlEnabled(false); setMsEnabled(false); });
+    }).catch(() => { setOtlEnabled(false); setMsEnabled(false); setGoogleEnabled(false); });
   }, []);
 
   // Guard: onAuth is a fresh object on every render (useAuth doesn't
@@ -809,10 +819,11 @@ function AuthScreen({ onAuth }) {
   }, [redeeming]);
 
   useEffect(() => {
-    if (!CLIENT_ID) {
-      setErr("Google Sign-In is not configured — set VITE_GOOGLE_CLIENT_ID in .env and rebuild.");
-      return;
-    }
+    // No-op when Google Sign-In is disabled server-side (operator chose
+    // Microsoft-only, one-time-link only, or some combination without
+    // Google). The button also doesn't render, so there's no visible
+    // affordance to init against.
+    if (!googleEnabled || !googleClientId) return;
 
     let cancelled = false;
     let retries = 0;
@@ -825,7 +836,7 @@ function AuthScreen({ onAuth }) {
         return;
       }
       window.google.accounts.id.initialize({
-        client_id: CLIENT_ID,
+        client_id: googleClientId,
         callback: async (response) => {
           if (!response?.credential) return;
           setErr(""); setBusy(true);
@@ -849,7 +860,7 @@ function AuthScreen({ onAuth }) {
     };
     init();
     return () => { cancelled = true; };
-  }, [CLIENT_ID, onAuth]);
+  }, [googleEnabled, googleClientId, onAuth]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-violet-900 flex items-center justify-center p-4 safe-pt safe-pb">
@@ -914,17 +925,23 @@ function AuthScreen({ onAuth }) {
           <p className="text-sm text-slate-600 text-center">
             Choose how to sign in.
           </p>
-          <div className="flex justify-center min-h-[44px] items-center">
-            {(busy || msBusy) ? (
-              <div className="flex items-center gap-2 text-sm text-slate-500">
-                <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
-                  className="w-4 h-4 rounded-full border-2 border-slate-200 border-t-violet-500" />
-                Signing you in…
-              </div>
-            ) : (
-              <div ref={btnRef} />
-            )}
-          </div>
+          {/* Google Sign-In button — rendered only when the server says
+              Google is enabled (googleEnabled). When Google is disabled
+              the container disappears entirely so the layout collapses
+              cleanly to just Microsoft / one-time-link. */}
+          {(googleEnabled || busy || msBusy) && (
+            <div className="flex justify-center min-h-[44px] items-center">
+              {(busy || msBusy) ? (
+                <div className="flex items-center gap-2 text-sm text-slate-500">
+                  <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+                    className="w-4 h-4 rounded-full border-2 border-slate-200 border-t-violet-500" />
+                  Signing you in…
+                </div>
+              ) : (
+                googleEnabled && <div ref={btnRef} />
+              )}
+            </div>
+          )}
 
           {/* Microsoft Sign-In. Sits between Google and the one-time
               link, per the login-page ordering the operator chose. Only
