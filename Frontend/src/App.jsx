@@ -1117,7 +1117,7 @@ function AuthScreen({ onAuth }) {
             </div>
           )}
           <p className="text-[11px] text-slate-400 text-center pt-2 leading-relaxed">
-            Your Google account is only used to identify you. No financial data is shared with Google.
+            All logins are used to identify you. No personal data is shared with external login sources.
           </p>
         </div>
       </motion.div>
