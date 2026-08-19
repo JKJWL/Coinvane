@@ -228,7 +228,9 @@ Requires a Google Cloud OAuth Client ID — see [Google Cloud OAuth setup](#goog
 
 #### Microsoft SSO (optional)
 
-Powered by MSAL popup + PKCE on the frontend and JWKS verification on the backend. Matches the Google trust model — no client secret.
+Powered by MSAL redirect + PKCE on the frontend and JWKS verification on the backend. Matches the Google trust model — no client secret.
+
+**Why redirect and not popup**: modern browsers block MSAL's popup-polling handshake across the Cross-Origin-Opener-Policy boundary between our origin and `login.microsoftonline.com` (Microsoft's login pages don't set a matching COOP header the way Google's do). The popup flow closes without ever handing the token back to the opener; the redirect flow doesn't need cross-window coordination and works everywhere.
 
 **Setup**:
 
@@ -236,22 +238,37 @@ Powered by MSAL popup + PKCE on the frontend and JWKS verification on the backen
 2. In the top search bar type **App registrations** → click it under Services.
 3. **+ New registration**:
    - Name: `Coinvane`
-   - Supported account types: **"Accounts in any organizational directory (Any Microsoft Entra ID tenant — Multitenant) and personal Microsoft accounts"**
-   - Redirect URI: platform dropdown → **Single-page application (SPA)**, value → `https://your-domain.example/auth`
+   - Supported account types: pick whichever matches your `MICROSOFT_TENANT` setting (see the [control variables table](#microsoft-sso-control-variables) below). "**Accounts in any organizational directory + personal Microsoft accounts**" is the broadest and matches the default `MICROSOFT_TENANT=common`.
+   - **Redirect URI**: **platform dropdown → Single-page application (SPA)**, value → `https://your-domain.example/auth`
    - Click Register.
-4. On the app's **Overview** page, copy **Application (client) ID** into `MICROSOFT_CLIENT_ID` and `VITE_MICROSOFT_CLIENT_ID` in your `.env`.
+
+   ⚠ The platform type MUST be **Single-page application**, not **Web**. Web registrations are treated as confidential clients that require a `client_secret` on token exchange; MSAL browser has no secret to send, so token exchange fails with `AADSTS70002: The provided request must include a 'client_secret' input parameter`. If you see that error, your redirect URI is under Web — delete it and re-add under Single-page application.
+4. On the app's **Overview** page, copy **Application (client) ID** into `MICROSOFT_CLIENT_ID` (and optionally `VITE_MICROSOFT_CLIENT_ID`) in your `.env`.
 5. **Authentication** panel of the app:
-   - Under Single-page application → **Add URI** → `http://localhost:5173/auth` (for local dev, if you use it)
-   - **Front-channel logout URL** → `https://your-domain.example/logout` (Coinvane serves a logout landing page at that path)
-   - Under Implicit grant and hybrid flows — leave both checkboxes **unchecked** (auth code + PKCE only).
-6. **Token configuration** panel → **+ Add optional claim** → select **ID** → check **email** → **Add**. If it prompts to also add the Graph `email` permission, click **Yes**.
+   - Under **Single-page application** → **Add URI** → `http://localhost:5173/auth` (for local dev, if you use it)
+   - **Front-channel logout URL** → `https://your-domain.example/logout` (Coinvane serves a logout landing page at that path that clears the local session)
+   - Under **Implicit grant and hybrid flows** — leave both checkboxes **unchecked** (auth code + PKCE only).
+6. **Token configuration** panel → **+ Add optional claim** → select **ID** → check **email** → **Add**. If it prompts to also add the Graph `email` permission, click **Yes**. Without this the backend rejects sign-in with "Microsoft account has no email".
 7. **API permissions**: `Microsoft Graph → User.Read` is already listed — that's all you need. Personal accounts self-consent on first sign-in.
 
-**Trust model**: the backend verifier accepts any Microsoft tenant, but every token has to be minted for *your specific* client id (that's the actual security gate). Belt + suspenders: it also validates the issuer's shape (`login.microsoftonline.com/{guid}/v2.0`) and self-consistency (`tid` claim inside the token must match the tenant GUID in `iss`). v1.0 tokens (`sts.windows.net`) are deliberately rejected — MSAL 3.x is v2.0-only.
+##### Microsoft SSO control variables
 
-**No client secret**: MSAL popup + PKCE. Same value in both `MICROSOFT_CLIENT_ID` and `VITE_MICROSOFT_CLIENT_ID`; the backend verifies, the frontend builds the popup. The frontend also reads the id from `/auth/public-config` at runtime, so `VITE_MICROSOFT_CLIENT_ID` is optional — you can leave it blank if you'd rather not bake it into the built bundle.
+| Variable | Default | Purpose |
+|---|---|---|
+| `MICROSOFT_CLIENT_ID` | (blank) | Entra Application (client) ID. Blank = feature off. |
+| `VITE_MICROSOFT_CLIENT_ID` | (blank) | Optional build-time bake-in for the client id. Runtime value from `/auth/public-config` wins if both are set. |
+| `MICROSOFT_SSO_ENABLED` | (blank → derive from client id) | Explicit on/off. `false` hides the button on the login page AND makes `POST /auth/microsoft` return 404, even when the client id is set — useful for a temporary lockdown without unsetting the id. |
+| `MICROSOFT_TENANT` | `common` | Which Microsoft accounts to accept. Options: `common` (any Entra tenant + personal MSA), `consumers` (personal MSA only — Outlook/Xbox/Live), `organizations` (any Entra tenant, no personal MSA), or a specific tenant GUID (e.g. `contoso.onmicrosoft.com`'s GUID). Enforced on both sides: frontend builds the MSAL authority URL as `login.microsoftonline.com/<tenant>`; backend rejects sign-in with 403 if the token's `tid` claim doesn't match this policy. Must agree with the "Supported account types" on your Entra registration — a stricter server value is fine (narrows further), but a looser server value can't expand what Entra allows. |
+| `MICROSOFT_REDIRECT_URI` | (blank → derived at runtime) | Override the redirect URI. Blank = frontend uses `window.location.origin + "/auth"`, which matches whatever domain the user is on. Set this if you serve Coinvane from multiple domains and need to pin sign-in to one, or if you registered a non-standard path. Must match an SPA redirect URI on the Entra app byte-for-byte (trailing slashes count). |
+| `VITE_MICROSOFT_REDIRECT_URI` | (blank) | Build-time fallback for the above. Server value from `/auth/public-config` wins if both are set. |
 
-**No `MICROSOFT_TENANT_ID`**: multi-tenant + personal is the tested config. If you want to lock down to a specific tenant, it's a small edit to `Backend/src/microsoft-verify.js` (tighten the issuer regex and change the frontend `authority` from `/common` to `/{your-tenant-guid}`).
+Changing `MICROSOFT_SSO_ENABLED`, `MICROSOFT_TENANT`, or `MICROSOFT_REDIRECT_URI` only requires a **backend restart** (`docker compose up -d --force-recreate backend`) — the frontend reads them at runtime from `/auth/public-config` and adjusts without a rebuild. `VITE_*` values are build-time only.
+
+**Trust model**: the backend verifier accepts any Microsoft tenant that satisfies `MICROSOFT_TENANT`, but every token also has to be minted for *your specific* client id (that's the actual security gate — a token addressed to a different app can't sign anyone in). Belt + suspenders: the verifier validates the issuer's shape (`login.microsoftonline.com/{guid}/v2.0`) and self-consistency (the `tid` claim inside the token must match the tenant GUID inside `iss`). v1.0 tokens (`sts.windows.net`) are deliberately rejected — MSAL 3.x is v2.0-only, so a v1.0 token is either a misconfigured client or an attacker feeding a stale token. The email allowlist is still the second gate at the route level.
+
+**No client secret**: MSAL redirect + PKCE. Same value in both `MICROSOFT_CLIENT_ID` and `VITE_MICROSOFT_CLIENT_ID`; the backend verifies, the frontend uses it to build the MSAL redirect. The frontend reads the id from `/auth/public-config` at runtime, so `VITE_MICROSOFT_CLIENT_ID` is optional — you can leave it blank if you'd rather not bake it into the built bundle.
+
+**Verified publisher warning**: newly-registered multitenant apps show a note in Entra about end users not being able to grant consent without a verified publisher. This only affects users signing in from *other* Entra work/school tenants — personal Microsoft accounts and users from your own tenant are unaffected. If you never expect corporate users on someone else's tenant, ignore the warning. If you do, either the target tenant's admin has to grant admin consent for your app, or you have to publisher-verify via a free Microsoft Partner Network account.
 
 #### Sign in with a one-time link (optional)
 
@@ -750,10 +767,20 @@ Then rebuild without cache: `docker compose build --no-cache frontend`.
 In browser DevTools console: `import.meta.env.VITE_GOOGLE_CLIENT_ID` should
 return the full ID.
 
-### Microsoft sign-in popup errors with "AADSTS50011: redirect URI mismatch"
+### Microsoft sign-in errors with "AADSTS70002: The provided request must include a 'client_secret'"
 
-The redirect URI Coinvane sends (`window.location.origin + "/auth"`) isn't in
-your Entra app's registered SPA redirect URIs. In the Azure portal → your app →
+Your redirect URI is registered under the **Web** platform in the Entra app.
+Web registrations are treated as confidential clients that require a secret
+on token exchange; MSAL browser has no secret to send, so token exchange
+fails. Fix in Azure portal → your app → **Authentication**: delete the URI
+from the **Web** section and re-add it under **Single-page application**.
+Coinvane's redirect flow only works with SPA-typed URIs (PKCE, no secret).
+
+### Microsoft sign-in errors with "AADSTS50011: redirect URI mismatch"
+
+The redirect URI Coinvane sends (either `MICROSOFT_REDIRECT_URI` from `.env`,
+or `window.location.origin + "/auth"` if that env is blank) isn't in your
+Entra app's registered SPA redirect URIs. In the Azure portal → your app →
 Authentication → **Single-page application**, add each origin you sign in from:
 
 - Production: `https://your-domain.example/auth`
@@ -767,6 +794,33 @@ The `email` optional claim isn't configured on your Entra app. In the Azure
 portal → your app → **Token configuration** → **+ Add optional claim** → **ID**
 → check **email** → **Add**. If it prompts to also add the Graph email
 permission, click Yes. Sign in again.
+
+### Microsoft sign-in returns 403 "This instance only accepts personal Microsoft accounts" (or similar)
+
+`MICROSOFT_TENANT` in your `.env` is stricter than the account the user signed
+in with. Either:
+
+- Loosen `MICROSOFT_TENANT` (e.g. from `consumers` to `common`) — followed by
+  `docker compose up -d --force-recreate backend`, no frontend rebuild needed
+- Or have the user sign in with an account matching your policy (a work
+  account for `organizations`, a personal Outlook / Xbox / Live account for
+  `consumers`, or an account in the specific tenant if you pinned to a GUID)
+
+Check the audit log for the exact `tid` claim on the rejected sign-in.
+
+### Microsoft sign-in silently fails — popup closes with no error, or `/api/auth/microsoft` never fires in the Network tab
+
+Both are historical symptoms of bugs that are now fixed (COOP breaking MSAL's
+popup handoff; MSAL's post-redirect navigation firing before our code could
+call the backend). If you see either behaviour again after an upgrade,
+confirm your frontend bundle is current:
+
+```bash
+docker compose exec frontend sh -c 'grep -c "Completing Microsoft sign-in" /usr/share/nginx/html/assets/*.js'
+```
+
+Anything other than `1` means the new bundle isn't deployed — rebuild with
+`docker compose build --no-cache frontend && docker compose up -d frontend`.
 
 ### "This link must be opened on the same network it was requested from" (one-time-link)
 
@@ -908,8 +962,12 @@ coinvane/
 | `ENCRYPTION_KEY`          | Yes      | 32-byte (64 hex chars), AES-256 for Plaid tokens + notes. **BACK UP** |
 | `GOOGLE_CLIENT_ID`        | Yes      | Backend ID-token verification                                        |
 | `VITE_GOOGLE_CLIENT_ID`   | Yes      | Frontend Google button (build-time, same value as above)             |
-| `MICROSOFT_CLIENT_ID`     | Optional | Entra Application (client) ID. When set, a "Continue with Microsoft" button appears on the sign-in page. See [Microsoft SSO](#microsoft-sso-optional). |
+| `MICROSOFT_CLIENT_ID`     | Optional | Entra Application (client) ID. When set (and `MICROSOFT_SSO_ENABLED` isn't false), a "Continue with Microsoft" button appears on the sign-in page. See [Microsoft SSO](#microsoft-sso-optional). |
 | `VITE_MICROSOFT_CLIENT_ID` | Optional | Same value baked into the frontend bundle. Optional — the frontend also reads the id from `/auth/public-config` at runtime, so leaving this blank still works. |
+| `MICROSOFT_SSO_ENABLED`   | Optional | `false` hides the button + rejects `POST /auth/microsoft` even when the client id is set. Blank/unset = enabled when a client id is present. |
+| `MICROSOFT_TENANT`        | Optional | Which Microsoft accounts to accept: `common` (default — any Entra tenant + personal MSA), `consumers` (personal only), `organizations` (Entra tenants only), or a specific tenant GUID. Enforced by both the frontend authority URL and the backend token policy. |
+| `MICROSOFT_REDIRECT_URI`  | Optional | Override the MSAL redirect URI. Blank = frontend uses `window.location.origin + "/auth"` at runtime. Must match a Single-page application redirect URI registered on the Entra app. |
+| `VITE_MICROSOFT_REDIRECT_URI` | Optional | Build-time fallback for the above. Runtime value from `/auth/public-config` wins if both are set. |
 | `ONE_TIME_LINK_ENABLED`   | Optional | `false` (default) hides the passwordless email option; `true` shows it. Requires `EMAIL_CONFIG=enabled`. See [Sign in with a one-time link](#sign-in-with-a-one-time-link-optional). |
 | `ONE_TIME_LINK_STRICT_IP` | Optional | `true` (default) enforces same-IP for link request/click and handoff-code issue/redeem. `false` records the IP for audit but doesn't enforce. Loosen if your users need cross-device flow or are on mobile networks with rotating IPv6. |
 | `ALLOWED_EMAILS`          | Recommended | Comma-separated allowlist (Google, Microsoft, and one-time-link addresses all match against this list). Used until the owner edits it in the Admin panel; after that the DB-backed allowlist takes over. Empty = anyone with a supported sign-in method can register. |
