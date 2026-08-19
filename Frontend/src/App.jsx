@@ -704,6 +704,17 @@ function AuthScreen({ onAuth }) {
   const [msClientId, setMsClientId] = useState(
     import.meta.env.VITE_MICROSOFT_CLIENT_ID || null
   );
+  // Tenant scope from server config: "common" (default), "consumers",
+  // "organizations", or a specific tenant GUID. Builds the MSAL
+  // authority URL. Cannot be baked at build time — the server is the
+  // source of truth so a config change doesn't need a frontend rebuild.
+  const [msTenant, setMsTenant] = useState("common");
+  // Optional redirect URI override. Falls back to window.location.origin
+  // + "/auth" if unset. Build-time env var lets people bake a value in
+  // if they don't want to rely on the runtime fetch (e.g. air-gapped).
+  const [msRedirectUri, setMsRedirectUri] = useState(
+    import.meta.env.VITE_MICROSOFT_REDIRECT_URI || null
+  );
   const [msBusy, setMsBusy] = useState(false);
 
   // ── One-time email sign-in link (server-gated by ONE_TIME_LINK_ENABLED)
@@ -738,9 +749,11 @@ function AuthScreen({ onAuth }) {
     api.publicConfig().then(c => {
       setOtlEnabled(!!c.oneTimeLinkEnabled);
       setMsEnabled(!!c.microsoftEnabled);
-      // Prefer the server-provided client id; fall back to the build-
-      // time env var if the server didn't return one (e.g. older backend).
+      // Prefer server-provided values; fall back to build-time env
+      // vars if the server didn't return one (e.g. older backend).
       if (c.microsoftClientId) setMsClientId(c.microsoftClientId);
+      if (c.microsoftTenant) setMsTenant(c.microsoftTenant);
+      if (c.microsoftRedirectUri) setMsRedirectUri(c.microsoftRedirectUri);
     }).catch(() => { setOtlEnabled(false); setMsEnabled(false); });
   }, []);
 
@@ -921,18 +934,18 @@ function AuthScreen({ onAuth }) {
                   const msal = new PublicClientApplication({
                     auth: {
                       clientId: msClientId,
-                      // "common" endpoint = any work/school tenant PLUS
-                      // personal MSA accounts. Matches the "Any Azure AD
-                      // directory + personal Microsoft accounts" type
-                      // on the Entra registration. The backend
-                      // verifier accepts any Microsoft tenant as long
-                      // as aud matches our client id and iss/tid agree.
-                      authority: "https://login.microsoftonline.com/common",
+                      // Authority = login.microsoftonline.com/<tenant>.
+                      // Server-driven so the operator can flip between
+                      // common / consumers / organizations / <guid>
+                      // without a frontend rebuild. Backend enforces
+                      // the same policy on the returned token.
+                      authority: `https://login.microsoftonline.com/${msTenant || "common"}`,
                       // Redirect URI must be one of the SPA redirect URIs
-                      // registered on the Entra app. window.location.origin
-                      // + "/auth" is what the operator's setup instructions
-                      // asked them to register (dev + prod).
-                      redirectUri: window.location.origin + "/auth",
+                      // registered on the Entra app. Defaults to the
+                      // current origin + "/auth"; MICROSOFT_REDIRECT_URI
+                      // (server env) overrides if the operator needs to
+                      // pin a specific domain.
+                      redirectUri: msRedirectUri || (window.location.origin + "/auth"),
                       // See MsRedirectScreen for the rationale. Must
                       // match byte-for-byte across both configs so the
                       // localStorage state MSAL wrote before redirect
@@ -13240,11 +13253,15 @@ function MsRedirectScreen() {
         const { PublicClientApplication } = await import("@azure/msal-browser");
         // Config must match the loginRedirect call byte-for-byte — MSAL
         // uses these to locate the state it stashed before redirect.
+        // Authority + redirectUri MUST match the config used at
+        // loginRedirect time byte-for-byte, or MSAL can't locate the
+        // state it stashed in localStorage. Both come from public-
+        // config so both sides read from the same source of truth.
         const msal = new PublicClientApplication({
           auth: {
             clientId: cfg.microsoftClientId,
-            authority: "https://login.microsoftonline.com/common",
-            redirectUri: window.location.origin + "/auth",
+            authority: `https://login.microsoftonline.com/${cfg.microsoftTenant || "common"}`,
+            redirectUri: cfg.microsoftRedirectUri || (window.location.origin + "/auth"),
             // MSAL v3 defaults this to true — after handleRedirectPromise
             // processes the response it navigates the browser back to
             // whatever URL was active when loginRedirect was called (in

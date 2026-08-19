@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { OAuth2Client } from "google-auth-library";
-import { verifyMicrosoftIdToken } from "../microsoft-verify.js";
+import { verifyMicrosoftIdToken, checkMicrosoftTenantPolicy } from "../microsoft-verify.js";
 import { promises as fs } from "fs";
 import path from "path";
 import { query, queryOne } from "../db.js";
@@ -27,10 +27,26 @@ const ATTACHMENTS_ROOT = process.env.ATTACHMENTS_ROOT || "/data/attachments";
 const SIGNUP_MODE = () => process.env.SIGNUP_MODE || "open";
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
-// Microsoft Entra "personal Microsoft accounts only" registration.
-// No client secret — the frontend uses MSAL popup + PKCE and we
+// Microsoft Entra sign-in.
+// No client secret — the frontend uses MSAL redirect + PKCE and we
 // verify the returned ID token against Microsoft's JWKS.
-const MICROSOFT_CLIENT_ID = process.env.MICROSOFT_CLIENT_ID;
+const MICROSOFT_CLIENT_ID = process.env.MICROSOFT_CLIENT_ID || "";
+// Explicit enable/disable — evaluated at request time so an operator
+// can flip it in .env + restart without dropping the client id.
+// The "unset" case defaults to true when a client id IS present and
+// false otherwise (feature can never be on without a client id).
+const MICROSOFT_SSO_ENABLED = () => {
+  const raw = process.env.MICROSOFT_SSO_ENABLED;
+  if (raw === undefined || raw === "") return !!MICROSOFT_CLIENT_ID;
+  return String(raw).toLowerCase() === "true" && !!MICROSOFT_CLIENT_ID;
+};
+// Which Microsoft accounts to accept. See microsoft-verify.js for
+// exact semantics of each value.
+const MICROSOFT_TENANT = () => (process.env.MICROSOFT_TENANT || "common").trim();
+// Optional override for the redirect URI. When set, both the backend
+// (public-config) and the frontend (MSAL config) use this value.
+// When blank, the frontend falls back to window.location.origin + "/auth".
+const MICROSOFT_REDIRECT_URI = () => (process.env.MICROSOFT_REDIRECT_URI || "").trim();
 
 // ── One-time email sign-in link (Sign In With One Time Link) ────────
 // Gated by ONE_TIME_LINK_ENABLED env var so the feature stays off
@@ -242,8 +258,8 @@ export default async function (app) {
   app.post("/microsoft", {
     config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
   }, async (req, reply) => {
-    if (!MICROSOFT_CLIENT_ID) {
-      return reply.code(500).send({ error: "Microsoft Sign-In is not configured on the server" });
+    if (!MICROSOFT_SSO_ENABLED()) {
+      return reply.code(404).send({ error: "Microsoft Sign-In is disabled on this instance" });
     }
     const { id_token } = req.body || {};
     if (!id_token) return reply.code(400).send({ error: "id_token required" });
@@ -255,6 +271,17 @@ export default async function (app) {
       req.log.warn({ err: e.message, ip: req.ip }, "microsoft verify failed");
       await audit(null, "auth.invalid_token", req, { reason: e.message, provider: "microsoft" });
       return reply.code(401).send({ error: "Invalid Microsoft credential" });
+    }
+
+    // Tenant-scope policy: enforce MICROSOFT_TENANT after signature is
+    // trusted. This is orthogonal to the allowlist — it decides which
+    // sources of tokens we accept in the first place; the allowlist
+    // still decides which specific emails from those sources may sign in.
+    const tenantReject = checkMicrosoftTenantPolicy(payload, MICROSOFT_TENANT());
+    if (tenantReject) {
+      req.log.warn({ tid: payload?.tid, policy: MICROSOFT_TENANT(), ip: req.ip }, "microsoft tenant policy reject");
+      await audit(null, "auth.rejected", req, { reason: "tenant_policy", tid: payload?.tid, policy: MICROSOFT_TENANT(), provider: "microsoft" });
+      return reply.code(403).send({ error: tenantReject });
     }
 
     // MSA ID tokens: `sub` is the durable per-app user id, `email` is
@@ -322,12 +349,19 @@ export default async function (app) {
   }, async () => {
     return {
       oneTimeLinkEnabled: ONE_TIME_LINK_ENABLED() && isEmailEnabled(),
-      // Microsoft is enabled when the client id is set. The client id
-      // itself is also exposed so the frontend doesn't need its own
-      // VITE_MICROSOFT_CLIENT_ID (though we still support it as an
-      // alternative — .env.example lists both).
-      microsoftEnabled: !!MICROSOFT_CLIENT_ID,
-      microsoftClientId: MICROSOFT_CLIENT_ID || null,
+      // Microsoft is enabled only when BOTH a client id is set and the
+      // MICROSOFT_SSO_ENABLED flag isn't explicitly false. Frontend
+      // hides the button entirely when this is false — no dead UI.
+      microsoftEnabled: MICROSOFT_SSO_ENABLED(),
+      microsoftClientId: MICROSOFT_SSO_ENABLED() ? MICROSOFT_CLIENT_ID : null,
+      // Tenant scope — controls which authority URL the frontend
+      // opens (login.microsoftonline.com/<tenant>) and matches the
+      // policy the backend enforces on returned tokens.
+      microsoftTenant: MICROSOFT_SSO_ENABLED() ? MICROSOFT_TENANT() : null,
+      // Optional redirect URI override. Null = frontend computes
+      // window.location.origin + "/auth" at runtime.
+      microsoftRedirectUri: MICROSOFT_SSO_ENABLED() && MICROSOFT_REDIRECT_URI()
+        ? MICROSOFT_REDIRECT_URI() : null,
     };
   });
 

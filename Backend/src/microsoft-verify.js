@@ -27,7 +27,10 @@ import jwt from "jsonwebtoken";
 
 // JWKS for the multi-tenant + personal endpoint. `common` returns keys
 // that sign tokens from any Microsoft tenant AND from the MSA-consumers
-// tenant, which is what our current registration issues.
+// tenant. Same set of keys signs everything Microsoft issues via v2.0
+// regardless of what tenant scope our registration is set to, so we
+// always fetch from `common` — the tenant-scope policy check happens
+// downstream against the payload's `tid` claim.
 const JWKS_URL = "https://login.microsoftonline.com/common/discovery/v2.0/keys";
 // Regex for issuer validation. Must be login.microsoftonline.com, a
 // tenant GUID (hex-with-dashes), and the /v2.0 suffix. `sts.windows.net`
@@ -35,6 +38,12 @@ const JWKS_URL = "https://login.microsoftonline.com/common/discovery/v2.0/keys";
 // only library, so anything from v1.0 is either a misconfigured client
 // or an attacker feeding us a stale token.
 const ISSUER_RE = /^https:\/\/login\.microsoftonline\.com\/([0-9a-f-]{36})\/v2\.0$/i;
+
+// The fixed tenant GUID for personal Microsoft accounts (MSA). Used
+// by the tenant-scope policy check when the operator restricts to
+// `consumers` or explicitly excludes personal accounts via
+// `organizations`.
+export const MSA_TENANT_GUID = "9188040d-6c67-4c5b-b112-36a304b66dad";
 
 // JWKS is cached for an hour. Microsoft rotates rarely; on a kid miss
 // we force-refresh once before giving up. This keeps steady-state
@@ -119,4 +128,39 @@ export async function verifyMicrosoftIdToken(idToken, audience) {
   }
 
   return payload;
+}
+
+/**
+ * Enforce the operator's tenant-scope policy against a verified token
+ * payload. Returns null on pass, or an error message string on reject.
+ *
+ * Valid `tenantPolicy` values:
+ *   "common"       — any Microsoft tenant OR personal MSA (default)
+ *   "consumers"    — personal MSA accounts only
+ *   "organizations"— any Entra work/school tenant, NO personal MSA
+ *   <36-char guid> — that specific Entra tenant only
+ *
+ * Case-insensitive on the guid comparison.
+ */
+export function checkMicrosoftTenantPolicy(payload, tenantPolicy) {
+  const policy = String(tenantPolicy || "common").toLowerCase();
+  const tid = String(payload?.tid || "").toLowerCase();
+  if (!tid) return "Token missing tid claim";
+  if (policy === "common") return null;
+  if (policy === "consumers") {
+    return tid === MSA_TENANT_GUID
+      ? null
+      : "This instance only accepts personal Microsoft accounts";
+  }
+  if (policy === "organizations") {
+    return tid !== MSA_TENANT_GUID
+      ? null
+      : "This instance only accepts work or school accounts";
+  }
+  if (/^[0-9a-f-]{36}$/i.test(policy)) {
+    return tid === policy
+      ? null
+      : "This instance only accepts accounts from a specific Microsoft tenant";
+  }
+  return `Invalid MICROSOFT_TENANT value: ${tenantPolicy}`;
 }

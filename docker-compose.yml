@@ -58,8 +58,17 @@ services:
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       # Microsoft Sign-In (Entra ID + personal MSA). Blank = feature
       # hidden on the login page. See .env.example for the app-
-      # registration walkthrough.
+      # registration walkthrough and the full control-var reference.
       MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
+      # Explicit on/off switch. Blank = derive from client id (on if
+      # set, off if blank). "false" hides the button even when the
+      # client id is set — useful for temporarily disabling.
+      MICROSOFT_SSO_ENABLED: ${MICROSOFT_SSO_ENABLED:-}
+      # Tenant scope: common | consumers | organizations | <guid>
+      MICROSOFT_TENANT: ${MICROSOFT_TENANT:-common}
+      # Optional redirect URI override. Blank = frontend derives it
+      # from window.location.origin + "/auth".
+      MICROSOFT_REDIRECT_URI: ${MICROSOFT_REDIRECT_URI:-}
       ALLOWED_EMAILS: ${ALLOWED_EMAILS}
       CORS_ORIGIN: ${CORS_ORIGIN}
       APP_URL: ${APP_URL}
@@ -111,6 +120,10 @@ services:
         # Optional: bakes the Microsoft client id into the built bundle
         # as a fallback for the /auth/public-config runtime fetch.
         VITE_MICROSOFT_CLIENT_ID: ${VITE_MICROSOFT_CLIENT_ID:-}
+        # Optional build-time override for the MSAL redirect URI.
+        # Runtime value from /auth/public-config wins if the backend
+        # sends one. Handy for air-gapped builds.
+        VITE_MICROSOFT_REDIRECT_URI: ${VITE_MICROSOFT_REDIRECT_URI:-}
     container_name: coinvane-web
     restart: unless-stopped
     depends_on:
