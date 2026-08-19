@@ -50,6 +50,11 @@ services:
       REDIS_PORT: 6379
       JWT_SECRET: ${JWT_SECRET}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      # Plaid — set PLAID_ENABLED=false (or leave client id/secret blank)
+      # to run Coinvane as a manual-only budgeting app. When disabled,
+      # the frontend hides every Plaid affordance and the backend 404s
+      # every /api/plaid/* route.
+      PLAID_ENABLED: ${PLAID_ENABLED:-}
       PLAID_CLIENT_ID: ${PLAID_CLIENT_ID}
       PLAID_SECRET: ${PLAID_SECRET}
       PLAID_ENV: ${PLAID_ENV}

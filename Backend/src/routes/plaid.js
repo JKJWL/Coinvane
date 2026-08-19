@@ -6,8 +6,20 @@ import { verifyPlaidWebhook } from "../plaid-webhook-verify.js";
 import { enqueueSync } from "../queue.js";
 import { fullSyncItem } from "../sync.js";
 import { audit } from "../audit.js";
+import { PLAID_ENABLED } from "./auth.js";
 
 export default async function (app) {
+  // Manual-only mode gate — when PLAID_ENABLED() is false, EVERY route
+  // in this plugin (including the public webhook) returns 404 so
+  // Coinvane looks like it never had Plaid installed. The frontend
+  // hides its own Plaid affordances via the plaid_enabled flag on the
+  // /me payload, so a clean install in manual-only mode never surfaces
+  // an endpoint that would 404.
+  app.addHook("onRequest", async (req, reply) => {
+    if (!PLAID_ENABLED()) {
+      return reply.code(404).send({ error: "Not found" });
+    }
+  });
   app.post("/link-token", { preHandler: [app.authenticate] }, async (req) => {
     // REQUIRED: institution must support these. Keep this minimal so we don't
     // exclude banks/credit unions that don't offer brokerage data.

@@ -490,6 +490,13 @@ const PLAID_OAUTH_RETURN = typeof window !== "undefined" &&
 
 function PlaidLinkButton({ onSuccess, full = false }) {
   const toast = useToast();
+  // Manual-only mode flag — read via useAuth (must run every render to
+  // keep hook ordering stable; the null-render short-circuits AFTER all
+  // hook calls below). Server enforces the same gate on /api/plaid/*
+  // so even if the button somehow rendered, the call would 404.
+  const { user: _plaidUser } = useAuth();
+  const _plaidEnabled = !(_plaidUser && _plaidUser.plaid_enabled === false);
+
   const [linkToken, setLinkToken] = useState(
     PLAID_OAUTH_RETURN ? sessionStorage.getItem("plaid_link_token") : null
   );
@@ -587,6 +594,10 @@ function PlaidLinkButton({ onSuccess, full = false }) {
     tokenError   ? "Retry"      :
     !ready       ? "Preparing…" :
                    "Connect Bank";
+
+  // Manual-only mode — render nothing. All hooks above still ran in the
+  // same order, so the rules-of-hooks contract is preserved.
+  if (!_plaidEnabled) return null;
 
   return (
     <>
@@ -3212,6 +3223,8 @@ function ReconcileSheet({ open, onClose, account, theme, darkMode, toast, onFina
 // ─── Accounts Tab ─────────────────────────────────────────────────────────────
 function AccountsTab({ theme, darkMode, toast }) {
   const { accounts, refreshAll } = useData();
+  const { user: _accUser } = useAuth();
+  const plaidEnabled = !(_accUser && _accUser.plaid_enabled === false);
   const [syncing, setSyncing] = useState(false);
   const [items, setItems] = useState([]);
   const [removingId, setRemovingId] = useState(null);
@@ -3299,10 +3312,12 @@ function AccountsTab({ theme, darkMode, toast }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
-          <motion.button whileTap={{ scale: 0.97 }} onClick={sync} disabled={syncing}
-            className={`flex items-center gap-2 px-4 py-2 ${theme.surface} border ${theme.border} rounded-xl text-sm font-medium disabled:opacity-50`}>
-            <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} /> Sync
-          </motion.button>
+          {plaidEnabled && (
+            <motion.button whileTap={{ scale: 0.97 }} onClick={sync} disabled={syncing}
+              className={`flex items-center gap-2 px-4 py-2 ${theme.surface} border ${theme.border} rounded-xl text-sm font-medium disabled:opacity-50`}>
+              <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} /> Sync
+            </motion.button>
+          )}
           <motion.button whileTap={{ scale: 0.97 }} onClick={() => setShowAdd(true)}
             className={`flex items-center gap-1.5 px-4 py-2 ${theme.surface} border ${theme.border} rounded-xl text-sm font-medium`}>
             <Plus className="w-4 h-4" /> Add Manual
@@ -11285,8 +11300,8 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
         </div>
       </div>
 
-      {/* ── Plaid account counts (D5) ── admin/owner only ── */}
-      {isAdminish && plaidCounts && (
+      {/* ── Plaid account counts (D5) ── admin/owner only, hidden in manual-only mode ── */}
+      {isAdminish && plaidCounts && currentUser?.plaid_enabled !== false && (
         <div className={`${theme.surface} rounded-2xl border ${theme.border} p-4`}>
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-semibold text-sm">Plaid account counts</h3>
@@ -11459,6 +11474,8 @@ function UsersPanel({ currentUser, theme, darkMode, toast }) {
 // ─── Mobile Banks & Accounts section (shown inside Settings on mobile) ───────
 function MobileBanksSection({ theme, darkMode, toast }) {
   const { accounts, refreshAll } = useData();
+  const { user: _mbsUser } = useAuth();
+  const plaidEnabled = !(_mbsUser && _mbsUser.plaid_enabled === false);
   const [items, setItems] = useState([]);
   const [removingId, setRemovingId] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -11534,12 +11551,14 @@ function MobileBanksSection({ theme, darkMode, toast }) {
   return (
     <div className={`${theme.surface} border ${theme.border} rounded-2xl p-5 space-y-4`}>
       <div className="flex items-center justify-between">
-        <h3 className="font-semibold">Banks & Accounts</h3>
-        <motion.button whileTap={{ scale: 0.95 }} onClick={sync} disabled={syncing || items.length === 0}
-          className={`flex items-center gap-1.5 px-3 py-1.5 ${theme.surface} border ${theme.border} rounded-lg text-xs font-medium disabled:opacity-50`}>
-          <RefreshCw className={`w-3.5 h-3.5 ${syncing ? "animate-spin" : ""}`} />
-          {syncing ? "Syncing…" : "Sync"}
-        </motion.button>
+        <h3 className="font-semibold">{plaidEnabled ? "Banks & Accounts" : "Accounts"}</h3>
+        {plaidEnabled && (
+          <motion.button whileTap={{ scale: 0.95 }} onClick={sync} disabled={syncing || items.length === 0}
+            className={`flex items-center gap-1.5 px-3 py-1.5 ${theme.surface} border ${theme.border} rounded-lg text-xs font-medium disabled:opacity-50`}>
+            <RefreshCw className={`w-3.5 h-3.5 ${syncing ? "animate-spin" : ""}`} />
+            {syncing ? "Syncing…" : "Sync"}
+          </motion.button>
+        )}
       </div>
 
       <PlaidLinkButton onSuccess={() => { refreshAll(); loadItems(); }} full />
@@ -13113,9 +13132,11 @@ function Shell({ user, onLogout, refreshUser }) {
               <IconButton theme={theme} onClick={() => navigate("bills")}>
                 <Calendar className={`w-5 h-5 ${theme.textMuted}`} />
               </IconButton>
-              <IconButton theme={theme} onClick={syncBanks}>
-                <RefreshCw className={`w-5 h-5 ${theme.textMuted} ${syncing ? "animate-spin" : ""}`} />
-              </IconButton>
+              {user?.plaid_enabled !== false && (
+                <IconButton theme={theme} onClick={syncBanks}>
+                  <RefreshCw className={`w-5 h-5 ${theme.textMuted} ${syncing ? "animate-spin" : ""}`} />
+                </IconButton>
+              )}
               <NotificationsBell theme={theme} darkMode={darkMode} />
               <IconButton theme={theme} onClick={onLogout}><LogOut className={`w-5 h-5 ${theme.textMuted}`} /></IconButton>
             </div>

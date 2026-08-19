@@ -48,6 +48,22 @@ const MICROSOFT_TENANT = () => (process.env.MICROSOFT_TENANT || "common").trim()
 // When blank, the frontend falls back to window.location.origin + "/auth".
 const MICROSOFT_REDIRECT_URI = () => (process.env.MICROSOFT_REDIRECT_URI || "").trim();
 
+// Plaid feature toggle — lets an operator run Coinvane as a manual-only
+// budgeting app. When disabled every /api/plaid/* route returns 404, the
+// worker skips scheduling periodic syncs, and the frontend hides every
+// Plaid touchpoint (link button, sync buttons, connected-banks panel,
+// admin Plaid-counts card). Default is derived from PLAID_CLIENT_ID
+// presence so an operator who never filled in Plaid credentials
+// automatically gets manual-only mode with no extra config; an explicit
+// PLAID_ENABLED=false forces disable even when credentials are present.
+const PLAID_ENABLED = () => {
+  const raw = process.env.PLAID_ENABLED;
+  const hasCreds = !!(process.env.PLAID_CLIENT_ID && process.env.PLAID_SECRET);
+  if (raw === undefined || raw === "") return hasCreds;
+  return String(raw).toLowerCase() === "true" && hasCreds;
+};
+export { PLAID_ENABLED };
+
 // ── One-time email sign-in link (Sign In With One Time Link) ────────
 // Gated by ONE_TIME_LINK_ENABLED env var so the feature stays off
 // until an operator explicitly turns it on. Requires EMAIL_CONFIG
@@ -168,6 +184,11 @@ function userPayload(u) {
     // subsystem is enabled (EMAIL_CONFIG=enabled). The UI greys out the
     // Email Notifs toggle and shows a warning when this is false.
     email_enabled: isEmailEnabled(),
+    // Server-side feature flag: manual-only mode. When false, the
+    // frontend hides every Plaid touchpoint (link button, sync buttons,
+    // connected-banks panel, admin Plaid-counts card) and the backend
+    // 404s every /api/plaid/* route.
+    plaid_enabled: PLAID_ENABLED(),
   };
 }
 
@@ -362,6 +383,10 @@ export default async function (app) {
       // window.location.origin + "/auth" at runtime.
       microsoftRedirectUri: MICROSOFT_SSO_ENABLED() && MICROSOFT_REDIRECT_URI()
         ? MICROSOFT_REDIRECT_URI() : null,
+      // Manual-only mode indicator. Exposed pre-login so the sign-in
+      // page and initial paint know whether to render Plaid affordances
+      // (the value is also on the authed /me payload as plaid_enabled).
+      plaidEnabled: PLAID_ENABLED(),
     };
   });
 

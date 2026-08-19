@@ -43,13 +43,29 @@ async function schedulePeriodic() {
     }
   }
 
+  // Manual-only mode short-circuit — mirrors the /api/plaid/* route
+  // gate in auth.js. Same env-var logic (explicit false or missing
+  // credentials disables). Skipping the schedule keeps the worker from
+  // trying to hit Plaid every N minutes for connections that don't
+  // exist. Notifications + bill cycles + asset refresh still run.
+  const plaidEnabled = (() => {
+    const raw = process.env.PLAID_ENABLED;
+    const hasCreds = !!(process.env.PLAID_CLIENT_ID && process.env.PLAID_SECRET);
+    if (raw === undefined || raw === "") return hasCreds;
+    return String(raw).toLowerCase() === "true" && hasCreds;
+  })();
+
   const intervalMin = await getSyncIntervalMinutes();
-  await syncQueue.add(
-    "periodic-full-sync",
-    { kind: "periodic" },
-    { repeat: { every: intervalMin * 60 * 1000 }, jobId: "periodic-full-sync" }
-  );
-  console.log(`Scheduled periodic full sync every ${intervalMin} min.`);
+  if (plaidEnabled) {
+    await syncQueue.add(
+      "periodic-full-sync",
+      { kind: "periodic" },
+      { repeat: { every: intervalMin * 60 * 1000 }, jobId: "periodic-full-sync" }
+    );
+    console.log(`Scheduled periodic full sync every ${intervalMin} min.`);
+  } else {
+    console.log("Plaid disabled (manual-only mode) — periodic-full-sync not scheduled.");
+  }
   // Notification sweeps run at three points every day, matching the
   // Federal Reserve's ACH submission windows (approx 10:30 AM, 2:45 PM,
   // 4:45 PM ET — rounded to :00 for cron sanity) and extended to
