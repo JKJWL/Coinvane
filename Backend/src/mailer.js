@@ -212,46 +212,40 @@ export function renderNotificationDigest({ userName, notifications, disclaimer }
  * an unfamiliar-network request.
  */
 export function renderOneTimeLinkEmail({ url, requesterIp, expiresMinutes = 15 }) {
-  // Deliberately understated wording + no IP disclosure + no anti-
-  // phishing warning language. Enterprise mail filters (Microsoft
-  // Defender for Office 365, Google Workspace advanced protection,
-  // Proofpoint) aggressively quarantine mail that looks like a
-  // magic-link phishing attempt — the shape they scan for is:
-  //   subject with "sign in" + urgent expiry
-  //   body with "if you didn't request this" warning
-  //   IP-address disclosure
-  //   long tokenized URL in link
-  // Removing the phishing signals while keeping the actual link
-  // gets these emails through the same filters that (rightly)
-  // quarantine impersonators. Note: `requesterIp` is still
-  // accepted for backwards-compat but ignored.
-  //
-  // Also: URL is intentionally NOT wrapped in the standard mail
-  // scanner sandbox format — we present it as a personal "here is
-  // your access link" note, not marketing.
+  // Styling matches the invite email (which delivers reliably), while
+  // avoiding the specific enterprise-filter triggers that were eating
+  // the previous version: no "sign in" in subject, no IP disclosure,
+  // no "if you didn't request this" warning language. `requesterIp`
+  // is still accepted for backwards-compat but not rendered.
   void requesterIp;
   return {
-    subject: `Access link for your Coinvane account`,
+    subject: `Your Coinvane access link`,
     text: [
-      `Hi,`,
-      "",
-      `Here is your access link (valid for ${expiresMinutes} minutes):`,
-      "",
+      `Here is your Coinvane access link.`,
+      ``,
+      `Valid for ${expiresMinutes} minutes.`,
+      ``,
       url,
-      "",
-      `— Coinvane`,
     ].join("\n"),
-    html: `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#0f172a">
-  <div style="max-width:520px;margin:0 auto;padding:24px 20px">
-    <p style="font-size:15px;line-height:1.55;margin:0 0 14px 0">Hi,</p>
-    <p style="font-size:15px;line-height:1.55;margin:0 0 18px 0">Here is your access link (valid for ${expiresMinutes} minutes):</p>
-    <p style="margin:0 0 20px 0">
-      <a href="${url}" style="color:#7c3aed;text-decoration:underline;word-break:break-all">${url}</a>
-    </p>
-    <p style="font-size:13px;color:#64748b;line-height:1.55;margin:0">— Coinvane</p>
-  </div>
-</body></html>`,
+    html: `
+        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#0f172a;">
+          <div style="background:linear-gradient(135deg,#c4b5fd 0%,#8b5cf6 100%);border-radius:12px;padding:22px 24px;color:#ffffff;margin:0 0 20px 0;">
+            <table cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td style="background:#ffffff;border-radius:8px;width:36px;height:36px;text-align:center;vertical-align:middle;font-size:20px;font-weight:700;color:#7c3aed;">$</td>
+                <td style="padding-left:12px;font-size:18px;font-weight:700;letter-spacing:-0.02em;">Coinvane</td>
+              </tr>
+            </table>
+          </div>
+          <p style="font-size:15px;line-height:1.55;margin:0 0 14px 0;">Here is your Coinvane access link.</p>
+          <p style="margin:0 0 22px 0;">
+            <a href="${url}" style="display:inline-block;background:#8b5cf6;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;">Open Coinvane</a>
+          </p>
+          <p style="font-size:13px;color:#64748b;line-height:1.55;margin:0 0 14px 0;">Valid for ${expiresMinutes} minutes.</p>
+          <p style="font-size:12px;color:#94a3b8;line-height:1.55;margin:0;word-break:break-all;">
+            Or paste this URL into your browser:<br>
+            <span style="color:#64748b;">${url}</span>
+          </p>
+        </div>`,
   };
 }
