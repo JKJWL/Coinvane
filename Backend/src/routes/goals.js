@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { query, queryOne } from "../db.js";
+import { makeWriteGuard } from "../joint.js";
 
 // When a goal is linked to an account (account_id NOT NULL), the goal's
 // "saved" is the account's CURRENT balance, computed at read time rather
@@ -25,6 +26,7 @@ async function withLiveSaved(userId, rows) {
 
 export default async function (app) {
   app.addHook("preHandler", app.authenticate);
+  app.addHook("preHandler", makeWriteGuard("goal"));
 
   app.get("/", async (req) => {
     // Archived goals (from Stage 6 archive_completed_goals) hide by
@@ -40,9 +42,9 @@ export default async function (app) {
        WHERE user_id = ?
          ${includeArchived ? "" : "AND archived_at IS NULL"}
        ORDER BY created_at DESC`,
-      [req.user.id]
+      [req.contextUserId]
     );
-    return withLiveSaved(req.user.id, rows);
+    return withLiveSaved(req.contextUserId, rows);
   });
 
   app.post("/", async (req, reply) => {
@@ -57,7 +59,7 @@ export default async function (app) {
     if (account_id != null && account_id !== "") {
       const acc = await queryOne(
         "SELECT id FROM accounts WHERE id = ? AND user_id = ?",
-        [account_id, req.user.id]
+        [account_id, req.contextUserId]
       );
       if (!acc) return reply.code(400).send({ error: "account not found" });
       acctId = acc.id;
@@ -67,7 +69,7 @@ export default async function (app) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       // For linked goals "saved" is ignored at read time but we still
       // persist 0 to keep the column sane.
-      [req.user.id, name, target, acctId ? 0 : saved, deadline || null, icon, color, acctId]
+      [req.contextUserId, name, target, acctId ? 0 : saved, deadline || null, icon, color, acctId]
     );
     const rows = await query(
       `SELECT id, name, target, saved, deadline, icon, color,
@@ -75,7 +77,7 @@ export default async function (app) {
        FROM goals WHERE id = ?`,
       [r.insertId]
     );
-    return (await withLiveSaved(req.user.id, rows))[0];
+    return (await withLiveSaved(req.contextUserId, rows))[0];
   });
 
   app.patch("/:id", async (req, reply) => {
@@ -88,7 +90,7 @@ export default async function (app) {
       } else {
         const acc = await queryOne(
           "SELECT id FROM accounts WHERE id = ? AND user_id = ?",
-          [account_id, req.user.id]
+          [account_id, req.contextUserId]
         );
         if (!acc) return reply.code(400).send({ error: "account not found" });
         acctIdParam = acc.id;
@@ -106,9 +108,9 @@ export default async function (app) {
        WHERE id = ? AND user_id = ?`,
       acctIdParam === undefined
         ? [name ?? null, target ?? null, saved ?? null, deadline ?? null, icon ?? null, color ?? null,
-           req.params.id, req.user.id]
+           req.params.id, req.contextUserId]
         : [name ?? null, target ?? null, saved ?? null, deadline ?? null, icon ?? null, color ?? null,
-           acctIdParam, req.params.id, req.user.id]
+           acctIdParam, req.params.id, req.contextUserId]
     );
     const rows = await query(
       `SELECT id, name, target, saved, deadline, icon, color,
@@ -116,7 +118,7 @@ export default async function (app) {
        FROM goals WHERE id = ?`,
       [req.params.id]
     );
-    return (await withLiveSaved(req.user.id, rows))[0];
+    return (await withLiveSaved(req.contextUserId, rows))[0];
   });
 
   // Adjust "saved" by a positive (deposit) or negative (withdrawal) amount.
@@ -131,7 +133,7 @@ export default async function (app) {
     }
     const g = await queryOne(
       "SELECT id, saved, target, account_id FROM goals WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!g) return reply.code(404).send({ error: "goal not found" });
     if (g.account_id != null) {
@@ -152,7 +154,7 @@ export default async function (app) {
 
   app.delete("/:id", async (req) => {
     await query("DELETE FROM goals WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]);
+      [req.params.id, req.contextUserId]);
     return { ok: true };
   });
 }

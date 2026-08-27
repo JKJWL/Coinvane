@@ -139,6 +139,20 @@ async function emailAllowed(email) {
   return list.includes((email || "").toLowerCase());
 }
 
+// Extended check: allow through if the email is either on the main
+// allowlist OR has an outstanding joint invitation. Returns
+//   { ok, mode }
+// where mode is:
+//   'full'   — on the main allowlist; regular user, personal instance
+//   'guest'  — invitation-only; must be created as is_guest_only=true
+//   null     — rejected (return 403 to caller)
+async function emailAllowedOrInvited(email) {
+  if (await emailAllowed(email)) return { ok: true, mode: "full" };
+  const inv = await findOutstandingInvitationForEmail(email);
+  if (inv) return { ok: true, mode: "guest" };
+  return { ok: false, mode: null };
+}
+
 const DEFAULT_CATEGORIES = [
   ["Groceries", "#10b981", "Utensils"], ["Restaurants", "#f59e0b", "Coffee"],
   ["Gas & Fuel", "#ef4444", "Car"], ["Entertainment", "#ec4899", "Film"],
@@ -200,7 +214,58 @@ function userPayload(u) {
     // connected-banks panel, admin Plaid-counts card) and the backend
     // 404s every /api/plaid/* route.
     plaid_enabled: PLAID_ENABLED(),
+    // Joint-account feature flags. joint_enabled is the per-owner
+    // opt-in; is_guest_only marks a user that was invited via joint
+    // but is not on the main allowlist — they only ever see shared
+    // contexts and cannot create personal data.
+    joint_enabled: !!u.joint_enabled,
+    is_guest_only: !!u.is_guest_only,
   };
+}
+
+// Auto-accept every outstanding invitation addressed to this email
+// once a matching users row exists. Called at first sign-in so the
+// guest lands directly in their joint context without needing to
+// click the invitation link a second time. Idempotent.
+async function autoAcceptInvitations(userId, email) {
+  const invs = await queryOne(
+    `SELECT COUNT(*) AS c FROM joint_invitations
+      WHERE invitee_email = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > NOW()`,
+    [String(email).toLowerCase()]
+  );
+  if (!invs?.c) return;
+  const rows = await import("../db.js").then(m => m.query(
+    `SELECT id, owner_user_id, permissions FROM joint_invitations
+      WHERE invitee_email = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > NOW()`,
+    [String(email).toLowerCase()]
+  ));
+  for (const inv of rows) {
+    await query(
+      `INSERT INTO joint_shares (owner_user_id, guest_user_id, permissions)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE permissions = VALUES(permissions), revoked_at = NULL`,
+      [inv.owner_user_id, userId, inv.permissions]
+    );
+    await query(`UPDATE joint_invitations SET accepted_at = NOW() WHERE id = ?`, [inv.id]);
+  }
+}
+
+// Check whether the given email has an outstanding joint invitation.
+// Used at sign-in time to let invited-but-not-allowlisted users
+// through the allowlist gate as guest-only accounts. Returns the
+// invitation row or null.
+async function findOutstandingInvitationForEmail(email) {
+  return queryOne(
+    `SELECT id, owner_user_id, permissions
+       FROM joint_invitations
+      WHERE invitee_email = ?
+        AND accepted_at IS NULL
+        AND revoked_at IS NULL
+        AND expires_at > NOW()
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [String(email).toLowerCase()]
+  );
 }
 
 export default async function (app) {
@@ -238,10 +303,13 @@ export default async function (app) {
       return reply.code(401).send({ error: "Google email not verified" });
     }
 
-    // ── Hard allowlist enforcement ────────────────────────────────
-    if (!(await emailAllowed(email))) {
-      req.log.warn({ email, ip: req.ip }, "sign-in rejected: email not in allowlist");
-      await audit(null, "auth.rejected", req, { reason: "not_in_allowlist", email });
+    // ── Allowlist OR joint invitation gate ────────────────────────
+    // Invitation-only sign-ins land as is_guest_only users so they
+    // never accrue personal data (see joint.js for the model).
+    const gate = await emailAllowedOrInvited(email);
+    if (!gate.ok) {
+      req.log.warn({ email, ip: req.ip }, "sign-in rejected: not allowlisted or invited");
+      await audit(null, "auth.rejected", req, { reason: "not_allowlisted_or_invited", email });
       return reply.code(403).send({ error: "This Google account is not authorized to access this instance." });
     }
 
@@ -259,23 +327,32 @@ export default async function (app) {
       }
       user = await queryOne("SELECT * FROM users WHERE id = ?", [user.id]);
     } else {
-      // New user — allowlist already gated entry above. Only remaining
+      // New user — gate.ok already verified above. Only remaining
       // check is SIGNUP_MODE=closed (lockdown after household finalised).
+      // Guest-only users (invitation-only) bypass SIGNUP_MODE — they're
+      // not creating a personal account, just accepting an invitation.
       const userCount = (await queryOne("SELECT COUNT(*) AS c FROM users"))?.c || 0;
       let role = "user";
+      const isGuestOnly = gate.mode === "guest";
 
       if (userCount === 0) {
         role = "owner"; // first user is always owner (single-instance pattern)
-      } else if (SIGNUP_MODE() === "closed") {
+      } else if (SIGNUP_MODE() === "closed" && !isGuestOnly) {
         return reply.code(403).send({ error: "Signups are disabled" });
       }
 
       const r = await query(
-        `INSERT INTO users (email, google_id, picture, name, role) VALUES (?, ?, ?, ?, ?)`,
-        [email, googleId, picture, name, role]
+        `INSERT INTO users (email, google_id, picture, name, role, is_guest_only) VALUES (?, ?, ?, ?, ?, ?)`,
+        [email, googleId, picture, name, role, isGuestOnly ? 1 : 0]
       );
-      await seedCategoriesFor(r.insertId);
+      // Guest-only users don't get seeded categories — they have no
+      // personal instance to categorize against.
+      if (!isGuestOnly) await seedCategoriesFor(r.insertId);
       user = await queryOne("SELECT * FROM users WHERE id = ?", [r.insertId]);
+
+      // Auto-accept every outstanding invitation for this email so
+      // the guest lands directly in the joint context on first sign-in.
+      await autoAcceptInvitations(user.id, email);
     }
 
     const token = app.jwt.sign(
@@ -334,10 +411,11 @@ export default async function (app) {
       return reply.code(401).send({ error: "Microsoft account has no email — enable the 'email' optional claim on your app registration" });
     }
 
-    // ── Hard allowlist enforcement ────────────────────────────────
-    if (!(await emailAllowed(email))) {
-      req.log.warn({ email, ip: req.ip }, "sign-in rejected: email not in allowlist");
-      await audit(null, "auth.rejected", req, { reason: "not_in_allowlist", email, provider: "microsoft" });
+    // ── Allowlist OR joint invitation gate ────────────────────────
+    const gate = await emailAllowedOrInvited(email);
+    if (!gate.ok) {
+      req.log.warn({ email, ip: req.ip }, "sign-in rejected: not allowlisted or invited");
+      await audit(null, "auth.rejected", req, { reason: "not_allowlisted_or_invited", email, provider: "microsoft" });
       return reply.code(403).send({ error: "This Microsoft account is not authorized to access this instance." });
     }
 
@@ -354,17 +432,19 @@ export default async function (app) {
     } else {
       const userCount = (await queryOne("SELECT COUNT(*) AS c FROM users"))?.c || 0;
       let role = "user";
+      const isGuestOnly = gate.mode === "guest";
       if (userCount === 0) {
-        role = "owner"; // first user is always owner (single-instance pattern)
-      } else if (SIGNUP_MODE() === "closed") {
+        role = "owner";
+      } else if (SIGNUP_MODE() === "closed" && !isGuestOnly) {
         return reply.code(403).send({ error: "Signups are disabled" });
       }
       const r = await query(
-        `INSERT INTO users (email, microsoft_id, name, role) VALUES (?, ?, ?, ?)`,
-        [email, msId, name, role]
+        `INSERT INTO users (email, microsoft_id, name, role, is_guest_only) VALUES (?, ?, ?, ?, ?)`,
+        [email, msId, name, role, isGuestOnly ? 1 : 0]
       );
-      await seedCategoriesFor(r.insertId);
+      if (!isGuestOnly) await seedCategoriesFor(r.insertId);
       user = await queryOne("SELECT * FROM users WHERE id = ?", [r.insertId]);
+      await autoAcceptInvitations(user.id, email);
     }
 
     const token = app.jwt.sign(
@@ -442,10 +522,12 @@ export default async function (app) {
       return { ok: true }; // silent success
     }
 
-    // Not on allowlist? Silent success, no work performed. Audit the
-    // attempt so an operator can spot probing patterns.
-    if (!(await emailAllowed(rawEmail))) {
-      await audit(null, "signin_link.rejected", req, { reason: "not_in_allowlist", email: rawEmail });
+    // Not on allowlist AND no outstanding joint invitation? Silent
+    // success, no work performed. Audit the attempt so an operator
+    // can spot probing patterns.
+    const gate = await emailAllowedOrInvited(rawEmail);
+    if (!gate.ok) {
+      await audit(null, "signin_link.rejected", req, { reason: "not_allowlisted_or_invited", email: rawEmail });
       return { ok: true }; // silent success
     }
 
@@ -559,12 +641,13 @@ export default async function (app) {
       }
     }
 
-    // Re-check allowlist at redeem time. Someone could have been on
-    // the allowlist when the link was minted, then removed before the
-    // click; deny in that case. Defense in depth.
+    // Re-check gate at redeem time. Someone could have been on the
+    // allowlist when the link was minted, then removed before the
+    // click; also allow through if a fresh joint invitation exists.
     const email = String(row.email || "").toLowerCase();
-    if (!(await emailAllowed(email))) {
-      await audit(null, "signin_link.rejected", req, { reason: "not_in_allowlist_at_redeem", email });
+    const gate = await emailAllowedOrInvited(email);
+    if (!gate.ok) {
+      await audit(null, "signin_link.rejected", req, { reason: "not_allowlisted_or_invited_at_redeem", email });
       return reply.code(403).send({ error: "This email is no longer authorized." });
     }
 
@@ -579,18 +662,20 @@ export default async function (app) {
     if (!user) {
       const userCount = (await queryOne("SELECT COUNT(*) AS c FROM users"))?.c || 0;
       let role = "user";
+      const isGuestOnly = gate.mode === "guest";
       if (userCount === 0) {
-        role = "owner"; // first user is always owner
-      } else if (SIGNUP_MODE() === "closed") {
+        role = "owner";
+      } else if (SIGNUP_MODE() === "closed" && !isGuestOnly) {
         return reply.code(403).send({ error: "Signups are disabled" });
       }
       const name = email.split("@")[0];
       const r = await query(
-        `INSERT INTO users (email, name, role) VALUES (?, ?, ?)`,
-        [email, name, role]
+        `INSERT INTO users (email, name, role, is_guest_only) VALUES (?, ?, ?, ?)`,
+        [email, name, role, isGuestOnly ? 1 : 0]
       );
-      await seedCategoriesFor(r.insertId);
+      if (!isGuestOnly) await seedCategoriesFor(r.insertId);
       user = await queryOne("SELECT * FROM users WHERE id = ?", [r.insertId]);
+      await autoAcceptInvitations(user.id, email);
     }
 
     const token = app.jwt.sign(

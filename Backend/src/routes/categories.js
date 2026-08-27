@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { query, queryOne } from "../db.js";
+import { makeWriteGuard } from "../joint.js";
 
 export default async function (app) {
   app.addHook("preHandler", app.authenticate);
+  app.addHook("preHandler", makeWriteGuard("category"));
+  // (categories.js already had makeWriteGuard registered above)
 
   app.get("/", async (req) => {
     return query(
@@ -12,7 +15,7 @@ export default async function (app) {
               parent_id AS parentId
        FROM categories
        WHERE user_id = ? ORDER BY name`,
-      [req.user.id]
+      [req.contextUserId]
     );
   });
 
@@ -26,14 +29,14 @@ export default async function (app) {
     if (parent_id) {
       const parent = await queryOne(
         "SELECT id FROM categories WHERE id = ? AND user_id = ?",
-        [parent_id, req.user.id]
+        [parent_id, req.contextUserId]
       );
       if (parent) parentId = parent.id;
     }
     const r = await query(
       `INSERT INTO categories (user_id, name, color, icon, custom, tax_schedule, group_name, parent_id)
        VALUES (?, ?, ?, ?, TRUE, ?, ?, ?)`,
-      [req.user.id, name, color, icon, schedule, groupName, parentId]
+      [req.contextUserId, name, color, icon, schedule, groupName, parentId]
     );
     return queryOne("SELECT * FROM categories WHERE id = ?", [r.insertId]);
   });
@@ -58,7 +61,7 @@ export default async function (app) {
       else {
         const parent = await queryOne(
           "SELECT id FROM categories WHERE id = ? AND user_id = ?",
-          [parent_id, req.user.id]
+          [parent_id, req.contextUserId]
         );
         parentId = parent ? parent.id : null;
       }
@@ -77,7 +80,7 @@ export default async function (app) {
         ...(schedule === undefined ? [] : [schedule]),
         ...(groupName === undefined ? [] : [groupName]),
         ...(parentId === undefined ? [] : [parentId]),
-        req.params.id, req.user.id,
+        req.params.id, req.contextUserId,
       ]
     );
     return queryOne("SELECT * FROM categories WHERE id = ?", [req.params.id]);
@@ -85,7 +88,7 @@ export default async function (app) {
 
   app.delete("/:id", async (req) => {
     await query("DELETE FROM categories WHERE id = ? AND user_id = ? AND custom = TRUE",
-      [req.params.id, req.user.id]);
+      [req.params.id, req.contextUserId]);
     return { ok: true };
   });
 }

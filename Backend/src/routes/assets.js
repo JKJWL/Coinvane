@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { query, queryOne } from "../db.js";
+import { makeWriteGuard } from "../joint.js";
 
 const ALLOWED_KINDS = new Set([
   "vehicle", "boat", "jewelry", "art", "collectible", "property", "other",
@@ -88,6 +89,7 @@ export async function refreshAllAssetsForUser(userId) {
 
 export default async function (app) {
   app.addHook("preHandler", app.authenticate);
+  app.addHook("preHandler", makeWriteGuard("asset"));
 
   app.get("/", async (req) => {
     const rows = await query(
@@ -107,7 +109,7 @@ export default async function (app) {
        LEFT JOIN accounts la ON la.id = a.loan_account_id AND la.user_id = a.user_id
        WHERE a.user_id = ? AND a.archived_at IS NULL
        ORDER BY a.current_value DESC`,
-      [req.user.id]
+      [req.contextUserId]
     );
     // Aggregate damage/repair impact per asset (positive = value lost).
     const damageRows = await query(
@@ -116,7 +118,7 @@ export default async function (app) {
        FROM asset_damage_events
        WHERE user_id = ?
        GROUP BY asset_id`,
-      [req.user.id]
+      [req.contextUserId]
     );
     const damageByAsset = new Map(damageRows.map(d => [d.asset_id, d]));
     for (const r of rows) {
@@ -150,14 +152,14 @@ export default async function (app) {
        FROM accounts
        WHERE user_id = ? AND type = 'loan'
        ORDER BY name`,
-      [req.user.id]
+      [req.contextUserId]
     );
   });
 
   // ── Damage / impairment events ─────────────────────────────────────
   app.get("/:id/damage", async (req, reply) => {
     const owned = await queryOne("SELECT id FROM assets WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]);
+      [req.params.id, req.contextUserId]);
     if (!owned) return reply.code(404).send({ error: "not found" });
     return query(
       `SELECT id, event_date AS eventDate, description,
@@ -165,14 +167,14 @@ export default async function (app) {
        FROM asset_damage_events
        WHERE asset_id = ? AND user_id = ?
        ORDER BY event_date DESC, id DESC`,
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
   });
 
   app.post("/:id/damage", async (req, reply) => {
     const asset = await queryOne(
       "SELECT id, current_value FROM assets WHERE id = ? AND user_id = ? AND archived_at IS NULL",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!asset) return reply.code(404).send({ error: "not found" });
     const b = req.body || {};
@@ -184,7 +186,7 @@ export default async function (app) {
     await query(
       `INSERT INTO asset_damage_events (user_id, asset_id, event_date, description, value_impact)
        VALUES (?, ?, ?, ?, ?)`,
-      [req.user.id, asset.id, b.event_date, desc, impact]
+      [req.contextUserId, asset.id, b.event_date, desc, impact]
     );
     // Damage subtracts, repairs add back. Clamp at zero.
     const newVal = Math.max(0, Number(asset.current_value) - impact);
@@ -198,11 +200,11 @@ export default async function (app) {
        FROM asset_damage_events e
        JOIN assets a ON a.id = e.asset_id
        WHERE e.id = ? AND e.user_id = ?`,
-      [req.params.eventId, req.user.id]
+      [req.params.eventId, req.contextUserId]
     );
     if (!evt) return reply.code(404).send({ error: "not found" });
     await query("DELETE FROM asset_damage_events WHERE id = ? AND user_id = ?",
-      [evt.id, req.user.id]);
+      [evt.id, req.contextUserId]);
     // Reverse the impact — add it back to current_value.
     const restored = Number(evt.current_value) + Number(evt.value_impact);
     await query("UPDATE assets SET current_value = ? WHERE id = ?", [restored, evt.asset_id]);
@@ -212,7 +214,7 @@ export default async function (app) {
   app.get("/summary", async (req) => {
     const rows = await query(
       "SELECT COALESCE(SUM(current_value), 0) AS total FROM assets WHERE user_id = ? AND archived_at IS NULL",
-      [req.user.id]
+      [req.contextUserId]
     );
     return { total: Number(rows[0]?.total || 0) };
   });
@@ -232,7 +234,7 @@ export default async function (app) {
     if (b.loan_account_id) {
       const acct = await queryOne(
         "SELECT id FROM accounts WHERE id = ? AND user_id = ? AND type = 'loan'",
-        [b.loan_account_id, req.user.id]
+        [b.loan_account_id, req.contextUserId]
       );
       if (acct) loanAccountId = acct.id;
     }
@@ -243,7 +245,7 @@ export default async function (app) {
           loan_account_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.user.id,
+        req.contextUserId,
         String(b.name).slice(0, 128),
         kind, b.acquired_date, acquired, current,
         Math.max(0, Number(b.salvage_value) || 0),
@@ -259,7 +261,7 @@ export default async function (app) {
 
   app.patch("/:id", async (req, reply) => {
     const owned = await queryOne("SELECT id FROM assets WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]);
+      [req.params.id, req.contextUserId]);
     if (!owned) return reply.code(404).send({ error: "not found" });
     const b = req.body || {};
     const kind   = b.kind && ALLOWED_KINDS.has(b.kind) ? b.kind : null;
@@ -270,7 +272,7 @@ export default async function (app) {
     else if (b.loan_account_id !== undefined) {
       const acct = await queryOne(
         "SELECT id FROM accounts WHERE id = ? AND user_id = ? AND type = 'loan'",
-        [b.loan_account_id, req.user.id]
+        [b.loan_account_id, req.contextUserId]
       );
       loanAccountId = acct ? acct.id : null;
     }
@@ -300,7 +302,7 @@ export default async function (app) {
         b.notes ?? null,
         loanAccountId !== undefined ? 1 : 0,
         loanAccountId ?? null,
-        req.params.id, req.user.id,
+        req.params.id, req.contextUserId,
       ]
     );
     return queryOne("SELECT * FROM assets WHERE id = ?", [req.params.id]);
@@ -313,20 +315,20 @@ export default async function (app) {
   app.post("/:id/refresh", async (req, reply) => {
     const asset = await queryOne(
       "SELECT * FROM assets WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!asset) return reply.code(404).send({ error: "not found" });
     // For method='none' the helper returns null and skips the write, so
     // send back the untouched value (manual refresh on a static asset is
     // effectively a no-op).
-    const newVal = await refreshAssetCurrentValue(req.user.id, asset);
+    const newVal = await refreshAssetCurrentValue(req.contextUserId, asset);
     return { ok: true, current_value: newVal ?? Number(asset.current_value) };
   });
 
   app.delete("/:id", async (req, reply) => {
     const r = await query(
       "UPDATE assets SET archived_at = NOW() WHERE id = ? AND user_id = ? AND archived_at IS NULL",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!r.affectedRows) return reply.code(404).send({ error: "not found" });
     return { ok: true };

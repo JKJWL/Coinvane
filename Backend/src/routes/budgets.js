@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { query, queryOne } from "../db.js";
+import { makeWriteGuard } from "../joint.js";
 import {
   currentPeriodBounds, isoDate, getMasterPeriod, getPastPeriods,
   spentForBudgetInWindow, logBudgetAudit, getBudgetSnapshotsAsOf,
@@ -102,13 +103,14 @@ async function creditUsageInWindow(userId, startStr, endStr) {
 
 export default async function (app) {
   app.addHook("preHandler", app.authenticate);
+  app.addHook("preHandler", makeWriteGuard("budget"));
 
   // ── GET / — list user budgets ────────────────────────────────────
   app.get("/", async (req) => {
     // Master period drives every budget's window. If the caller supplies
     // ?atDate=YYYY-MM-DD we compute as-of that date instead (used by history).
     const atDate = req.query?.atDate || null;
-    const master = await getMasterPeriod(req.user.id, atDate);
+    const master = await getMasterPeriod(req.contextUserId, atDate);
 
     const budgets = await query(
       `SELECT b.id, b.category, b.amount, b.rollover_credit AS rolloverCredit,
@@ -119,10 +121,10 @@ export default async function (app) {
        LEFT JOIN accounts a ON a.id = b.account_id
        WHERE b.user_id = ?
        ORDER BY b.sort_order ASC, b.id ASC`,
-      [req.user.id]
+      [req.contextUserId]
     );
     for (const b of budgets) {
-      b.spent = await spentForBudgetInWindow(req.user.id, b, master.startStr, master.endStr);
+      b.spent = await spentForBudgetInWindow(req.contextUserId, b, master.startStr, master.endStr);
       b.periodStart = master.startStr;
       b.periodEnd   = master.endStr;
       b.rolloverCredit = Number(b.rolloverCredit) || 0;
@@ -143,15 +145,15 @@ export default async function (app) {
   // line up exactly with the budgets page.
   app.get("/trackers", async (req) => {
     const atDate = req.query?.atDate || null;
-    const master = await getMasterPeriod(req.user.id, atDate);
+    const master = await getMasterPeriod(req.contextUserId, atDate);
     const user = await queryOne(
       `SELECT income_period_start, credit_period, credit_period_start, credit_period_days
        FROM users WHERE id = ?`,
-      [req.user.id]
+      [req.contextUserId]
     );
 
-    const incomeTotal = await sumIncomeInWindow(req.user.id, master.startStr, master.endStr);
-    const expectedIncomeTotal = await sumExpectedIncomeInWindow(req.user.id, master.startStr, master.endStr);
+    const incomeTotal = await sumIncomeInWindow(req.contextUserId, master.startStr, master.endStr);
+    const expectedIncomeTotal = await sumExpectedIncomeInWindow(req.contextUserId, master.startStr, master.endStr);
     const income = {
       total: incomeTotal,
       // Sum of scheduled + arrived transactions marked `budget_expected_income`
@@ -173,11 +175,11 @@ export default async function (app) {
     // master period now (one rhythm for the whole app).
     const hasCC = await queryOne(
       "SELECT 1 AS x FROM accounts WHERE user_id = ? AND type = 'credit' LIMIT 1",
-      [req.user.id]
+      [req.contextUserId]
     );
     let credit = null;
     if (hasCC) {
-      const cu = await creditUsageInWindow(req.user.id, master.startStr, master.endStr);
+      const cu = await creditUsageInWindow(req.contextUserId, master.startStr, master.endStr);
       credit = {
         ...cu,
         period: master.period,
@@ -196,7 +198,7 @@ export default async function (app) {
     const allocRow = await queryOne(
       `SELECT COALESCE(SUM(amount), 0) AS total FROM budgets
        WHERE user_id = ? AND account_id IS NULL`,
-      [req.user.id]
+      [req.contextUserId]
     );
     const allocated = Number(allocRow.total) || 0;
 
@@ -217,7 +219,7 @@ export default async function (app) {
          AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
          AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
          AND t.voided_at IS NULL`,
-      [req.user.id, master.startStr, master.endStr]
+      [req.contextUserId, master.startStr, master.endStr]
     );
     const spentAcrossBudgets = Number(spentRow.total) || 0;
 
@@ -262,7 +264,7 @@ export default async function (app) {
     const masterUser = await queryOne(
       `SELECT income_period, income_period_start, income_period_days, week_start
        FROM users WHERE id = ?`,
-      [req.user.id]
+      [req.contextUserId]
     );
     const periods = getPastPeriods(
       masterUser?.income_period || "monthly",
@@ -280,7 +282,7 @@ export default async function (app) {
        FROM budgets b
        LEFT JOIN accounts a ON a.id = b.account_id
        WHERE b.user_id = ?`,
-      [req.user.id]
+      [req.contextUserId]
     );
     const liveById = new Map(liveRows.map(r => [r.id, r]));
 
@@ -288,7 +290,7 @@ export default async function (app) {
     // — pull from the snapshot's account_id against accounts.
     const accountRows = await query(
       `SELECT id, name FROM accounts WHERE user_id = ?`,
-      [req.user.id]
+      [req.contextUserId]
     );
     const accountNameById = new Map(accountRows.map(a => [a.id, a.name]));
 
@@ -298,13 +300,13 @@ export default async function (app) {
       const startStr = isoDate(p.start);
       const endStr   = isoDate(p.end);
       const isCurrent = startStr <= today && today < endStr;
-      const income = await sumIncomeInWindow(req.user.id, startStr, endStr);
+      const income = await sumIncomeInWindow(req.contextUserId, startStr, endStr);
 
       // endStr is exclusive (first day NOT included). The audit cutoff is
       // the start of that day in local time — any audit row stamped before
       // then was in effect during the period.
       const snapshots = await getBudgetSnapshotsAsOf(
-        req.user.id,
+        req.contextUserId,
         `${endStr} 00:00:00`
       );
 
@@ -317,7 +319,7 @@ export default async function (app) {
         // Use the snapshotted category + amount + account so amount edits
         // after the period are not back-applied.
         const spent = await spentForBudgetInWindow(
-          req.user.id,
+          req.contextUserId,
           { category: snap.category, account_id: snap.account_id },
           startStr, endStr
         );
@@ -366,7 +368,7 @@ export default async function (app) {
        GROUP BY t.category
        ORDER BY total DESC
        LIMIT 6`,
-      [req.user.id, req.user.id]
+      [req.contextUserId, req.contextUserId]
     );
     return rows.map(r => ({
       category: r.category,
@@ -392,7 +394,7 @@ export default async function (app) {
        WHERE id = ?`,
       [income_period ?? null, income_period_days ?? null, income_period_start ?? null,
        credit_period ?? null, credit_period_days ?? null, credit_period_start ?? null,
-       req.user.id]
+       req.contextUserId]
     );
     return { ok: true };
   });
@@ -419,7 +421,7 @@ export default async function (app) {
     if (account_id) {
       const acc = await queryOne(
         "SELECT id FROM accounts WHERE id = ? AND user_id = ?",
-        [account_id, req.user.id]
+        [account_id, req.contextUserId]
       );
       if (!acc) return reply.code(400).send({ error: "invalid account" });
     }
@@ -428,7 +430,7 @@ export default async function (app) {
     // update). The previous ON DUPLICATE KEY shortcut made that ambiguous.
     const existing = await queryOne(
       `SELECT id FROM budgets WHERE user_id = ? AND category = ? AND (account_id <=> ?)`,
-      [req.user.id, category, account_id]
+      [req.contextUserId, category, account_id]
     );
 
     let budgetId;
@@ -437,28 +439,28 @@ export default async function (app) {
       await query(
         `UPDATE budgets SET amount = ?, period = ?, period_start = ?, period_days = ?
          WHERE id = ? AND user_id = ?`,
-        [amount, period, period_start, period_days, existing.id, req.user.id]
+        [amount, period, period_start, period_days, existing.id, req.contextUserId]
       );
       budgetId = existing.id;
       action = "update";
     } else {
       const maxRow = await queryOne(
         "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM budgets WHERE user_id = ?",
-        [req.user.id]
+        [req.contextUserId]
       );
       const sortOrder = Number(maxRow.next) || 0;
       const result = await query(
         `INSERT INTO budgets
            (user_id, category, amount, period, period_start, period_days, account_id, sort_order)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [req.user.id, category, amount, period,
+        [req.contextUserId, category, amount, period,
          period_start, period_days, account_id, sortOrder]
       );
       budgetId = result.insertId;
       action = "create";
     }
 
-    await logBudgetAudit(req.user.id, budgetId, action, {
+    await logBudgetAudit(req.contextUserId, budgetId, action, {
       category, amount, period, period_start, period_days, account_id,
     });
 
@@ -466,7 +468,7 @@ export default async function (app) {
     // depend on a follow-up refreshAll() firing before the user looks.
     // Fixes the "new card budget shows $0 spent even with existing
     // transactions" perception on freshly-created card usage budgets.
-    const master = await getMasterPeriod(req.user.id);
+    const master = await getMasterPeriod(req.contextUserId);
     const row = await queryOne(
       `SELECT b.id, b.category, b.amount, b.rollover_credit AS rolloverCredit,
               b.period, b.period_start, b.period_days,
@@ -475,10 +477,10 @@ export default async function (app) {
        FROM budgets b
        LEFT JOIN accounts a ON a.id = b.account_id
        WHERE b.id = ? AND b.user_id = ?`,
-      [budgetId, req.user.id]
+      [budgetId, req.contextUserId]
     );
     if (row) {
-      row.spent = await spentForBudgetInWindow(req.user.id, row, master.startStr, master.endStr);
+      row.spent = await spentForBudgetInWindow(req.contextUserId, row, master.startStr, master.endStr);
       row.periodStart = master.startStr;
       row.periodEnd = master.endStr;
       row.rolloverCredit = Number(row.rolloverCredit) || 0;
@@ -495,7 +497,7 @@ export default async function (app) {
   app.get("/:id/transactions", async (req, reply) => {
     const b = await queryOne(
       `SELECT id, category, account_id FROM budgets WHERE id = ? AND user_id = ?`,
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!b) return reply.code(404).send({ error: "budget not found" });
 
@@ -504,7 +506,7 @@ export default async function (app) {
       startStr = req.query.periodStart;
       endStr   = req.query.periodEnd;
     } else {
-      const master = await getMasterPeriod(req.user.id);
+      const master = await getMasterPeriod(req.contextUserId);
       startStr = master.startStr;
       endStr   = master.endStr;
     }
@@ -522,7 +524,7 @@ export default async function (app) {
            AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
            AND t.voided_at IS NULL
          ORDER BY t.date DESC, t.id DESC`,
-        [req.user.id, b.account_id, startStr, endStr]
+        [req.contextUserId, b.account_id, startStr, endStr]
       );
     } else {
       rows = await query(
@@ -537,7 +539,7 @@ export default async function (app) {
            AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
            AND t.voided_at IS NULL
          ORDER BY t.date DESC, t.id DESC`,
-        [req.user.id, b.category, startStr, endStr]
+        [req.contextUserId, b.category, startStr, endStr]
       );
     }
     return rows;
@@ -557,14 +559,14 @@ export default async function (app) {
          period_days = COALESCE(?, period_days)
        WHERE id = ? AND user_id = ?`,
       [amount ?? null, period ?? null, period_start ?? null, period_days ?? null,
-       req.params.id, req.user.id]
+       req.params.id, req.contextUserId]
     );
     const fresh = await queryOne(
       "SELECT * FROM budgets WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (fresh) {
-      await logBudgetAudit(req.user.id, fresh.id, "update", {
+      await logBudgetAudit(req.contextUserId, fresh.id, "update", {
         category: fresh.category,
         amount: fresh.amount,
         period: fresh.period,
@@ -586,7 +588,7 @@ export default async function (app) {
       const placeholders = ids.map(() => "?").join(",");
       const rows = await query(
         `SELECT id FROM budgets WHERE user_id = ? AND id IN (${placeholders})`,
-        [req.user.id, ...ids]
+        [req.contextUserId, ...ids]
       );
       if (rows.length !== ids.length) {
         return reply.code(403).send({ error: "one or more ids do not belong to you" });
@@ -596,7 +598,7 @@ export default async function (app) {
     for (let i = 0; i < ids.length; i++) {
       await query(
         "UPDATE budgets SET sort_order = ? WHERE id = ? AND user_id = ?",
-        [i, ids[i], req.user.id]
+        [i, ids[i], req.contextUserId]
       );
     }
     return { ok: true };
@@ -610,12 +612,12 @@ export default async function (app) {
     // history can still resolve periods the budget participated in.
     const snap = await queryOne(
       "SELECT * FROM budgets WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     await query("DELETE FROM budgets WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]);
+      [req.params.id, req.contextUserId]);
     if (snap) {
-      await logBudgetAudit(req.user.id, snap.id, "delete", {
+      await logBudgetAudit(req.contextUserId, snap.id, "delete", {
         category: snap.category,
         amount: snap.amount,
         period: snap.period,

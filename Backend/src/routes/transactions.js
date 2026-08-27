@@ -7,6 +7,7 @@ import { parseMny, isMnyBuffer } from "../mny-import.js";
 import { promises as fs } from "fs";
 import path from "path";
 import crypto from "node:crypto";
+import { makeWriteGuard } from "../joint.js";
 
 // Receipt attachments live on disk, one file per transaction. The path is
 // stored in DB but the file is authoritative. A DB row without a matching
@@ -65,12 +66,13 @@ async function adjustManualAccountBalance(userId, accountId, delta) {
 
 export default async function (app) {
   app.addHook("preHandler", app.authenticate);
+  app.addHook("preHandler", makeWriteGuard("transaction"));
 
   app.get("/", async (req) => {
     const { limit = 100, offset = 0, category, accountId, search, from, to,
             sort = "date_desc", hasReceipt, cleared, flag, includeVoided } = req.query;
     const where = ["t.user_id = ?"];
-    const params = [req.user.id];
+    const params = [req.contextUserId];
     if (category)  { where.push("t.category = ?"); params.push(category); }
     if (accountId) { where.push("t.account_id = ?"); params.push(accountId); }
     if (search)    { where.push("t.merchant LIKE ?"); params.push(`%${search}%`); }
@@ -179,13 +181,13 @@ export default async function (app) {
     const r = await query(
       `INSERT INTO transactions (user_id, account_id, date, merchant, category, amount, note, check_number, flag_color)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [req.user.id, accountId || null, date, merchant, category || "Other", amount, note || null,
+      [req.contextUserId, accountId || null, date, merchant, category || "Other", amount, note || null,
         check_number ? String(check_number).slice(0, 32) : null,
         validFlag(flag_color)]
     );
     // Reflect the change in the linked manual account's balance
     // (income +, expense −). Plaid accounts are skipped.
-    await adjustManualAccountBalance(req.user.id, accountId, Number(amount));
+    await adjustManualAccountBalance(req.contextUserId, accountId, Number(amount));
     // Fire automation triggers for manual creates too. `account_type`
     // pulled fresh so rules can key on cash/credit/etc. Errors don't
     // block the response — the engine is silent-fail by design.
@@ -205,9 +207,9 @@ export default async function (app) {
           is_transfer: !!row.is_transfer, date: row.date,
         },
       };
-      await runRulesForTrigger(req.user.id, "transaction_arrived", ctx);
+      await runRulesForTrigger(req.contextUserId, "transaction_arrived", ctx);
       if (Number(row.amount) > 0 && !row.is_transfer) {
-        await runRulesForTrigger(req.user.id, "income_landed", ctx);
+        await runRulesForTrigger(req.contextUserId, "income_landed", ctx);
       }
       // "As they happen" instant push — same helper Plaid sync uses,
       // so a manual entry that clears the large-txn or income
@@ -215,7 +217,7 @@ export default async function (app) {
       // the 8AM cron.
       if (!row.is_transfer) {
         try {
-          await maybePushForInlineEvent(req.user.id, {
+          await maybePushForInlineEvent(req.contextUserId, {
             amount: Number(row.amount), merchant: row.merchant, date: row.date,
           });
         } catch { /* silent — must not block the POST response */ }
@@ -246,7 +248,7 @@ export default async function (app) {
        FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
        WHERE t.user_id = ? AND t.is_scheduled = 1
        ORDER BY t.date ASC, t.id ASC`,
-      [req.user.id]
+      [req.contextUserId]
     );
     for (const r of rows) {
       if (r.paystubJson) {
@@ -273,7 +275,7 @@ export default async function (app) {
     if (accountId) {
       const owned = await queryOne(
         "SELECT id FROM accounts WHERE id = ? AND user_id = ?",
-        [accountId, req.user.id]
+        [accountId, req.contextUserId]
       );
       if (!owned) return reply.code(400).send({ error: "invalid account" });
     }
@@ -292,7 +294,7 @@ export default async function (app) {
           is_scheduled, scheduled_at, paystub_json,
           budget_expected_income, recurring_kind, recurring_days)
        VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?)`,
-      [req.user.id, accountId || null, date, merchant,
+      [req.contextUserId, accountId || null, date, merchant,
        category || "Other", amount, note || null, paystubJson,
        expected, kind, rdays]
     );
@@ -310,12 +312,12 @@ export default async function (app) {
     }
     const owned = await queryOne(
       "SELECT id FROM transactions WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!owned) return reply.code(404).send({ error: "not found" });
     await query(
       "UPDATE transactions SET is_scheduled = ? WHERE id = ? AND user_id = ?",
-      [is_scheduled ? 1 : 0, req.params.id, req.user.id]
+      [is_scheduled ? 1 : 0, req.params.id, req.contextUserId]
     );
     return { ok: true };
   });
@@ -337,7 +339,7 @@ export default async function (app) {
     const existing = await queryOne(
       `SELECT id, account_id, amount, is_scheduled, is_transfer, transfer_group_id
        FROM transactions WHERE id = ? AND user_id = ?`,
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!existing) return reply.code(404).send({ error: "not found" });
 
@@ -359,7 +361,7 @@ export default async function (app) {
       `UPDATE transactions
        SET amount = ?, is_transfer = ?${clearGroup ? ", transfer_group_id = NULL" : ""}
        WHERE id = ? AND user_id = ?`,
-      [newAmount, newIsTransfer, req.params.id, req.user.id]
+      [newAmount, newIsTransfer, req.params.id, req.contextUserId]
     );
 
     // Unpair the other side too if we broke a transfer group.
@@ -368,14 +370,14 @@ export default async function (app) {
         `UPDATE transactions
          SET is_transfer = 0, transfer_group_id = NULL
          WHERE transfer_group_id = ? AND user_id = ?`,
-        [existing.transfer_group_id, req.user.id]
+        [existing.transfer_group_id, req.contextUserId]
       );
     }
 
     // Sign flip on a manual account: reflect the delta in the balance.
     if (!existing.is_scheduled && newAmount !== oldAmount) {
       await adjustManualAccountBalance(
-        req.user.id, existing.account_id, newAmount - oldAmount
+        req.contextUserId, existing.account_id, newAmount - oldAmount
       );
     }
     return { ok: true };
@@ -402,7 +404,7 @@ export default async function (app) {
     const row = await queryOne(
       `SELECT id, amount, note, account_id, date, merchant, has_attachment
        FROM transactions WHERE id = ? AND user_id = ?`,
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!row) return reply.code(404).send({ error: "not found" });
     if (row.note && row.note.includes("[Split into ")) {
@@ -425,7 +427,7 @@ export default async function (app) {
       : `[Split into ${valid.length}]`;
     await query(
       "UPDATE transactions SET amount = ?, note = ? WHERE id = ? AND user_id = ?",
-      [sign * remaining, newNote, row.id, req.user.id]
+      [sign * remaining, newNote, row.id, req.contextUserId]
     );
     for (const s of valid) {
       await query(
@@ -433,7 +435,7 @@ export default async function (app) {
            (user_id, account_id, date, merchant, category, amount, note)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
-          req.user.id, row.account_id, row.date, row.merchant,
+          req.contextUserId, row.account_id, row.date, row.merchant,
           String(s.category).trim().slice(0, 64),
           sign * Number(s.amount),
           (s.note ? String(s.note).slice(0, 500) : `Split from #${row.id}`),
@@ -466,7 +468,7 @@ export default async function (app) {
     const row = await queryOne(
       `SELECT id, note, attachment_path FROM transactions
        WHERE id = ? AND user_id = ?`,
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!row) return reply.code(404).send({ error: "not found" });
     if (isSplitChildNote(row.note)) {
@@ -482,7 +484,7 @@ export default async function (app) {
     const userCount = await queryOne(
       `SELECT COUNT(*) AS n FROM attachment_upload_log
        WHERE user_id = ? AND uploaded_at > (NOW() - INTERVAL ? SECOND)`,
-      [req.user.id, USER_LIMIT_WINDOW_SEC]
+      [req.contextUserId, USER_LIMIT_WINDOW_SEC]
     );
     if (Number(userCount?.n || 0) >= USER_LIMIT_COUNT) {
       return reply.code(429).send({
@@ -525,14 +527,14 @@ export default async function (app) {
     // Write to disk. Path: /data/attachments/{userId}/{txnId}.{ext}
     // Replace-on-reupload: if a previous file exists, unlink first (we
     // may be swapping png ↔ jpg so the extension can change).
-    const userDir = path.join(ATTACHMENTS_ROOT, String(req.user.id));
+    const userDir = path.join(ATTACHMENTS_ROOT, String(req.contextUserId));
     await fs.mkdir(userDir, { recursive: true });
     if (row.attachment_path) {
       try { await fs.unlink(path.join(ATTACHMENTS_ROOT, row.attachment_path)); }
       catch { /* file gone already, that's fine */ }
     }
     const ext = EXT_FOR[mime];
-    const relPath = path.join(String(req.user.id), `${row.id}.${ext}`).replace(/\\/g, "/");
+    const relPath = path.join(String(req.contextUserId), `${row.id}.${ext}`).replace(/\\/g, "/");
     const absPath = path.join(ATTACHMENTS_ROOT, relPath);
     await fs.writeFile(absPath, buf);
 
@@ -541,11 +543,11 @@ export default async function (app) {
          has_attachment = 1, attachment_path = ?, attachment_mimetype = ?,
          attachment_size = ?, attachment_uploaded_at = NOW()
        WHERE id = ? AND user_id = ?`,
-      [relPath, mime, buf.length, row.id, req.user.id]
+      [relPath, mime, buf.length, row.id, req.contextUserId]
     );
     await query(
       "INSERT INTO attachment_upload_log (user_id, transaction_id) VALUES (?, ?)",
-      [req.user.id, row.id]
+      [req.contextUserId, row.id]
     );
     return { ok: true, size: buf.length, mimetype: mime };
   });
@@ -560,7 +562,7 @@ export default async function (app) {
     const row = await queryOne(
       `SELECT attachment_path, attachment_mimetype, attachment_size, merchant
        FROM transactions WHERE id = ? AND user_id = ?`,
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!row || !row.attachment_path) return reply.code(404).send({ error: "no attachment" });
     const absPath = path.join(ATTACHMENTS_ROOT, row.attachment_path);
@@ -579,7 +581,7 @@ export default async function (app) {
   }, async (req, reply) => {
     const row = await queryOne(
       `SELECT attachment_path FROM transactions WHERE id = ? AND user_id = ?`,
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!row) return reply.code(404).send({ error: "not found" });
     if (row.attachment_path) {
@@ -591,7 +593,7 @@ export default async function (app) {
          has_attachment = 0, attachment_path = NULL, attachment_mimetype = NULL,
          attachment_size = NULL, attachment_uploaded_at = NULL
        WHERE id = ? AND user_id = ?`,
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     return { ok: true };
   });
@@ -602,7 +604,7 @@ export default async function (app) {
   app.put("/:id/paystub", async (req, reply) => {
     const owned = await queryOne(
       "SELECT id FROM transactions WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!owned) return reply.code(404).send({ error: "not found" });
     const { paystub } = req.body || {};
@@ -615,7 +617,7 @@ export default async function (app) {
     }
     await query(
       "UPDATE transactions SET paystub_json = ? WHERE id = ? AND user_id = ?",
-      [json, req.params.id, req.user.id]
+      [json, req.params.id, req.contextUserId]
     );
     return { ok: true };
   });
@@ -628,7 +630,7 @@ export default async function (app) {
     // Scheduled rows are excluded (see DELETE handler above).
     const existing = await queryOne(
       "SELECT account_id, amount, is_scheduled FROM transactions WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     const deductibleBit = is_deductible === undefined
       ? null : (is_deductible ? 1 : 0);
@@ -669,12 +671,12 @@ export default async function (app) {
        recurring_days !== undefined ? 1 : 0, rdVal,
        flag_color !== undefined ? 1 : 0, flagVal,
        check_number !== undefined ? 1 : 0, checkVal,
-       req.params.id, req.user.id]
+       req.params.id, req.contextUserId]
     );
     if (existing && !existing.is_scheduled
         && amount !== undefined && Number(amount) !== Number(existing.amount)) {
       const delta = Number(amount) - Number(existing.amount);
-      await adjustManualAccountBalance(req.user.id, existing.account_id, delta);
+      await adjustManualAccountBalance(req.contextUserId, existing.account_id, delta);
     }
     return queryOne("SELECT * FROM transactions WHERE id = ?", [req.params.id]);
   });
@@ -697,8 +699,8 @@ export default async function (app) {
     if (!(amount > 0))    return reply.code(400).send({ error: "positive amount required" });
     if (!date)            return reply.code(400).send({ error: "date required" });
     const [fromAcct, toAcct] = await Promise.all([
-      queryOne("SELECT id, name, plaid_item_id FROM accounts WHERE id = ? AND user_id = ?", [fromId, req.user.id]),
-      queryOne("SELECT id, name, plaid_item_id FROM accounts WHERE id = ? AND user_id = ?", [toId,   req.user.id]),
+      queryOne("SELECT id, name, plaid_item_id FROM accounts WHERE id = ? AND user_id = ?", [fromId, req.contextUserId]),
+      queryOne("SELECT id, name, plaid_item_id FROM accounts WHERE id = ? AND user_id = ?", [toId,   req.contextUserId]),
     ]);
     if (!fromAcct || !toAcct) return reply.code(400).send({ error: "one or both accounts not found" });
     const groupId = crypto.randomUUID
@@ -711,18 +713,18 @@ export default async function (app) {
          (user_id, account_id, date, merchant, category, amount, note,
           is_transfer, transfer_group_id)
        VALUES (?, ?, ?, ?, 'Transfer', ?, ?, 1, ?)`,
-      [req.user.id, fromId, date, `Transfer to ${toAcct.name}`, -amount, note, groupId]
+      [req.contextUserId, fromId, date, `Transfer to ${toAcct.name}`, -amount, note, groupId]
     );
     const inR = await query(
       `INSERT INTO transactions
          (user_id, account_id, date, merchant, category, amount, note,
           is_transfer, transfer_group_id)
        VALUES (?, ?, ?, ?, 'Transfer', ?, ?, 1, ?)`,
-      [req.user.id, toId, date, `Transfer from ${fromAcct.name}`, amount, note, groupId]
+      [req.contextUserId, toId, date, `Transfer from ${fromAcct.name}`, amount, note, groupId]
     );
     // Balance side-effects for manual accounts only.
-    await adjustManualAccountBalance(req.user.id, fromId, -amount);
-    await adjustManualAccountBalance(req.user.id, toId, amount);
+    await adjustManualAccountBalance(req.contextUserId, fromId, -amount);
+    await adjustManualAccountBalance(req.contextUserId, toId, amount);
     return { ok: true, transfer_group_id: groupId, outgoing_id: outR.insertId, incoming_id: inR.insertId };
   });
 
@@ -734,16 +736,16 @@ export default async function (app) {
   app.post("/:id/void", async (req, reply) => {
     const existing = await queryOne(
       "SELECT account_id, amount, is_scheduled, voided_at FROM transactions WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!existing) return reply.code(404).send({ error: "not found" });
     if (existing.voided_at) return { ok: true, alreadyVoided: true };
     await query(
       "UPDATE transactions SET voided_at = NOW() WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!existing.is_scheduled) {
-      await adjustManualAccountBalance(req.user.id, existing.account_id, -Number(existing.amount));
+      await adjustManualAccountBalance(req.contextUserId, existing.account_id, -Number(existing.amount));
     }
     return { ok: true };
   });
@@ -751,16 +753,16 @@ export default async function (app) {
   app.post("/:id/unvoid", async (req, reply) => {
     const existing = await queryOne(
       "SELECT account_id, amount, is_scheduled, voided_at FROM transactions WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!existing) return reply.code(404).send({ error: "not found" });
     if (!existing.voided_at) return { ok: true, alreadyLive: true };
     await query(
       "UPDATE transactions SET voided_at = NULL WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!existing.is_scheduled) {
-      await adjustManualAccountBalance(req.user.id, existing.account_id, Number(existing.amount));
+      await adjustManualAccountBalance(req.contextUserId, existing.account_id, Number(existing.amount));
     }
     return { ok: true };
   });
@@ -777,7 +779,7 @@ export default async function (app) {
        WHERE user_id = ? AND voided_at IS NULL AND merchant LIKE ?
        ORDER BY date DESC, id DESC
        LIMIT 1`,
-      [req.user.id, `%${q}%`]
+      [req.contextUserId, `%${q}%`]
     );
     return { hit: rows[0] || null };
   });
@@ -792,12 +794,12 @@ export default async function (app) {
     const existing = await queryOne(
       `SELECT account_id, amount, is_scheduled, attachment_path
        FROM transactions WHERE id = ? AND user_id = ?`,
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     await query("DELETE FROM transactions WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]);
+      [req.params.id, req.contextUserId]);
     if (existing && !existing.is_scheduled) {
-      await adjustManualAccountBalance(req.user.id, existing.account_id, -Number(existing.amount));
+      await adjustManualAccountBalance(req.contextUserId, existing.account_id, -Number(existing.amount));
     }
     // Best-effort file cleanup — a broken file left on disk isn't fatal
     // (surfaces as a 404 on next fetch) but we prefer not to leak.
@@ -810,7 +812,7 @@ export default async function (app) {
 
   app.get("/by-category", async (req) => {
     const { from, to } = req.query;
-    const params = [req.user.id];
+    const params = [req.contextUserId];
     let dateClause = "";
     if (from) { dateClause += " AND t.date >= ?"; params.push(from); }
     if (to)   { dateClause += " AND t.date <= ?"; params.push(to); }
@@ -845,7 +847,7 @@ export default async function (app) {
     // chip drive the range. Default remains the last 12 months so
     // callers with no params keep the old behaviour.
     const { from, to, forecastMonths } = req.query || {};
-    const params = [req.user.id];
+    const params = [req.contextUserId];
     let dateClause = "";
     if (from) { dateClause += " AND t.date >= ?"; params.push(from); }
     if (to)   { dateClause += " AND t.date <= ?"; params.push(to);   }
@@ -891,7 +893,7 @@ export default async function (app) {
          WHERE user_id = ? AND is_scheduled = 1
            AND DATE_FORMAT(date, '%Y-%m') BETWEEN ? AND ?
          GROUP BY month`,
-        [req.user.id, startYm, endYm]
+        [req.contextUserId, startYm, endYm]
       );
       // Open bill cycles due in window (they represent expected outflows).
       const billOutflows = await query(
@@ -903,7 +905,7 @@ export default async function (app) {
            AND bc.paid_at IS NULL AND bc.skipped = 0
            AND DATE_FORMAT(bc.due_date, '%Y-%m') BETWEEN ? AND ?
          GROUP BY month`,
-        [req.user.id, startYm, endYm]
+        [req.contextUserId, startYm, endYm]
       );
 
       // Merge everything by month. If a month already appears in
@@ -943,13 +945,13 @@ export default async function (app) {
       `INSERT INTO merchant_rules (user_id, merchant, category)
        VALUES (?, ?, ?)
        ON DUPLICATE KEY UPDATE category = VALUES(category)`,
-      [req.user.id, merchant, category]
+      [req.contextUserId, merchant, category]
     );
     // Apply retroactively to all matching transactions for THIS user only
     const r = await query(
       `UPDATE transactions SET category = ?
        WHERE user_id = ? AND merchant = ?`,
-      [category, req.user.id, merchant]
+      [category, req.contextUserId, merchant]
     );
     return { ok: true, updated: r.affectedRows || 0 };
   });
@@ -971,14 +973,14 @@ export default async function (app) {
     const seed = await queryOne(
       `SELECT category FROM transactions
        WHERE user_id = ? AND merchant = ? ORDER BY id DESC LIMIT 1`,
-      [req.user.id, merchant]
+      [req.contextUserId, merchant]
     );
     const seedCat = seed?.category || "Other";
     await query(
       `INSERT INTO merchant_rules (user_id, merchant, category, forced_type)
        VALUES (?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE forced_type = VALUES(forced_type)`,
-      [req.user.id, merchant, seedCat, type || null]
+      [req.contextUserId, merchant, seedCat, type || null]
     );
     // Back-fill: force existing rows to the target type. Signs mirror the
     // manual /classify endpoint so unrelated aggregates behave correctly.
@@ -988,7 +990,7 @@ export default async function (app) {
         `UPDATE transactions
          SET is_transfer = 1
          WHERE user_id = ? AND merchant = ? AND voided_at IS NULL`,
-        [req.user.id, merchant]
+        [req.contextUserId, merchant]
       );
       updated = r.affectedRows || 0;
     } else if (type === "income") {
@@ -996,7 +998,7 @@ export default async function (app) {
         `UPDATE transactions
          SET is_transfer = 0, transfer_group_id = NULL, amount = ABS(amount)
          WHERE user_id = ? AND merchant = ? AND voided_at IS NULL`,
-        [req.user.id, merchant]
+        [req.contextUserId, merchant]
       );
       updated = r.affectedRows || 0;
     } else if (type === "expense") {
@@ -1004,7 +1006,7 @@ export default async function (app) {
         `UPDATE transactions
          SET is_transfer = 0, transfer_group_id = NULL, amount = -ABS(amount)
          WHERE user_id = ? AND merchant = ? AND voided_at IS NULL`,
-        [req.user.id, merchant]
+        [req.contextUserId, merchant]
       );
       updated = r.affectedRows || 0;
     }
@@ -1020,7 +1022,7 @@ export default async function (app) {
       `SELECT id, merchant, category, forced_type AS forcedType,
               display_name AS displayName, created_at AS createdAt
        FROM merchant_rules WHERE user_id = ? ORDER BY merchant`,
-      [req.user.id]
+      [req.contextUserId]
     );
   });
 
@@ -1032,7 +1034,7 @@ export default async function (app) {
     const b = req.body || {};
     const owned = await queryOne(
       "SELECT id FROM merchant_rules WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!owned) return reply.code(404).send({ error: "not found" });
     const displayName = b.display_name === "" || b.display_name === null
@@ -1048,14 +1050,14 @@ export default async function (app) {
       [b.category ?? null,
        displayName !== undefined ? 1 : 0,
        displayName ?? null,
-       req.params.id, req.user.id]
+       req.params.id, req.contextUserId]
     );
     return { ok: true };
   });
 
   app.delete("/merchant-rules/:id", async (req) => {
     await query("DELETE FROM merchant_rules WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]);
+      [req.params.id, req.contextUserId]);
     return { ok: true };
   });
 
@@ -1064,7 +1066,7 @@ export default async function (app) {
   app.delete("/merchant-rules", async (req) => {
     const r = await query(
       `DELETE FROM merchant_rules WHERE user_id = ? AND (is_default = 0 OR is_default IS NULL)`,
-      [req.user.id]
+      [req.contextUserId]
     );
     return { ok: true, deleted: r.affectedRows || 0 };
   });
@@ -1081,7 +1083,7 @@ export default async function (app) {
        LEFT JOIN accounts a ON a.id = t.account_id
        WHERE t.user_id = ? AND t.voided_at IS NULL
        ORDER BY t.date DESC, t.id DESC`,
-      [req.user.id]
+      [req.contextUserId]
     );
     const escape = (s) => {
       if (s === null || s === undefined) return "";
@@ -1130,7 +1132,7 @@ export default async function (app) {
     }
     const accounts = await query(
       "SELECT id, name FROM accounts WHERE user_id = ?",
-      [req.user.id]
+      [req.contextUserId]
     );
     const acctByName = new Map(
       accounts.map(a => [a.name.toLowerCase().trim(), a.id])
@@ -1150,7 +1152,7 @@ export default async function (app) {
         await query(
           `INSERT INTO transactions (user_id, account_id, date, merchant, category, amount, note, pending)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [req.user.id, accountId, date, merchant, category, amount, note, pending ? 1 : 0]
+          [req.contextUserId, accountId, date, merchant, category, amount, note, pending ? 1 : 0]
         );
         imported++;
       } catch (e) {
@@ -1284,7 +1286,7 @@ export default async function (app) {
         if (decision.action === "existing") {
           const owned = await queryOne(
             "SELECT id FROM accounts WHERE id = ? AND user_id = ?",
-            [Number(decision.account_id), req.user.id]
+            [Number(decision.account_id), req.contextUserId]
           );
           if (owned) rowAccountFor.set(key, owned.id);
           else rowAccountFor.set(key, "skip");
@@ -1296,7 +1298,7 @@ export default async function (app) {
           const r = await query(
             `INSERT INTO accounts (user_id, name, type, balance, institution)
              VALUES (?, ?, ?, 0, ?)`,
-            [req.user.id, name, type, decision.institution
+            [req.contextUserId, name, type, decision.institution
               ? String(decision.institution).slice(0, 128) : null]
           );
           rowAccountFor.set(key, r.insertId);
@@ -1312,7 +1314,7 @@ export default async function (app) {
     if (accountId && !mapping) {
       boundAccount = await queryOne(
         "SELECT id, plaid_item_id FROM accounts WHERE id = ? AND user_id = ?",
-        [accountId, req.user.id]
+        [accountId, req.contextUserId]
       );
       if (!boundAccount) return reply.code(400).send({ error: "account not found" });
     }
@@ -1359,7 +1361,7 @@ export default async function (app) {
              AND date BETWEEN DATE_SUB(?, INTERVAL 3 DAY) AND DATE_ADD(?, INTERVAL 3 DAY)
              AND voided_at IS NULL
            LIMIT 1`,
-          [req.user.id, targetAccountId, row.amount, row.date, row.date]
+          [req.contextUserId, targetAccountId, row.amount, row.date, row.date]
         );
         if (existing) {
           duplicates++;
@@ -1375,7 +1377,7 @@ export default async function (app) {
           `INSERT INTO transactions
              (user_id, account_id, date, merchant, category, amount, note, check_number)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [req.user.id, targetAccountId || null, row.date, row.merchant,
+          [req.contextUserId, targetAccountId || null, row.date, row.merchant,
            row.category || "Other", row.amount, row.note || null,
            row.checkNumber || null]
         );
@@ -1391,7 +1393,7 @@ export default async function (app) {
     // Apply per-account balance shifts. Plaid-linked accounts get
     // filtered out by adjustManualAccountBalance itself.
     for (const [id, delta] of deltaByAccount) {
-      if (delta !== 0) await adjustManualAccountBalance(req.user.id, id, delta);
+      if (delta !== 0) await adjustManualAccountBalance(req.contextUserId, id, delta);
     }
     return {
       ok: true, format, imported, skipped, duplicates,
@@ -1407,7 +1409,7 @@ export default async function (app) {
   app.get("/saved-views", async (req) => {
     const rows = await query(
       "SELECT id, name, config FROM saved_views WHERE user_id = ? ORDER BY name",
-      [req.user.id]
+      [req.contextUserId]
     );
     for (const r of rows) {
       try { r.config = JSON.parse(r.config); } catch { r.config = {}; }
@@ -1422,7 +1424,7 @@ export default async function (app) {
     if (cfg.length > 16 * 1024) return reply.code(413).send({ error: "config too large" });
     const r = await query(
       "INSERT INTO saved_views (user_id, name, config) VALUES (?, ?, ?)",
-      [req.user.id, String(b.name).slice(0, 64), cfg]
+      [req.contextUserId, String(b.name).slice(0, 64), cfg]
     );
     return { id: r.insertId };
   });
@@ -1430,7 +1432,7 @@ export default async function (app) {
   app.delete("/saved-views/:id", async (req, reply) => {
     const r = await query(
       "DELETE FROM saved_views WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!r.affectedRows) return reply.code(404).send({ error: "not found" });
     return { ok: true };
@@ -1444,7 +1446,7 @@ export default async function (app) {
   app.get("/split-templates", async (req) => {
     const tpls = await query(
       "SELECT id, name, kind FROM split_templates WHERE user_id = ? ORDER BY name",
-      [req.user.id]
+      [req.contextUserId]
     );
     if (!tpls.length) return [];
     const lines = await query(
@@ -1454,7 +1456,7 @@ export default async function (app) {
        JOIN split_templates st ON st.id = stl.template_id
        WHERE st.user_id = ?
        ORDER BY stl.template_id, stl.sort_order, stl.id`,
-      [req.user.id]
+      [req.contextUserId]
     );
     const byTpl = new Map();
     for (const l of lines) {
@@ -1473,7 +1475,7 @@ export default async function (app) {
     const kind = b.kind === "fixed" ? "fixed" : "percent";
     const r = await query(
       "INSERT INTO split_templates (user_id, name, kind) VALUES (?, ?, ?)",
-      [req.user.id, String(b.name).slice(0, 64), kind]
+      [req.contextUserId, String(b.name).slice(0, 64), kind]
     );
     for (let i = 0; i < b.lines.length; i++) {
       const l = b.lines[i];
@@ -1495,7 +1497,7 @@ export default async function (app) {
   app.delete("/split-templates/:id", async (req, reply) => {
     const r = await query(
       "DELETE FROM split_templates WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!r.affectedRows) return reply.code(404).send({ error: "not found" });
     return { ok: true };

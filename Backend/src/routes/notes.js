@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { query, queryOne } from "../db.js";
+import { makeWriteGuard } from "../joint.js";
 import { encrypt, decrypt } from "../crypto.js";
 
 // Notes can contain personally sensitive freeform text (account #s, security questions,
@@ -29,12 +30,13 @@ function decryptRow(row) {
 
 export default async function (app) {
   app.addHook("preHandler", app.authenticate);
+  app.addHook("preHandler", makeWriteGuard("note"));
 
   app.get("/", async (req) => {
     const rows = await query(
       `SELECT id, title, content, pinned, color, created_at AS createdAt, updated_at AS updatedAt
        FROM notes WHERE user_id = ? ORDER BY pinned DESC, updated_at DESC`,
-      [req.user.id]
+      [req.contextUserId]
     );
     return rows.map(decryptRow);
   });
@@ -43,7 +45,7 @@ export default async function (app) {
     const { title, content, color = "#fef3c7", pinned = false } = req.body || {};
     const r = await query(
       `INSERT INTO notes (user_id, title, content, color, pinned) VALUES (?, ?, ?, ?, ?)`,
-      [req.user.id, title || null, encContent(content), color, pinned ? 1 : 0]
+      [req.contextUserId, title || null, encContent(content), color, pinned ? 1 : 0]
     );
     const row = await queryOne("SELECT * FROM notes WHERE id = ?", [r.insertId]);
     return decryptRow(row);
@@ -62,16 +64,16 @@ export default async function (app) {
        content === undefined ? null : encContent(content),
        color ?? null,
        pinned === undefined ? null : (pinned ? 1 : 0),
-       req.params.id, req.user.id]
+       req.params.id, req.contextUserId]
     );
     const row = await queryOne("SELECT * FROM notes WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]);
+      [req.params.id, req.contextUserId]);
     return decryptRow(row);
   });
 
   app.delete("/:id", async (req) => {
     await query("DELETE FROM notes WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]);
+      [req.params.id, req.contextUserId]);
     return { ok: true };
   });
 }

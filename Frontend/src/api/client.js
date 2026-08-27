@@ -3,17 +3,53 @@ const API_URL = import.meta.env.VITE_API_URL || "/api";
 
 let authToken = localStorage.getItem("coinvane_token");
 
+// Joint-account context: which user's data are we viewing? null = the
+// signed-in user's own instance. Persisted in localStorage so context
+// survives reloads. Every request that carries a value !== null sends
+// X-Context-User-Id, which the backend validates against the actor's
+// share list.
+const CTX_KEY = "coinvane_context_user_id";
+let contextUserId = (() => {
+  const v = localStorage.getItem(CTX_KEY);
+  const n = v == null ? null : Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+})();
+
 export function setToken(t) {
   authToken = t;
   if (t) localStorage.setItem("coinvane_token", t);
-  else localStorage.removeItem("coinvane_token");
+  else {
+    localStorage.removeItem("coinvane_token");
+    // Also drop any joint-context selection so a fresh sign-in
+    // starts on the actor's own instance.
+    localStorage.removeItem(CTX_KEY);
+    contextUserId = null;
+  }
 }
 
 export function getToken() { return authToken; }
 
+export function setContextUserId(id) {
+  contextUserId = id == null ? null : Number(id);
+  if (contextUserId == null || !Number.isFinite(contextUserId) || contextUserId <= 0) {
+    contextUserId = null;
+    localStorage.removeItem(CTX_KEY);
+  } else {
+    localStorage.setItem(CTX_KEY, String(contextUserId));
+  }
+}
+
+export function getContextUserId() { return contextUserId; }
+
 async function request(method, path, body, opts = {}) {
   const headers = {};
   if (authToken) headers.Authorization = `Bearer ${authToken}`;
+  // Joint-account context header — sent whenever the user has switched
+  // to viewing another owner's instance. Backend validates that the
+  // actor has an active share for the given user_id.
+  if (contextUserId != null && !opts.publicEndpoint) {
+    headers["X-Context-User-Id"] = String(contextUserId);
+  }
   // Only declare a JSON body when we actually have one — otherwise Fastify's
   // body parser sees Content-Type: application/json with an empty body and
   // rejects with 400 (FST_ERR_CTP_EMPTY_JSON_BODY). Affects POST endpoints
@@ -32,6 +68,21 @@ async function request(method, path, body, opts = {}) {
     setToken(null);
     window.location.reload();
     throw new Error("Unauthorized");
+  }
+  // Joint-context loss recovery: if we sent an X-Context-User-Id
+  // for a share that was just revoked, the server returns 403 and
+  // we drop the local selection + reload back to the actor's own
+  // instance (or, for guest-only users with no shares left, the
+  // sign-in screen because there's nothing to view).
+  if (res.status === 403 && contextUserId != null && !opts.publicEndpoint) {
+    try {
+      const peek = await res.clone().json();
+      if (peek?.error && /context/i.test(peek.error)) {
+        setContextUserId(null);
+        window.location.replace("/");
+        throw new Error(peek.error);
+      }
+    } catch { /* fall through */ }
   }
   const ct = res.headers.get("content-type") || "";
   const data = ct.includes("application/json") ? await res.json() : await res.text();
@@ -424,6 +475,22 @@ export const api = {
   // Plaid account counts (D5). Investment/cash/credit split so admins can
   // model per-item Plaid product cost.
   adminPlaidAccountCounts: () => request("GET", "/admin/plaid-account-counts"),
+
+  // ── Joint accounts (household sharing) ────────────────────────
+  // Owner-side: toggle the feature, invite by email, list shares +
+  // invitations + audit, revoke, change permissions. Guest-side:
+  // list contexts and accept an invitation from the URL fragment.
+  jointToggle: (enabled) => request("POST", "/joint/toggle", { enabled }),
+  jointListShares: () => request("GET", "/joint/shares"),
+  jointInvite: (email, permissions = "editor") =>
+    request("POST", "/joint/invite", { email, permissions }),
+  jointUpdatePermissions: (shareId, permissions) =>
+    request("PATCH", `/joint/shares/${shareId}`, { permissions }),
+  jointRevokeShare: (shareId) => request("DELETE", `/joint/shares/${shareId}`),
+  jointRevokeInvitation: (invitationId) =>
+    request("DELETE", `/joint/invitations/${invitationId}`),
+  jointAccept: (token) => request("POST", "/joint/accept", { token }),
+  jointListContexts: () => request("GET", "/joint/contexts"),
 };
 
 // Authed file-download helper. fetch() with Authorization → blob → save.

@@ -78,7 +78,7 @@ export default async function (app) {
 
   app.post("/query", async (req, reply) => {
     try {
-      const { sql, params, dims, measure } = buildQuery(req.user.id, req.body || {});
+      const { sql, params, dims, measure } = buildQuery(req.contextUserId, req.body || {});
       const rows = await query(sql, params);
       const total = rows.reduce((s, r) => s + Number(r.value || 0), 0);
       return {
@@ -101,7 +101,7 @@ export default async function (app) {
     return query(
       `SELECT id, name, config, created_at AS createdAt
        FROM saved_reports WHERE user_id = ? ORDER BY name`,
-      [req.user.id]
+      [req.contextUserId]
     ).then(rows => rows.map(r => ({
       ...r,
       config: safeParse(r.config),
@@ -113,7 +113,7 @@ export default async function (app) {
     if (!name || !config) return reply.code(400).send({ error: "name + config required" });
     const r = await query(
       `INSERT INTO saved_reports (user_id, name, config) VALUES (?, ?, ?)`,
-      [req.user.id, String(name).slice(0, 128), JSON.stringify(config)]
+      [req.contextUserId, String(name).slice(0, 128), JSON.stringify(config)]
     );
     return { id: r.insertId };
   });
@@ -121,7 +121,7 @@ export default async function (app) {
   app.delete("/saved/:id", async (req, reply) => {
     const r = await query(
       "DELETE FROM saved_reports WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!r.affectedRows) return reply.code(404).send({ error: "not found" });
     return { ok: true };

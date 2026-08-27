@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { query, queryOne } from "../db.js";
+import { makeWriteGuard } from "../joint.js";
 import { ensureCurrentCycle, refreshUserBillCycles } from "../bill-utils.js";
 
 // Whitelist of cycle kinds. Anything else falls back to "monthly".
@@ -17,6 +18,7 @@ function sanitize(row) {
 
 export default async function (app) {
   app.addHook("preHandler", app.authenticate);
+  app.addHook("preHandler", makeWriteGuard("bill"));
 
   // List every active bill + its current cycle state. `historyCount`
   // pulls the last N cycles per bill for a "how variance has trended"
@@ -26,12 +28,12 @@ export default async function (app) {
     const bills = await query(
       `SELECT * FROM bills WHERE user_id = ? AND archived_at IS NULL
        ORDER BY created_at ASC`,
-      [req.user.id]
+      [req.contextUserId]
     );
     // Guarantee an open cycle exists for each bill (idempotent).
     // Falls back cleanly if a bill has malformed cycle math.
     for (const b of bills) {
-      try { await ensureCurrentCycle(req.user.id, b); } catch { /* skip */ }
+      try { await ensureCurrentCycle(req.contextUserId, b); } catch { /* skip */ }
     }
     const out = [];
     for (const b of bills) {
@@ -39,13 +41,13 @@ export default async function (app) {
         `SELECT * FROM bill_cycles
          WHERE bill_id = ? AND user_id = ?
          ORDER BY cycle_start DESC LIMIT 1`,
-        [b.id, req.user.id]
+        [b.id, req.contextUserId]
       );
       const history = historyCount > 0 ? await query(
         `SELECT * FROM bill_cycles
          WHERE bill_id = ? AND user_id = ?
          ORDER BY cycle_start DESC LIMIT ?`,
-        [b.id, req.user.id, historyCount]
+        [b.id, req.contextUserId, historyCount]
       ) : [];
       out.push({ ...sanitize(b), current, history });
     }
@@ -68,7 +70,7 @@ export default async function (app) {
           min_payment, merchant_pattern, notes)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.user.id,
+        req.contextUserId,
         String(name).slice(0, 128),
         String(category || "Bills").slice(0, 64),
         kind,
@@ -85,14 +87,14 @@ export default async function (app) {
     );
     const row = await queryOne("SELECT * FROM bills WHERE id = ?", [r.insertId]);
     // Open the first cycle immediately so the UI has something to render.
-    await ensureCurrentCycle(req.user.id, row);
+    await ensureCurrentCycle(req.contextUserId, row);
     return sanitize(row);
   });
 
   app.patch("/:id", async (req, reply) => {
     const owned = await queryOne(
       "SELECT id FROM bills WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!owned) return reply.code(404).send({ error: "not found" });
     const b = req.body || {};
@@ -125,7 +127,7 @@ export default async function (app) {
         b.min_payment ?? null,
         b.merchant_pattern ?? null,
         b.notes ?? null,
-        req.params.id, req.user.id,
+        req.params.id, req.contextUserId,
       ]
     );
     return sanitize(await queryOne("SELECT * FROM bills WHERE id = ?", [req.params.id]));
@@ -135,7 +137,7 @@ export default async function (app) {
   app.delete("/:id", async (req, reply) => {
     const r = await query(
       "UPDATE bills SET archived_at = NOW() WHERE id = ? AND user_id = ? AND archived_at IS NULL",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!r.affectedRows) return reply.code(404).send({ error: "not found" });
     return { ok: true };
@@ -147,10 +149,10 @@ export default async function (app) {
   app.post("/:id/mark-paid", async (req, reply) => {
     const bill = await queryOne(
       "SELECT * FROM bills WHERE id = ? AND user_id = ? AND archived_at IS NULL",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!bill) return reply.code(404).send({ error: "not found" });
-    const cycle = await ensureCurrentCycle(req.user.id, bill);
+    const cycle = await ensureCurrentCycle(req.contextUserId, bill);
     if (cycle.paid_at) return reply.code(409).send({ error: "already paid" });
     const amount = Number(req.body?.amount) || Number(bill.expected_amount) || 0;
     const variance = Number(cycle.expected_amount) > 0
@@ -170,14 +172,14 @@ export default async function (app) {
   app.post("/:id/mark-unpaid", async (req, reply) => {
     const bill = await queryOne(
       "SELECT id FROM bills WHERE id = ? AND user_id = ? AND archived_at IS NULL",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!bill) return reply.code(404).send({ error: "not found" });
     const cycle = await queryOne(
       `SELECT id FROM bill_cycles
        WHERE bill_id = ? AND user_id = ?
        ORDER BY cycle_start DESC LIMIT 1`,
-      [bill.id, req.user.id]
+      [bill.id, req.contextUserId]
     );
     if (!cycle) return reply.code(404).send({ error: "no cycle" });
     await query(
@@ -194,10 +196,10 @@ export default async function (app) {
   app.post("/:id/skip", async (req, reply) => {
     const bill = await queryOne(
       "SELECT * FROM bills WHERE id = ? AND user_id = ? AND archived_at IS NULL",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!bill) return reply.code(404).send({ error: "not found" });
-    const cycle = await ensureCurrentCycle(req.user.id, bill);
+    const cycle = await ensureCurrentCycle(req.contextUserId, bill);
     await query("UPDATE bill_cycles SET skipped = 1 WHERE id = ?", [cycle.id]);
     return { ok: true };
   });
@@ -205,7 +207,7 @@ export default async function (app) {
   // Force a refresh of every bill's current cycle. Manual fallback for
   // "the cron didn't run and I want to see my upcoming bills now".
   app.post("/refresh-cycles", async (req) => {
-    await refreshUserBillCycles(req.user.id);
+    await refreshUserBillCycles(req.contextUserId);
     return { ok: true };
   });
 }

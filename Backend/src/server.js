@@ -28,6 +28,9 @@ import taxRoutes from "./routes/tax.js";
 import reportsRoutes from "./routes/reports.js";
 import assetsRoutes from "./routes/assets.js";
 import backupRoutes from "./routes/backup.js";
+import jointRoutes from "./routes/joint.js";
+import { resolveContext } from "./joint.js";
+import { queryOne as _queryOne } from "./db.js";
 // Register every automation action with the engine at startup so any
 // runRulesForTrigger() call made from a route handler can dispatch.
 import "./automation-actions.js";
@@ -164,7 +167,28 @@ app.decorate("authenticate", async (req, reply) => {
   try {
     await req.jwtVerify();
   } catch (err) {
-    reply.code(401).send({ error: "Unauthorized" });
+    return reply.code(401).send({ error: "Unauthorized" });
+  }
+  // Resolve joint-account context. Every downstream handler can then
+  // read req.contextUserId (defaults to signed-in user's id) and
+  // req.contextRole ('owner' | 'editor' | 'viewer'). Routes that
+  // haven't been swept still use req.user.id — that path stays
+  // safe because it always matches the signed-in user.
+  try {
+    // Re-read the users row so is_guest_only reflects the current
+    // DB state (a revoked-then-re-granted invitation would otherwise
+    // rely on stale JWT claims).
+    const u = await _queryOne("SELECT id, is_guest_only FROM users WHERE id = ?", [req.user.id]);
+    if (!u) return reply.code(401).send({ error: "Unauthorized" });
+    const header = req.headers["x-context-user-id"];
+    const { contextUserId, contextRole } = await resolveContext(u, header);
+    req.contextUserId = contextUserId;
+    req.contextRole = contextRole;
+    req.actorId = Number(req.user.id);
+    req.isGuestOnly = !!u.is_guest_only;
+  } catch (err) {
+    const code = err.statusCode && err.statusCode >= 400 && err.statusCode < 500 ? err.statusCode : 500;
+    return reply.code(code).send({ error: err.message || "Unauthorized" });
   }
 });
 
@@ -206,6 +230,7 @@ await app.register(taxRoutes,          { prefix: "/api/tax" });
 await app.register(reportsRoutes,      { prefix: "/api/reports" });
 await app.register(assetsRoutes,       { prefix: "/api/assets" });
 await app.register(backupRoutes,       { prefix: "/api/backup" });
+await app.register(jointRoutes,        { prefix: "/api/joint" });
 
 const port = Number(process.env.PORT || 4000);
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {

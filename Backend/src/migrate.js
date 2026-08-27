@@ -979,6 +979,71 @@ const SCHEMA = [
     FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
     INDEX idx_active (archived_at, expires_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // ── Joint accounts (household sharing) ─────────────────────────
+  // Opt-in per-owner feature that lets an owner invite another email
+  // to view/edit their instance. Guest-only users (invited but not
+  // on the main allowlist) are marked is_guest_only and can only
+  // access shared contexts — never a personal instance. The owner
+  // toggles the whole feature on/off via joint_enabled; when off, no
+  // shares can be created and the frontend hides every joint UI.
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS is_guest_only BOOLEAN DEFAULT FALSE`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS joint_enabled BOOLEAN DEFAULT FALSE`,
+
+  // Pending invitations (email is not yet a user, or hasn't clicked
+  // through to redeem). Token is sha256-hashed at rest, raw value
+  // only in the invite email. 7-day expiry. Once redeemed, an
+  // account_shares row is created and this row is retained for audit
+  // with accepted_at stamped.
+  `CREATE TABLE IF NOT EXISTS joint_invitations (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    owner_user_id INT NOT NULL,
+    invitee_email VARCHAR(255) NOT NULL,
+    token_hash CHAR(64) NOT NULL UNIQUE,
+    permissions VARCHAR(32) NOT NULL DEFAULT 'editor',
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    accepted_at TIMESTAMP NULL,
+    revoked_at TIMESTAMP NULL,
+    FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_owner (owner_user_id),
+    INDEX idx_email (invitee_email)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Accepted shares — the guest can now access the owner's context.
+  // permissions is 'viewer' (read-only) or 'editor' (read/write on
+  // non-admin surfaces). Owner-only ops (invite more guests, clear
+  // data, admin panel, revoke shares) are always denied to guests.
+  `CREATE TABLE IF NOT EXISTS joint_shares (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    owner_user_id INT NOT NULL,
+    guest_user_id INT NOT NULL,
+    permissions VARCHAR(32) NOT NULL DEFAULT 'editor',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    revoked_at TIMESTAMP NULL,
+    UNIQUE KEY uq_owner_guest (owner_user_id, guest_user_id),
+    FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (guest_user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_guest (guest_user_id),
+    INDEX idx_active (owner_user_id, revoked_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Guest-action audit log — rendered inline in the owner's Sharing
+  // settings section (per user's explicit request). Owner sees who
+  // did what and when within their instance.
+  `CREATE TABLE IF NOT EXISTS joint_audit_log (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    owner_user_id INT NOT NULL,
+    actor_user_id INT NOT NULL,
+    action VARCHAR(64) NOT NULL,
+    target_type VARCHAR(32) NULL,
+    target_id INT NULL,
+    meta TEXT NULL,
+    at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_owner_time (owner_user_id, at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];
 
 const DEFAULT_CATEGORIES = [

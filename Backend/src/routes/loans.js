@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { query, queryOne } from "../db.js";
+import { makeWriteGuard } from "../joint.js";
 
 const LOAN_TYPES = new Set(["mortgage", "auto", "student", "personal", "credit_card", "other"]);
 
@@ -22,6 +23,7 @@ function sanitize(row) {
 
 export default async function (app) {
   app.addHook("preHandler", app.authenticate);
+  app.addHook("preHandler", makeWriteGuard("loan"));
 
   app.get("/", async (req) => {
     const rows = await query(
@@ -30,7 +32,7 @@ export default async function (app) {
        LEFT JOIN accounts a ON a.id = l.linked_account_id
        WHERE l.user_id = ? AND l.archived_at IS NULL
        ORDER BY l.created_at ASC`,
-      [req.user.id]
+      [req.contextUserId]
     );
     return rows.map(sanitize);
   });
@@ -54,7 +56,7 @@ export default async function (app) {
           escrow_tax, escrow_insurance, escrow_pmi, escrow_other)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.user.id,
+        req.contextUserId,
         String(name).slice(0, 128),
         kind,
         Number(principal) || 0,
@@ -77,7 +79,7 @@ export default async function (app) {
   app.patch("/:id", async (req, reply) => {
     const owned = await queryOne(
       "SELECT id FROM loans WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!owned) return reply.code(404).send({ error: "not found" });
     const b = req.body || {};
@@ -110,7 +112,7 @@ export default async function (app) {
         b.linked_account_id ?? null, b.notes ?? null,
         escrowVal(b.escrow_tax), escrowVal(b.escrow_insurance),
         escrowVal(b.escrow_pmi), escrowVal(b.escrow_other),
-        req.params.id, req.user.id,
+        req.params.id, req.contextUserId,
       ]
     );
     return sanitize(await queryOne("SELECT * FROM loans WHERE id = ?", [req.params.id]));
@@ -120,7 +122,7 @@ export default async function (app) {
   app.delete("/:id", async (req, reply) => {
     const r = await query(
       "UPDATE loans SET archived_at = NOW() WHERE id = ? AND user_id = ? AND archived_at IS NULL",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!r.affectedRows) return reply.code(404).send({ error: "not found" });
     return { ok: true };
@@ -153,7 +155,7 @@ export default async function (app) {
     if (!(amount > 0)) return reply.code(400).send({ error: "amount > 0 required" });
     const loan = await queryOne(
       "SELECT id, name, current_balance, linked_account_id FROM loans WHERE id = ? AND user_id = ? AND archived_at IS NULL",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!loan) return reply.code(404).send({ error: "not found" });
     const next = Math.max(0, Number(loan.current_balance) - amount);
@@ -167,7 +169,7 @@ export default async function (app) {
     if (loan.linked_account_id) {
       const linked = await queryOne(
         "SELECT id, plaid_item_id, type, balance FROM accounts WHERE id = ? AND user_id = ?",
-        [loan.linked_account_id, req.user.id]
+        [loan.linked_account_id, req.contextUserId]
       );
       if (linked && !linked.plaid_item_id) {
         // Loan balances are stored negative. A payment reduces the debt,
@@ -185,14 +187,14 @@ export default async function (app) {
     if (paymentAccountId) {
       const acct = await queryOne(
         "SELECT id, plaid_item_id FROM accounts WHERE id = ? AND user_id = ?",
-        [paymentAccountId, req.user.id]
+        [paymentAccountId, req.contextUserId]
       );
       if (acct) {
         await query(
           `INSERT INTO transactions
              (user_id, account_id, date, merchant, category, amount, note)
            VALUES (?, ?, ?, ?, 'Loan Payment', ?, ?)`,
-          [req.user.id, acct.id, date,
+          [req.contextUserId, acct.id, date,
            `Payment · ${loan.name}`, -Math.abs(amount),
            `Applied to loan #${loan.id}`]
         );

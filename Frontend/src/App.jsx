@@ -21,7 +21,7 @@ import {
 import { usePlaidLink } from "react-plaid-link";
 import { useAuth } from "./hooks/useAuth.js";
 import { DataProvider, useData } from "./context/DateContext.jsx";
-import { api, setToken } from "./api/client.js";
+import { api, setToken, setContextUserId, getContextUserId } from "./api/client.js";
 import { enablePush, disablePush, resurrectPushIfEnabled, pushSupported, isIosSafariNotInstalled } from "./push.js";
 import { enrollBiometric, unlockBiometric, webauthnSupported, biometricMethodName } from "./webauthn.js";
 
@@ -490,12 +490,19 @@ const PLAID_OAUTH_RETURN = typeof window !== "undefined" &&
 
 function PlaidLinkButton({ onSuccess, full = false }) {
   const toast = useToast();
-  // Manual-only mode flag — read via useAuth (must run every render to
-  // keep hook ordering stable; the null-render short-circuits AFTER all
-  // hook calls below). Server enforces the same gate on /api/plaid/*
-  // so even if the button somehow rendered, the call would 404.
+  // Manual-only mode flag. useAuth() is a plain hook (not context-
+  // backed) so each call is an independent state instance that starts
+  // at user=null while refetching /me — we CANNOT default plaid_enabled
+  // to true during that window or every mount fires a 404 link-token
+  // fetch and toasts "Could not start Plaid: Not found" on a disabled
+  // instance. Tri-state:
+  //   null   — user still loading; wait
+  //   true   — plaid enabled; allow fetch
+  //   false  — manual-only; render nothing, no fetch
   const { user: _plaidUser } = useAuth();
-  const _plaidEnabled = !(_plaidUser && _plaidUser.plaid_enabled === false);
+  const _plaidEnabled = _plaidUser == null
+    ? null
+    : _plaidUser.plaid_enabled !== false;
 
   const [linkToken, setLinkToken] = useState(
     PLAID_OAUTH_RETURN ? sessionStorage.getItem("plaid_link_token") : null
@@ -525,11 +532,15 @@ function PlaidLinkButton({ onSuccess, full = false }) {
     }
   }, [toast]);
 
-  // Initial token fetch (skip if we're already on the OAuth return path)
+  // Initial token fetch. Wait for user to load (_plaidEnabled === null)
+  // and skip entirely in manual-only mode (=== false) — otherwise this
+  // fires an unconditional POST /plaid/link-token that 404s and toasts
+  // an unhelpful "Could not start Plaid: Not found" on every mount.
   useEffect(() => {
+    if (_plaidEnabled !== true) return;
     if (!PLAID_OAUTH_RETURN && !linkToken) fetchToken();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [_plaidEnabled]);
 
   const { open, ready, error: plaidError } = usePlaidLink({
     token: linkToken,
@@ -595,9 +606,11 @@ function PlaidLinkButton({ onSuccess, full = false }) {
     !ready       ? "Preparing…" :
                    "Connect Bank";
 
-  // Manual-only mode — render nothing. All hooks above still ran in the
-  // same order, so the rules-of-hooks contract is preserved.
-  if (!_plaidEnabled) return null;
+  // Manual-only mode OR still loading — render nothing. All hooks
+  // above still ran in the same order, so the rules-of-hooks contract
+  // is preserved. Once user loads, _plaidEnabled becomes true or false
+  // and the component either renders the button or stays null.
+  if (_plaidEnabled !== true) return null;
 
   return (
     <>
@@ -12638,6 +12651,11 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
       {/* ── Custom reports ── */}
       <CustomReportsPanel theme={theme} darkMode={darkMode} toast={toast} />
 
+      {/* ── Sharing (joint accounts) — owner-only ── */}
+      {!user?.is_guest_only && (
+        <JointSharingSection theme={theme} darkMode={darkMode} user={user} toast={toast} refreshUser={onUpdate} />
+      )}
+
       {/* ── Danger zone ── */}
       <div className={`${theme.surface} border ${darkMode ? "border-rose-500/30" : "border-rose-200"} rounded-2xl p-5 space-y-4`}>
         <h3 className={`font-semibold ${darkMode ? "text-rose-400" : "text-rose-600"}`}>Danger zone</h3>
@@ -13120,6 +13138,7 @@ function Shell({ user, onLogout, refreshUser }) {
             </div>
           </div>
           <div className="flex items-center gap-1">
+            <JointContextDropdown theme={theme} darkMode={darkMode} user={user} />
             <IconButton theme={theme} onClick={refreshAll}>
               <RefreshCw className={`w-5 h-5 ${theme.textMuted} ${loading ? "animate-spin" : ""}`} />
             </IconButton>
@@ -13278,6 +13297,278 @@ function Shell({ user, onLogout, refreshUser }) {
 // handleRedirectPromise to exchange the code for an ID token (using PKCE
 // state MSAL stashed in localStorage before the redirect), then hands the
 // ID token to our backend for the standard find-or-create + JWT dance.
+// ─── Joint invite redemption screen ───────────────────────────────────────────
+// Handles /#joint-invite?t=<token> URLs from the invitation email. If the
+// user isn't signed in yet, we surface the sign-in screen with a hint
+// message; the sign-in flow itself creates the users row (as is_guest_only
+// if the email isn't on the allowlist) and auto-accepts the invitation.
+// If the user IS signed in, we POST /joint/accept, then switch context
+// to the owner and reload.
+function JointInviteScreen({ token, isSignedIn, onDone }) {
+  const [status, setStatus] = useState(isSignedIn ? "accepting" : "signin");
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    if (!isSignedIn) return;
+    (async () => {
+      try {
+        const r = await api.jointAccept(token);
+        setContextUserId(r.owner_user_id);
+        setStatus("done");
+        setTimeout(() => window.location.replace("/"), 400);
+      } catch (e) {
+        setErr(e.message || "Could not accept this invitation.");
+        setStatus("error");
+      }
+    })();
+  }, [isSignedIn, token]);
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-violet-900 flex items-center justify-center p-4">
+      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8 text-center">
+        <div className="w-11 h-11 rounded-xl bg-violet-500 flex items-center justify-center shadow-sm shadow-violet-500/40 mx-auto mb-4">
+          <DollarSign className="w-6 h-6 text-white" />
+        </div>
+        <h1 className="text-xl font-bold text-slate-900 mb-2">Joint account invitation</h1>
+        {status === "signin" && (
+          <>
+            <p className="text-sm text-slate-600 mb-4">Sign in with the invited email to accept.</p>
+            <button onClick={() => { onDone(); window.location.hash = ""; }}
+              className="w-full py-2.5 rounded-full bg-violet-500 text-white text-sm font-semibold">
+              Go to sign in
+            </button>
+            <p className="text-[11px] text-slate-400 mt-3">Link expires in 7 days.</p>
+          </>
+        )}
+        {status === "accepting" && (
+          <p className="text-sm text-slate-600">Accepting your invitation…</p>
+        )}
+        {status === "done" && (
+          <p className="text-sm text-emerald-600">Accepted — switching context…</p>
+        )}
+        {status === "error" && (
+          <>
+            <p className="text-sm text-rose-600 mb-3">{err}</p>
+            <button onClick={() => { window.location.replace("/"); }}
+              className="text-sm text-slate-600 underline">Go home</button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Joint context dropdown ───────────────────────────────────────────────────
+// Rendered in the Shell header when the user has ≥1 accessible context
+// beyond their own (or is a guest-only user). Switching context stamps
+// the id in localStorage and reloads so every downstream fetch picks
+// it up cleanly (no per-component refetch coordination).
+function JointContextDropdown({ theme, darkMode, user }) {
+  const [contexts, setContexts] = useState([]);
+  const [open, setOpen] = useState(false);
+  const current = getContextUserId();
+  useEffect(() => {
+    api.jointListContexts().then(r => setContexts(r.contexts || [])).catch(() => setContexts([]));
+  }, []);
+  // Hide when there's nothing to switch to.
+  if (contexts.length <= 1 && !user?.is_guest_only) return null;
+  const active = contexts.find(c => (current == null && c.role === "owner") || c.user_id === current)
+    || contexts[0];
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen(o => !o)}
+        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium ${theme.surface} border ${theme.border}`}>
+        <Users className={`w-3.5 h-3.5 ${theme.textMuted}`} />
+        <span className="truncate max-w-[140px]">{active?.label || "My data"}</span>
+        <ChevronDown className={`w-3 h-3 ${theme.textSubtle}`} />
+      </button>
+      {open && (
+        <div className={`absolute right-0 mt-1.5 w-64 z-50 rounded-xl ${theme.surface} border ${theme.border} shadow-lg overflow-hidden`}>
+          {contexts.map(c => {
+            const isActive = (current == null && c.role === "owner") || c.user_id === current;
+            return (
+              <button key={c.user_id} onClick={() => {
+                setContextUserId(c.role === "owner" ? null : c.user_id);
+                window.location.replace("/");
+              }}
+                className={`w-full text-left px-3 py-2.5 text-xs flex items-center justify-between hover:bg-violet-500/10 ${isActive ? "bg-violet-500/10" : ""}`}>
+                <div className="min-w-0">
+                  <div className={`font-medium truncate ${isActive ? "text-violet-500" : ""}`}>{c.label}</div>
+                  <div className={`text-[10px] ${theme.textSubtle} truncate`}>{c.role}{c.email ? ` · ${c.email}` : ""}</div>
+                </div>
+                {isActive && <CheckCircle2 className="w-3.5 h-3.5 text-violet-500 flex-shrink-0" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Sharing settings section (owner-only, joint_enabled gated) ───────────────
+// Owner enables the whole feature via a toggle at the top. Once
+// enabled, they can invite emails, edit permissions, revoke shares,
+// and see the audit log inline. Guests never see this section.
+function JointSharingSection({ theme, darkMode, user, toast, refreshUser }) {
+  const [enabling, setEnabling] = useState(false);
+  const [shares, setShares] = useState([]);
+  const [invitations, setInvitations] = useState([]);
+  const [auditRows, setAuditRows] = useState([]);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [invitePerm, setInvitePerm] = useState("editor");
+  const [inviting, setInviting] = useState(false);
+  const load = async () => {
+    try {
+      const r = await api.jointListShares();
+      setShares(r.shares || []); setInvitations(r.invitations || []); setAuditRows(r.audit || []);
+    } catch { /* section is hidden when disabled; ignore */ }
+  };
+  useEffect(() => { if (user?.joint_enabled) load(); }, [user?.joint_enabled]);
+  const inputCls = `w-full px-3 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm focus:outline-none focus:border-violet-500`;
+
+  return (
+    <div className={`${theme.surface} border ${theme.border} rounded-2xl p-5 space-y-4`}>
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="font-semibold">Sharing (joint accounts)</h3>
+          <p className={`text-xs ${theme.textSubtle} mt-0.5`}>Invite people by email to view or edit your instance.</p>
+        </div>
+        <button
+          disabled={enabling}
+          onClick={async () => {
+            setEnabling(true);
+            try {
+              await api.jointToggle(!user.joint_enabled);
+              await refreshUser?.();
+              toast?.(!user.joint_enabled ? "Sharing enabled" : "Sharing disabled", "success");
+            } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+            finally { setEnabling(false); }
+          }}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${user.joint_enabled ? "bg-rose-500/10 text-rose-500" : "bg-violet-500 text-white"}`}>
+          {user.joint_enabled ? "Disable" : "Enable"}
+        </button>
+      </div>
+
+      {user.joint_enabled && (
+        <>
+          {/* ── Invite form ── */}
+          <form onSubmit={async (e) => {
+            e.preventDefault();
+            if (inviting) return;
+            const email = inviteEmail.trim().toLowerCase();
+            if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { toast?.("Enter a valid email", "error"); return; }
+            setInviting(true);
+            try {
+              const r = await api.jointInvite(email, invitePerm);
+              toast?.(r.email_sent ? `Invitation sent to ${email}` : `Invitation created (email is disabled — share the link manually)`, "success");
+              setInviteEmail(""); await load();
+            } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
+            finally { setInviting(false); }
+          }} className="flex items-end gap-2">
+            <div className="flex-1">
+              <label className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-1 block`}>Invite by email</label>
+              <input value={inviteEmail} onChange={e => setInviteEmail(e.target.value)}
+                placeholder="partner@example.com" className={inputCls} type="email" />
+            </div>
+            <select value={invitePerm} onChange={e => setInvitePerm(e.target.value)}
+              className={`px-2.5 py-2 ${theme.inputBg} border ${theme.border} rounded-xl text-sm`}>
+              <option value="editor">Editor</option>
+              <option value="viewer">Viewer</option>
+            </select>
+            <button type="submit" disabled={inviting}
+              className="px-4 py-2 rounded-xl bg-violet-500 text-white text-sm font-semibold disabled:opacity-50">
+              Invite
+            </button>
+          </form>
+
+          {/* ── Active shares (allowlist) ── */}
+          <div>
+            <div className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-2`}>Shared users ({shares.length})</div>
+            {shares.length === 0 && <p className={`text-xs ${theme.textSubtle}`}>No shared users yet.</p>}
+            <div className="space-y-2">
+              {shares.map(s => (
+                <div key={s.id} className={`flex items-center justify-between p-3 rounded-xl border ${theme.border}`}>
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium truncate">{s.guest_name || s.guest_email}</div>
+                    <div className={`text-[11px] ${theme.textSubtle} truncate`}>
+                      {s.guest_email}{s.is_guest_only ? " · guest-only" : ""}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <select value={s.permissions}
+                      onChange={async e => {
+                        try { await api.jointUpdatePermissions(s.id, e.target.value); toast?.("Permissions updated", "success"); await load(); }
+                        catch (err) { toast?.("Failed: " + (err.message || ""), "error"); }
+                      }}
+                      className={`text-xs px-2 py-1 ${theme.inputBg} border ${theme.border} rounded-lg`}>
+                      <option value="editor">Editor</option>
+                      <option value="viewer">Viewer</option>
+                    </select>
+                    <button
+                      onClick={async () => {
+                        if (!window.confirm(`Remove ${s.guest_email}'s access?`)) return;
+                        try { await api.jointRevokeShare(s.id); toast?.("Access removed", "success"); await load(); }
+                        catch (err) { toast?.("Failed: " + (err.message || ""), "error"); }
+                      }}
+                      className="text-[11px] px-2 py-1 rounded-lg text-rose-500 hover:bg-rose-500/10">
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* ── Pending invitations ── */}
+          {invitations.length > 0 && (
+            <div>
+              <div className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-2`}>Pending invitations ({invitations.length})</div>
+              <div className="space-y-2">
+                {invitations.map(inv => (
+                  <div key={inv.id} className={`flex items-center justify-between p-3 rounded-xl border ${theme.border}`}>
+                    <div className="min-w-0">
+                      <div className="text-sm truncate">{inv.invitee_email}</div>
+                      <div className={`text-[11px] ${theme.textSubtle}`}>
+                        {inv.permissions} · expires {new Date(inv.expires_at).toLocaleDateString()}
+                      </div>
+                    </div>
+                    <button
+                      onClick={async () => {
+                        try { await api.jointRevokeInvitation(inv.id); toast?.("Invitation revoked", "success"); await load(); }
+                        catch (err) { toast?.("Failed: " + (err.message || ""), "error"); }
+                      }}
+                      className="text-[11px] px-2 py-1 rounded-lg text-rose-500 hover:bg-rose-500/10">
+                      Cancel
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── Audit log (inline per user's spec) ── */}
+          <div>
+            <div className={`text-xs font-semibold ${theme.textSubtle} uppercase tracking-wider mb-2`}>Audit log</div>
+            {auditRows.length === 0 && <p className={`text-xs ${theme.textSubtle}`}>No shared activity yet.</p>}
+            <div className={`max-h-64 overflow-y-auto rounded-xl border ${theme.border} divide-y ${theme.divide}`}>
+              {auditRows.map(a => (
+                <div key={a.id} className="px-3 py-2 text-xs flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate">
+                      <span className="font-medium">{a.actor_name || a.actor_email}</span>
+                      <span className={`ml-1.5 ${theme.textSubtle}`}>{a.action}{a.target_type ? ` · ${a.target_type}${a.target_id ? "#" + a.target_id : ""}` : ""}</span>
+                    </div>
+                  </div>
+                  <div className={`text-[10px] ${theme.textSubtle} flex-shrink-0`}>{new Date(a.at).toLocaleString()}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function MsRedirectScreen() {
   const [error, setError] = useState(null);
   useEffect(() => {
@@ -13422,6 +13713,35 @@ export default function App() {
       && window.location.pathname === "/auth"
       && /[#?&](code|error)=/.test(window.location.hash + window.location.search)) {
     return <MsRedirectScreen />;
+  }
+  // /#joint-invite?t=<token> — invitation redemption from the email.
+  // Signed-in users accept immediately; signed-out users see a prompt
+  // to sign in first (the sign-in flow then auto-accepts).
+  if (typeof window !== "undefined") {
+    const m = /^#joint-invite\?t=([^&]+)/.exec(window.location.hash);
+    if (m) {
+      const token = decodeURIComponent(m[1]);
+      // Strip the token from the URL so it doesn't linger in history.
+      try { window.history.replaceState(null, "", window.location.pathname); } catch { /* ok */ }
+      // Stash so we can pick it up after sign-in.
+      try { sessionStorage.setItem("coinvane_joint_invite_token", token); } catch { /* ok */ }
+    }
+  }
+  const pendingInvite = (() => {
+    try { return sessionStorage.getItem("coinvane_joint_invite_token"); } catch { return null; }
+  })();
+  // Only render the accept flow AFTER the user is signed in. Signed-
+  // out users fall through to AuthScreen; once they sign in, the
+  // sessionStorage token is picked up here on re-render and the
+  // acceptance completes automatically.
+  if (pendingInvite && !auth.loading && auth.user) {
+    return <JointInviteScreen
+      token={pendingInvite}
+      isSignedIn={true}
+      onDone={() => {
+        try { sessionStorage.removeItem("coinvane_joint_invite_token"); } catch { /* ok */ }
+      }}
+    />;
   }
   if (auth.loading) {
     return (

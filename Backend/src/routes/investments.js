@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { query, queryOne } from "../db.js";
+import { makeWriteGuard } from "../joint.js";
 
 export default async function (app) {
   app.addHook("preHandler", app.authenticate);
+  app.addHook("preHandler", makeWriteGuard("investment"));
 
   // Holdings list, with per-row resolved basis + gain so the frontend
   // doesn't need to reproduce the per-share-vs-total heuristic. When
@@ -23,7 +25,7 @@ export default async function (app) {
        JOIN accounts a ON a.id = h.account_id
        WHERE h.user_id = ?
        ORDER BY h.institution_value DESC`,
-      [req.user.id]
+      [req.contextUserId]
     );
     if (!rows.length) return rows;
     const lotAgg = await query(
@@ -32,7 +34,7 @@ export default async function (app) {
        FROM holding_lots
        WHERE user_id = ? AND remaining_quantity > 0
        GROUP BY security_id`,
-      [req.user.id]
+      [req.contextUserId]
     );
     const lotBasisMap = new Map(lotAgg.map((r) => [r.security_id, Number(r.lotBasisTotal)]));
     for (const r of rows) {
@@ -85,7 +87,7 @@ export default async function (app) {
   app.get("/summary", async (req) => {
     const holdings = await query(
       `SELECT h.security_id, h.quantity, h.cost_basis, h.institution_value
-       FROM holdings h WHERE h.user_id = ?`, [req.user.id]
+       FROM holdings h WHERE h.user_id = ?`, [req.contextUserId]
     );
     const lotAgg = await query(
       `SELECT security_id,
@@ -94,7 +96,7 @@ export default async function (app) {
        FROM holding_lots
        WHERE user_id = ? AND remaining_quantity > 0
        GROUP BY security_id`,
-      [req.user.id]
+      [req.contextUserId]
     );
     const lotBasisMap = new Map(lotAgg.map((r) => [r.security_id, r]));
 
@@ -178,7 +180,7 @@ export default async function (app) {
               COALESCE(SUM(CASE WHEN is_wash_sale = 1 THEN realized_gain ELSE 0 END), 0) AS washSale,
               COALESCE(SUM(disallowed_loss), 0) AS disallowed
        FROM lot_disposals WHERE user_id = ? AND disposal_date >= ?`,
-      [req.user.id, yearStart]
+      [req.contextUserId, yearStart]
     );
 
     const byType = Array.from(byTypeMap.entries())
@@ -220,7 +222,7 @@ export default async function (app) {
        LEFT JOIN accounts a ON a.id = l.account_id
        WHERE l.user_id = ? AND l.security_id = ?
        ORDER BY l.acquired_date ASC, l.id ASC`,
-      [req.user.id, secId]
+      [req.contextUserId, secId]
     );
     const disposals = await query(
       `SELECT id, lot_id AS lotId, disposal_date AS disposalDate,
@@ -229,7 +231,7 @@ export default async function (app) {
               disallowed_loss AS disallowedLoss, notes
        FROM lot_disposals WHERE user_id = ? AND security_id = ?
        ORDER BY disposal_date DESC, id DESC`,
-      [req.user.id, secId]
+      [req.contextUserId, secId]
     );
     const price = Number(sec.close_price || 0);
     for (const l of lots) {
@@ -272,7 +274,7 @@ export default async function (app) {
          (user_id, security_id, account_id, acquired_date, original_quantity,
           remaining_quantity, cost_basis_per_share, method, notes)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [req.user.id, secId, account_id || null, acquired_date, q, q,
+      [req.contextUserId, secId, account_id || null, acquired_date, q, q,
        price, chosenMethod,
        notes ? String(notes).slice(0, 255) : null]
     );
@@ -285,13 +287,13 @@ export default async function (app) {
       await query(
         `INSERT IGNORE INTO categories (user_id, name, color, icon, custom, tax_schedule)
          VALUES (?, 'Interest & Dividends', '#10b981', 'TrendingUp', TRUE, 'B')`,
-        [req.user.id]
+        [req.contextUserId]
       );
       await query(
         `INSERT INTO transactions
            (user_id, account_id, date, merchant, category, amount, note)
          VALUES (?, ?, ?, ?, 'Interest & Dividends', ?, ?)`,
-        [req.user.id, account_id, acquired_date,
+        [req.contextUserId, account_id, acquired_date,
          `Reinvested dividend · ${sec.ticker || sec.name || "security"}`,
          amt,
          `Auto-linked to lot #${r.insertId}`]
@@ -304,7 +306,7 @@ export default async function (app) {
     const lotId = Number(req.params.lotId);
     const owned = await queryOne(
       "SELECT id FROM holding_lots WHERE id = ? AND user_id = ?",
-      [lotId, req.user.id]
+      [lotId, req.contextUserId]
     );
     if (!owned) return reply.code(404).send({ error: "not found" });
     const b = req.body || {};
@@ -319,7 +321,7 @@ export default async function (app) {
        b.cost_basis_per_share !== undefined ? Number(b.cost_basis_per_share) : null,
        b.notes ?? null,
        b.account_id ?? null,
-       lotId, req.user.id]
+       lotId, req.contextUserId]
     );
     return queryOne("SELECT * FROM holding_lots WHERE id = ?", [lotId]);
   });
@@ -327,7 +329,7 @@ export default async function (app) {
   app.delete("/lots/:lotId", async (req, reply) => {
     const r = await query(
       "DELETE FROM holding_lots WHERE id = ? AND user_id = ?",
-      [req.params.lotId, req.user.id]
+      [req.params.lotId, req.contextUserId]
     );
     if (!r.affectedRows) return reply.code(404).send({ error: "not found" });
     return { ok: true };
@@ -347,7 +349,7 @@ export default async function (app) {
     }
     const lot = await queryOne(
       "SELECT id, security_id, remaining_quantity, cost_basis_per_share FROM holding_lots WHERE id = ? AND user_id = ?",
-      [lotId, req.user.id]
+      [lotId, req.contextUserId]
     );
     if (!lot) return reply.code(404).send({ error: "lot not found" });
     if (q > Number(lot.remaining_quantity) + 1e-8) {
@@ -371,7 +373,7 @@ export default async function (app) {
          WHERE user_id = ? AND security_id = ? AND id <> ?
            AND acquired_date BETWEEN DATE_SUB(?, INTERVAL 30 DAY)
                                  AND DATE_ADD(?, INTERVAL 30 DAY)`,
-        [req.user.id, lot.security_id, lotId, disposal_date, disposal_date]
+        [req.contextUserId, lot.security_id, lotId, disposal_date, disposal_date]
       );
       const matched = Number(matches?.matched || 0);
       if (matched > 0) {
@@ -385,7 +387,7 @@ export default async function (app) {
          (user_id, lot_id, security_id, disposal_date, quantity, price_per_share,
           realized_gain, is_wash_sale, disallowed_loss, notes)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [req.user.id, lotId, lot.security_id, disposal_date, q, px,
+      [req.contextUserId, lotId, lot.security_id, disposal_date, q, px,
        Number(realizedGain.toFixed(4)), washSale, Number(disallowed.toFixed(4)),
        notes ? String(notes).slice(0, 255) : null]
     );
@@ -404,7 +406,7 @@ export default async function (app) {
   app.delete("/disposals/:id", async (req, reply) => {
     const d = await queryOne(
       "SELECT id, lot_id, quantity FROM lot_disposals WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!d) return reply.code(404).send({ error: "not found" });
     await query(
@@ -412,7 +414,7 @@ export default async function (app) {
       [d.quantity, d.lot_id]
     );
     await query("DELETE FROM lot_disposals WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]);
+      [req.params.id, req.contextUserId]);
     return { ok: true };
   });
 }

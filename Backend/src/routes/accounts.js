@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { query, queryOne } from "../db.js";
+import { makeWriteGuard } from "../joint.js";
 
 // Whitelist of subtypes that carry meaningful tax + reporting semantics.
 // null / any other value falls back to plain type behaviour. Storage is
@@ -21,6 +22,7 @@ function validSubtype(v) {
 
 export default async function (app) {
   app.addHook("preHandler", app.authenticate);
+  app.addHook("preHandler", makeWriteGuard("account"));
 
   app.get("/", async (req) => {
     return query(
@@ -28,7 +30,7 @@ export default async function (app) {
               institution, last_sync_at AS lastSyncAt, plaid_item_id AS plaidItemId,
               is_business AS isBusiness
        FROM accounts WHERE user_id = ? ORDER BY type, name`,
-      [req.user.id]
+      [req.contextUserId]
     );
   });
 
@@ -49,7 +51,7 @@ export default async function (app) {
     const r = await query(
       `INSERT INTO accounts (user_id, name, type, subtype, balance, institution, is_business)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [req.user.id, name, type, validSubtype(subtype) || (subtype ? String(subtype).slice(0, 32) : null),
+      [req.contextUserId, name, type, validSubtype(subtype) || (subtype ? String(subtype).slice(0, 32) : null),
         storedBalance, institution || null, is_business ? 1 : 0]
     );
     // Reverse-link: creating a loan account and pointing it at an asset the
@@ -57,7 +59,7 @@ export default async function (app) {
     if (type === "loan" && link_asset_id) {
       await query(
         "UPDATE assets SET loan_account_id = ? WHERE id = ? AND user_id = ? AND archived_at IS NULL",
-        [r.insertId, link_asset_id, req.user.id]
+        [r.insertId, link_asset_id, req.contextUserId]
       );
     }
     return queryOne("SELECT * FROM accounts WHERE id = ?", [r.insertId]);
@@ -76,7 +78,7 @@ export default async function (app) {
     if (balance !== undefined && balance !== null) {
       const existing = await queryOne(
         "SELECT type FROM accounts WHERE id = ? AND user_id = ?",
-        [req.params.id, req.user.id]
+        [req.params.id, req.contextUserId]
       );
       balanceVal = existing?.type === "loan"
         ? -Math.abs(Number(balance) || 0)
@@ -92,7 +94,7 @@ export default async function (app) {
       [name ?? null, balanceVal,
        subtypeVal !== undefined ? 1 : 0, subtypeVal ?? null,
        is_business === undefined ? null : (is_business ? 1 : 0),
-       req.params.id, req.user.id]
+       req.params.id, req.contextUserId]
     );
     return queryOne("SELECT * FROM accounts WHERE id = ?", [req.params.id]);
   });
@@ -104,7 +106,7 @@ export default async function (app) {
     // not from here.
     const acct = await queryOne(
       "SELECT id, plaid_item_id FROM accounts WHERE id = ? AND user_id = ?",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     if (!acct) return reply.code(404).send({ error: "account not found" });
     if (acct.plaid_item_id) {
@@ -117,11 +119,11 @@ export default async function (app) {
     // orphans and skew budget / income calculations.
     await query(
       "DELETE FROM transactions WHERE user_id = ? AND account_id = ?",
-      [req.user.id, req.params.id]
+      [req.contextUserId, req.params.id]
     );
     await query(
       "DELETE FROM accounts WHERE id = ? AND user_id = ? AND plaid_item_id IS NULL",
-      [req.params.id, req.user.id]
+      [req.params.id, req.contextUserId]
     );
     return { ok: true };
   });
@@ -129,14 +131,14 @@ export default async function (app) {
   app.get("/summary", async (req) => {
     const rows = await query(
       `SELECT type, SUM(balance) AS total FROM accounts WHERE user_id = ? GROUP BY type`,
-      [req.user.id]
+      [req.contextUserId]
     );
     const summary = { cash: 0, credit: 0, investment: 0, loan: 0, other: 0, assets: 0 };
     for (const r of rows) summary[r.type] = Number(r.total) || 0;
     // Assets (vehicles, valuables, etc.) roll into net worth too.
     const assetSum = await queryOne(
       "SELECT COALESCE(SUM(current_value), 0) AS total FROM assets WHERE user_id = ? AND archived_at IS NULL",
-      [req.user.id]
+      [req.contextUserId]
     );
     summary.assets = Number(assetSum?.total || 0);
     summary.netWorth = summary.cash + summary.investment + summary.credit + summary.loan + summary.assets;
@@ -176,7 +178,7 @@ export default async function (app) {
       start = new Date(now); start.setFullYear(now.getFullYear() - 1);
     } else if (range === "all") {
       const oldest = await queryOne(
-        "SELECT MIN(date) AS d FROM transactions WHERE user_id = ?", [req.user.id]
+        "SELECT MIN(date) AS d FROM transactions WHERE user_id = ?", [req.contextUserId]
       );
       start = oldest?.d ? new Date(oldest.d) : new Date(now.getFullYear(), 0, 1);
     } else {
@@ -185,7 +187,7 @@ export default async function (app) {
 
     const sum = await queryOne(
       "SELECT COALESCE(SUM(balance), 0) AS net FROM accounts WHERE user_id = ?",
-      [req.user.id]
+      [req.contextUserId]
     );
     // Assets (vehicles, valuables, property) contribute to net worth too.
     // We don't have historical valuation snapshots, so treat the current
@@ -194,7 +196,7 @@ export default async function (app) {
     // refreshed via /assets/refresh, so the "current" number tracks reality.
     const assetSum = await queryOne(
       "SELECT COALESCE(SUM(current_value), 0) AS total FROM assets WHERE user_id = ? AND archived_at IS NULL",
-      [req.user.id]
+      [req.contextUserId]
     );
     const accountsNet = Number(sum?.net) || 0;
     const assetsNet = Number(assetSum?.total) || 0;
@@ -207,7 +209,7 @@ export default async function (app) {
        FROM transactions
        WHERE user_id = ? AND date >= ? AND voided_at IS NULL
        GROUP BY date ORDER BY date ASC`,
-      [req.user.id, startStr]
+      [req.contextUserId, startStr]
     );
 
     // Build a date -> delta map
