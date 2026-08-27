@@ -24,6 +24,24 @@ import { audit } from "../audit.js";
 import { enqueueMail } from "../queue.js";
 import { isEmailEnabled } from "../mailer.js";
 
+// Non-backtracking email shape check. The obvious regex
+// `^[^\s@]+@[^\s@]+\.[^\s@]+$` is flagged by CodeQL's
+// `js/polynomial-redos` because its `+` quantifiers can compete on
+// adversarial input (e.g. `!@!.!.!.!.!.`). Split-based check runs in
+// linear time on any input length and cannot backtrack.
+function isValidEmailShape(e) {
+  if (typeof e !== "string") return false;
+  if (e.length < 3 || e.length > 254) return false;
+  const at = e.indexOf("@");
+  if (at < 1 || at !== e.lastIndexOf("@")) return false;
+  const local = e.slice(0, at);
+  const domain = e.slice(at + 1);
+  if (!local || !domain) return false;
+  if (local.includes(" ") || domain.includes(" ")) return false;
+  const dot = domain.lastIndexOf(".");
+  return dot > 0 && dot < domain.length - 1;
+}
+
 const APP_URL = () => (process.env.APP_URL || "").replace(/\/+$/, "");
 
 export default async function (app) {
@@ -93,7 +111,7 @@ export default async function (app) {
     assertContextOwner(req);
     const email = String(req.body?.email || "").trim().toLowerCase();
     const permissions = String(req.body?.permissions || "editor").toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (!isValidEmailShape(email)) {
       return reply.code(400).send({ error: "Enter a valid email address" });
     }
     if (!VALID_PERMISSIONS.has(permissions)) {

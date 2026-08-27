@@ -13433,18 +13433,30 @@ function JointSharingSection({ theme, darkMode, user, toast, refreshUser }) {
           <p className={`text-xs ${theme.textSubtle} mt-0.5`}>Invite people by email to view or edit your instance.</p>
         </div>
         <button
+          type="button"
           disabled={enabling}
           onClick={async () => {
+            if (enabling) return;
+            const target = !user.joint_enabled;
             setEnabling(true);
             try {
-              await api.jointToggle(!user.joint_enabled);
+              // eslint-disable-next-line no-console
+              console.log("[joint] toggle →", target);
+              const r = await api.jointToggle(target);
+              // eslint-disable-next-line no-console
+              console.log("[joint] toggle response", r);
               await refreshUser?.();
-              toast?.(!user.joint_enabled ? "Sharing enabled" : "Sharing disabled", "success");
-            } catch (e) { toast?.("Failed: " + (e.message || ""), "error"); }
-            finally { setEnabling(false); }
+              toast?.(target ? "Sharing enabled" : "Sharing disabled", "success");
+            } catch (e) {
+              // eslint-disable-next-line no-console
+              console.error("[joint] toggle failed:", e);
+              toast?.("Failed to toggle sharing: " + (e?.message || "unknown error"), "error");
+            } finally {
+              setEnabling(false);
+            }
           }}
-          className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${user.joint_enabled ? "bg-rose-500/10 text-rose-500" : "bg-violet-500 text-white"}`}>
-          {user.joint_enabled ? "Disable" : "Enable"}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed ${user.joint_enabled ? "bg-rose-500/10 text-rose-500" : "bg-violet-500 text-white hover:bg-violet-600"}`}>
+          {enabling ? "…" : (user.joint_enabled ? "Disable" : "Enable")}
         </button>
       </div>
 
