@@ -992,7 +992,8 @@ export default async function (app) {
         notify_cashflow_enabled, notify_cashflow_min,
         notify_budget_usage_enabled, notify_budget_usage_pct,
         push_frequency, biometric_lock_enabled,
-        privacy_mode, show_cashflow_forecast, week_start, email_frequency, email_weekday`;
+        privacy_mode, show_cashflow_forecast, week_start, email_frequency, email_weekday,
+        joint_enabled, is_guest_only`;
 
   app.get("/me", { preHandler: [app.authenticate] }, async (req) => {
     const u = await queryOne(`SELECT ${ME_COLUMNS} FROM users WHERE id = ?`, [req.user.id]);
