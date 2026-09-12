@@ -119,8 +119,14 @@ export async function completeRegistration(req, body) {
     throw err;
   }
 
-  // @simplewebauthn/server v11 nests the credential under
-  // `registrationInfo.credential` — id/publicKey/counter are on there.
+  // @simplewebauthn/server (v11+, still current on v13) nests the
+  // credential under `registrationInfo.credential` — id/publicKey/counter
+  // live there. The v11→v13 upgrade closed GHSA on validateCertificatePath
+  // where the walk stopped at the first self-signed cert rather than
+  // requiring the chain to actually terminate at a configured trust
+  // anchor. Not exploitable for us because we use attestationType:"none"
+  // (no cert-chain verification is invoked at all), but the bump keeps
+  // Dependabot clean and future-proofs an attestation-mode change.
   const cred = verification.registrationInfo.credential;
   const credentialId = Buffer.from(cred.id, "base64url"); // stored as bytes
   const publicKey = Buffer.from(cred.publicKey); // Uint8Array → Buffer
