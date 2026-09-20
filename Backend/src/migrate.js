@@ -999,6 +999,12 @@ const SCHEMA = [
   // render a rose "(Credit)" pill.
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS include_credit_in_budgets BOOLEAN DEFAULT FALSE`,
 
+  // Which method the user actually used on their LAST successful
+  // sign-in — surfaced in Settings → Account under "Signed in with X".
+  // Values: 'google' | 'microsoft' | 'one_time_link'. Null on
+  // migrated-existing users until they next sign in.
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS last_signin_method VARCHAR(32) NULL`,
+
   // Pending invitations (email is not yet a user, or hasn't clicked
   // through to redeem). Token is sha256-hashed at rest, raw value
   // only in the invite email. 7-day expiry. Once redeemed, an

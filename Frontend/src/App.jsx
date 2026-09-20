@@ -12322,7 +12322,17 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
           </div>
         </div>
         <div className={`text-xs ${theme.textSubtle} mt-3`}>
-          Signed in with Google · {
+          {/* Honest sign-in-method label — was hardcoded "Google" for
+              every method regardless of what the user actually used.
+              Falls back to a generic "email" label if the row predates
+              the column (unmigrated legacy user who hasn't re-signed
+              since 1.11.0). */}
+          Signed in with {
+            user.last_signin_method === "microsoft" ? "Microsoft"
+            : user.last_signin_method === "one_time_link" ? "a one-time link"
+            : user.last_signin_method === "google" ? "Google"
+            : "email"
+          } · {
             user.role === "owner" ? "Owner"
             : user.role === "admin" ? "Administrator"
             : "Member"

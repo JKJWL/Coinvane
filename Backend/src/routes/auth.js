@@ -225,6 +225,11 @@ function userPayload(u) {
     // stats) and appear in the /:id/transactions list flagged
     // isCredit=true so the UI can render a rose (Credit) pill.
     include_credit_in_budgets: !!u.include_credit_in_budgets,
+    // Method used on the most recent successful sign-in — drives the
+    // "Signed in with X" line in Settings → Account. One of
+    // 'google' | 'microsoft' | 'one_time_link', or null on legacy
+    // users whose row predates the column and haven't signed in since.
+    last_signin_method: u.last_signin_method || null,
   };
 }
 
@@ -364,6 +369,10 @@ export default async function (app) {
       { id: user.id, email: user.email, role: user.role },
       { expiresIn: "30d" }
     );
+    // Stamp the method so Settings → Account can display an honest
+    // "Signed in with X" — was hardcoded "Google" for every method.
+    await query("UPDATE users SET last_signin_method = 'google' WHERE id = ?", [user.id]);
+    user.last_signin_method = "google";
     await audit(user.id, "auth.success", req, { email: user.email });
     return { token, user: userPayload(user) };
   });
@@ -456,6 +465,8 @@ export default async function (app) {
       { id: user.id, email: user.email, role: user.role },
       { expiresIn: "30d" }
     );
+    await query("UPDATE users SET last_signin_method = 'microsoft' WHERE id = ?", [user.id]);
+    user.last_signin_method = "microsoft";
     await audit(user.id, "auth.success", req, { email: user.email, method: "microsoft" });
     return { token, user: userPayload(user) };
   });
@@ -687,6 +698,8 @@ export default async function (app) {
       { id: user.id, email: user.email, role: user.role },
       { expiresIn: "30d" }
     );
+    await query("UPDATE users SET last_signin_method = 'one_time_link' WHERE id = ?", [user.id]);
+    user.last_signin_method = "one_time_link";
 
     // Issue a short handoff code alongside the JWT. Purpose: iOS
     // separates Safari's storage from the installed PWA's storage,
@@ -786,6 +799,10 @@ export default async function (app) {
       { id: user.id, email: user.email, role: user.role },
       { expiresIn: "30d" }
     );
+    // Handoff codes are minted only by the one-time-link redeem path,
+    // so stamp the family for a consistent "Signed in with X" surface.
+    await query("UPDATE users SET last_signin_method = 'one_time_link' WHERE id = ?", [user.id]);
+    user.last_signin_method = "one_time_link";
     await audit(user.id, "signin_link.handoff_redeemed", req, { email: user.email });
     await audit(user.id, "auth.success", req, { email: user.email, method: "handoff_code" });
     return { token, user: userPayload(user) };
@@ -998,7 +1015,7 @@ export default async function (app) {
         notify_budget_usage_enabled, notify_budget_usage_pct,
         push_frequency, biometric_lock_enabled,
         privacy_mode, show_cashflow_forecast, week_start, email_frequency, email_weekday,
-        joint_enabled, is_guest_only, include_credit_in_budgets`;
+        joint_enabled, is_guest_only, include_credit_in_budgets, last_signin_method`;
 
   app.get("/me", { preHandler: [app.authenticate] }, async (req) => {
     const u = await queryOne(`SELECT ${ME_COLUMNS} FROM users WHERE id = ?`, [req.user.id]);
