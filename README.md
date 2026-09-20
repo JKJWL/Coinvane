@@ -2,6 +2,7 @@
 
 > Self-hosted personal finance · React PWA · optional Plaid bank sync ·
 > pick-your-own sign-in (Google / Microsoft / passwordless email) ·
+> optional joint-account sharing with per-guest permissions ·
 > zero-knowledge at-rest encryption · Docker Compose deploy
 >
 > Copyright © 2026 Jack Jewell and contributors ·
@@ -10,16 +11,18 @@
 > in [NOTICE](NOTICE)) ·
 > Security policy: [SECURITY.md](SECURITY.md)
 
-A self-hosted personal-finance app for one person (or a small household).
+A self-hosted personal-finance app for one person or a small household.
 Optional bank sync via Plaid (skip it for a fully manual-only setup),
 transactions stored encrypted on your own server, mobile PWA you can
-install on your phone. AGPL, no telemetry, no ads.
+install on your phone. Optional household-sharing lets an owner invite
+a partner or roommate to view or edit their instance without giving up
+a password. AGPL, no telemetry, no ads.
 
 **Everything external is optional.** Pick any combination of sign-in
 methods (Google, Microsoft, one-time email link — at least one required),
-turn Plaid on or off, turn email on or off, turn Web Push on or off.
-`bootstrap.sh` asks about each individually and writes an `.env` matching
-your choices.
+turn Plaid on or off, turn email on or off, turn Web Push on or off,
+enable or disable household sharing per instance. `bootstrap.sh` asks
+about each individually and writes an `.env` matching your choices.
 
 ---
 
@@ -36,6 +39,7 @@ your choices.
   - [Investments](#investments)
   - [Notifications & per-user settings](#notifications--per-user-settings)
   - [Admin (Owner / Admin roles)](#admin-owner--admin-roles)
+  - [Joint accounts (household sharing)](#joint-accounts-household-sharing)
   - [Assets & valuables](#assets--valuables)
   - [Tax reporting](#tax-reporting)
   - [Custom reports](#custom-reports)
@@ -80,6 +84,9 @@ your choices.
   - [Microsoft sign-in 401 "no email"](#microsoft-sign-in-returns-401-microsoft-account-has-no-email)
   - [Microsoft sign-in 403 (tenant policy)](#microsoft-sign-in-returns-403-this-instance-only-accepts-personal-microsoft-accounts-or-similar)
   - [Microsoft sign-in silently fails](#microsoft-sign-in-silently-fails--popup-closes-with-no-error-or-apiauthmicrosoft-never-fires-in-the-network-tab)
+  - [Joint-account Enable button appears to do nothing](#joint-account-enable-button-appears-to-do-nothing--the-invite-form-never-shows)
+  - [Joint invitation email arrives but sign-in emails do not](#joint-invitation-email-arrives-but-sign-in-emails-do-not)
+  - [Joint guest sees "You do not have access to that context"](#joint-guest-sees-you-do-not-have-access-to-that-context)
   - [One-time-link "same network" error](#this-link-must-be-opened-on-the-same-network-it-was-requested-from-one-time-link)
   - [Plaid unsupported connection](#plaid-doesnt-support-connections-between-bank-and-coinvane)
   - [Internal server error after sign-in](#internal-server-error-after-sign-in)
@@ -138,7 +145,7 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 - **Pending transactions** — when your bank reports a charge as pending, it shows up immediately with an amber "Pending" badge so you can tell authorized-but-not-yet-settled spending apart from posted activity.
 - **Manual accounts** — for banks Plaid doesn't support; balances auto-adjust when you record transactions.
 - **Transactions** — date-grouped activity feed with filter by account / category, sort options, tap-to-edit.
-- **Cash / Credit split** — the Transactions tab has a Cash⇄Credit pill at the top. Defaults to Cash on every visit. Credit-card transactions never bleed into your income, cashflow, by-category, or budget totals; they're tallied only by the credit-usage tracker.
+- **Cash / Credit split** — the Transactions tab has a Cash⇄Credit pill at the top. Defaults to Cash on every visit. Credit-card transactions stay out of income, cashflow, by-category, and (by default) category-budget totals to avoid double-counting swipe + payment; they're tallied by the credit-usage tracker instead. If you'd rather track credit swipes against category budgets directly, flip the **Include credit-card transactions in category budgets** toggle in Settings.
 - **Per-merchant rules** — recategorise a transaction and choose "all future from this merchant"; the rule is saved per-user and applied to every subsequent sync.
 - **Manual classification override** — flip an already-posted transaction between Income / Expense / Transfer when Plaid gets it wrong, without deleting and re-entering.
 - **Split transactions** — carve one transaction into multiple category slices (e.g. a Costco run split across Groceries / Household / Fuel). Child rows inherit the merchant + date; the parent becomes a container.
@@ -156,7 +163,7 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 
 ### Budgets
 - **Master period** — one reset rhythm drives every budget AND the credit-usage tracker. Pick a cadence on the Income card (weekly, bi-weekly, semi-monthly, monthly, yearly, or every N days from a date) and "this week's groceries", "this week's income", and "this week's allocation total" all line up exactly. The "Weekly" option's reset day follows your global *Week starts on* setting (any day of the week, set in Settings → Appearance).
-- **Two budget types** — category-based (default) or credit-card-account-based; credit-card transactions are excluded from category budgets to avoid double-counting (swipe + payment).
+- **Two budget types** — category-based (default) or credit-card-account-based; credit-card transactions are excluded from category budgets by default to avoid double-counting (swipe + payment). See the **Include credit-card transactions in category budgets** toggle below to opt into counting them.
 - **Drag to reorder** — touch and mouse both work; order persists across devices. A lock toggle prevents accidental drags on mobile.
 - **Edit any budget** — amount editable after creation. Category and account are locked once a budget is created (use delete + recreate if you need to change either).
 - **Budget history** — a date dropdown next to "+ New Budget" walks back through past periods (the last 12 by default). Each period shows what you actually budgeted vs spent AT THAT TIME — amount edits or deletions made later don't rewrite history. Backed by a `budget_audit` table that snapshots every create / update / delete event.
@@ -166,6 +173,7 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 - **Zero-based-budget summary** — three stacked bars at the bottom: current-income allocation, expected-income allocation (when scheduled), and actual budget usage (spent ÷ basis). "X left to budget" indicator; goes rose only when you've over-allocated.
 - **Expected income + recurring paychecks** — flag any scheduled income transaction as "Budget Expected Income" and it feeds a second bar in the budgets tab. Scheduled income can also loop on a cadence (weekly / bi-weekly / semi-monthly / monthly / yearly / every N days); loops keep the next ~3 months of occurrences populated automatically so cashflow projections stay accurate. The zero-based slider bases itself on expected income when scheduled, otherwise falls back to current income.
 - **Transaction type rules** — same "apply to all from this merchant" pattern as category rules, but for the income/expense/transfer classification. Fixes merchants Plaid consistently mis-tags (e.g. an ATM cashback that keeps coming back as TRANSFER_OUT).
+- **Include credit-card transactions in category budgets** — per-user toggle in Settings (off by default). When flipped on, credit-card swipes count toward category-budget spent, feed the zero-based-budget usage bar, and appear inside each budget's transaction list marked with a rose `Credit` pill so you can tell which rows the toggle brought in. The overall-budget-usage % alert respects the same flag so notifications stay consistent with the in-app usage bar. Off by default because credit swipe + card payment can double-count against the same budget.
 - **Themed confirmations** — destructive actions (delete budget, etc.) prompt with an in-app modal, not the native browser dialog.
 
 ### Goals & loans
@@ -222,6 +230,21 @@ specific deployment), please follow the process in [SECURITY.md](SECURITY.md)
 - **Per-user test email** — owner-only Mail icon next to each Members row sends a sample digest (with a "this is a test" banner) to verify SMTP delivery to that user without logging in as them.
 - **Broadcast composer + history** — post an instance-wide desktop banner (info / warning / critical) with an optional expiry timestamp; the history list shows past broadcasts + who published each and lets you archive any active one. Rate-limited 10/min so a runaway console can't spam every user.
 - **Plaid account-type counts** — aggregate view (no user-identifying data) of investment / cash / credit / loan Plaid-linked accounts across every user + total item count. Investment accounts are broken out because they cost more in Plaid product fees, so operators charging a flat member fee to break even can size the number correctly. Manual accounts aren't counted.
+
+### Joint accounts (household sharing)
+
+Opt-in per-owner sharing that lets you invite a partner, roommate, or accountant to view or edit your instance. Off by default — you flip a master toggle in Settings → Sharing before anything about joint accounts appears.
+
+- **Invite by email** — pick `Viewer` (read-only) or `Editor` (read/write). An invitation email lands with a 7-day link. When the invitee clicks it, they sign in with whichever method they choose (Google / Microsoft / one-time-link), and the share is created + auto-accepted on first successful sign-in.
+- **Guest-only users** — invitees who are NOT on the main `ALLOWED_EMAILS` allowlist sign in as `is_guest_only` accounts. Guest-only users have no personal instance of their own — they can only ever access the contexts they've been invited to, they bypass `SIGNUP_MODE=closed`, and Coinvane never seeds their categories or lets them create a personal profile.
+- **Header context dropdown** — appears in the top-right of the desktop and mobile navs whenever the actor has more than one accessible context. Switching contexts stamps `X-Context-User-Id` in localStorage and reloads, so every downstream API call retargets cleanly. Guests always see the owner's context they were invited to; owners see "My data" plus every context they've been invited into as a guest by someone else.
+- **Two permission tiers** — `Viewer` (read-only across every data surface) and `Editor` (read/write on accounts, transactions, budgets, goals, notes, categories, bills, loans, assets, investments, tax, reports). Owner-only actions stay owner-only regardless of permission tier: invite/revoke more guests, Clear all data, admin panel access, `.cvn` import, Plaid link/disconnect, notification preferences, biometric-lock settings.
+- **Every guest write is audit-logged** — the owner's Settings → Sharing card renders the audit inline: who did what and when, action code (`transactions.post`, `budgets.patch`, etc.), target type, target id, timestamp. Best-effort logging — never blocks the request. Up to the most recent 100 entries.
+- **Disable = revoke** — flipping the master Sharing toggle off atomically revokes every active share and cancels every pending invitation. Owner can re-enable and re-invite later; guest-only users retain their `users` row but immediately lose the context on their next request.
+- **Permissions editable in place** — the owner can flip any active share between Viewer and Editor from the same list. Change takes effect on the guest's next request.
+- **Stale-context recovery** — if the owner revokes access while a guest is mid-session, the guest's next API call returns 403 and the frontend automatically drops the local context selection and reloads to whatever the actor still has access to (their own instance for regular users, sign-out for guest-only users with no shares left).
+
+Backend enforcement is a `req.contextUserId` + `req.contextRole` resolver on every authenticated request; twelve data routes (accounts, transactions, budgets, goals, notes, categories, bills, loans, assets, investments, tax, reports) query against the context user instead of the signed-in user. Owner-only surfaces (auth, admin, backup, plaid, notifications, reconciliations, automations) still key on the actor and reject guest access even from an Editor.
 
 ### Assets & valuables
 - **Non-account holdings** — vehicles, boats, jewelry, art, collectibles, property. Track acquired value, current value, and (optionally) a depreciation curve. All roll into net worth alongside your bank accounts and appear in the sidebar under an Assets group.
@@ -303,7 +326,9 @@ When multiple notifications fire in one sweep, only the highest-priority one pro
 
 ### Sign-in methods
 
-Coinvane supports three passwordless authentication paths. **All three are independently optional** — you must enable at least one, but you can pick any combination. All three are gated by the same email allowlist, and all three converge on the same `users` row for a given email (via a `UNIQUE` constraint), so a user can freely switch between them without creating duplicate accounts.
+Coinvane supports three passwordless authentication paths. **All three are independently optional** — you must enable at least one, but you can pick any combination. All three are gated by the same email allowlist, and all three converge on the same `users` row for a given email (via a `UNIQUE` constraint), so a user can freely switch between them without creating duplicate accounts. The **actual method used on the most recent sign-in is stamped on the user row** (`last_signin_method`) and surfaces in Settings → Account as an honest "Signed in with Google" / "Microsoft" / "a one-time link" label.
+
+Emails with an outstanding joint-account invitation are ALSO gated through by any of the three methods, but they land as `is_guest_only` users and see only the shared context they were invited to — see [Joint accounts](#joint-accounts-household-sharing).
 
 Bootstrap.sh asks about each one interactively. If you skipped a method during bootstrap you can add it later by editing `.env` and rebuilding (backend + frontend, since the Google client id is a build-time `VITE_*` var).
 
@@ -436,11 +461,13 @@ The OS picks the mechanism. Coinvane calls WebAuthn with `userVerification: requ
 - **Notes** — free-form notes, content encrypted at rest
 - **Mobile PWA** — install to iPhone home screen, full-screen, frosted iOS-style nav, Dynamic Island safe
 - **Multi-device** — dark mode, theme, and every per-user setting follow you across devices
+- **Honest "Signed in with X"** — Settings → Account displays the method used on your most recent sign-in (Google / Microsoft / a one-time link). Legacy users whose row predates the column see "email" as a safe fallback until their next sign-in stamps the value.
 - **Passwordless auth** — three independently optional sign-in methods, all allowlist-gated, all deduplicated on email so a user can freely switch between them (pick any combination, at least one required):
   - **Google SSO** (optional)
   - **Microsoft SSO** (Entra ID + personal MSA — Xbox / Outlook.com / Live)
   - **Sign in with a one-time link** (email-based, requires SMTP)
   See [Sign-in methods](#sign-in-methods) for setup.
+- **Joint accounts (household sharing)** — opt-in per-owner via Settings → Sharing. Invite by email, per-guest Viewer / Editor permissions, inline audit log of every guest write, header context dropdown to switch between contexts. See [Joint accounts](#joint-accounts-household-sharing).
 - **Full instance backup** — export EVERYTHING (transactions, categories, budgets, goals, notes, bills, loans, assets, holdings, settings, attachments) as a portable `.cvn` file. Optional passphrase (AES-256-GCM + PBKDF2). Import into a fresh Coinvane instance to restore. See [.cvn backup format](#cvn-backup-format).
 - **PDF report dropdown** — Settings → Data → *Export report (PDF)* opens a menu with 7 branded reports, all server-side rendered (no headless browser):
   1. **Full report** — cover + summary + accounts + budgets + goals + last 500 transactions + decrypted notes
@@ -793,7 +820,7 @@ This app is designed to be exposed to the public internet safely.
 
 - **Email allowlist** — only emails on the list can sign in via ANY of the three methods (Google, Microsoft, one-time link); anyone else gets 403 regardless of whether the identity provider would otherwise let them through. Live-editable from the Admin panel (DB-backed in `app_settings.allowed_emails`); falls back to the `ALLOWED_EMAILS` env on fresh deploys.
 - **Three-tier role model** — Owner / Admin / Member. Owner is exclusive per instance and the only role that can edit cross-cutting config (sync interval, allowlist, role promotions, sample emails). Admins are scoped to two destructive actions (delete members, clear notifications), both audit-logged as major.
-- **Rate limiting** — 200 req/min global, 10 req/min on `/api/auth/google` and `/api/auth/microsoft`, 20/min on `/api/auth/one-time-link/request` (plus 5/hour per email), 30/min on `/verify` and `/handoff`, 60 req/min on every admin route, 300 req/min on the public `/api/plaid/webhook`, plus explicit per-route caps on the filesystem-touching receipt endpoints (60/120/60 req/min for upload / view / delete) and the `.cvn` backup endpoints (3/min export, 10/min preview, 3 per 5 min import).
+- **Rate limiting** — 200 req/min global, 10 req/min on `/api/auth/google` and `/api/auth/microsoft`, 20/min on `/api/auth/one-time-link/request` (plus 5/hour per email), 30/min on `/verify` and `/handoff`, 60 req/min on every admin route, 300 req/min on the public `/api/plaid/webhook`, 10/min on the joint-account toggle + invite endpoints and 20/min on `/api/joint/accept`, plus explicit per-route caps on the filesystem-touching receipt endpoints (60/120/60 req/min for upload / view / delete) and the `.cvn` backup endpoints (3/min export, 10/min preview, 3 per 5 min import).
 - **Helmet** — HSTS, X-Frame-Options DENY, strict Referrer-Policy, no `X-Powered-By`.
 - **Strict CORS** — refuses to start in production if `CORS_ORIGIN` isn't set.
 - **JWT 30-day expiration** — sessions auto-expire; sign back in with whichever method you use. Role changes require a re-login to take effect (JWTs aren't auto-refreshed).
@@ -970,6 +997,47 @@ docker compose exec frontend sh -c 'grep -c "Completing Microsoft sign-in" /usr/
 Anything other than `1` means the new bundle isn't deployed — rebuild with
 `docker compose build --no-cache frontend && docker compose up -d frontend`.
 
+### Joint-account "Enable" button appears to do nothing / the invite form never shows
+
+Backend probably needs its migration re-run. The joint-accounts feature adds
+`joint_enabled` + `is_guest_only` columns on `users` plus three new tables
+(`joint_invitations`, `joint_shares`, `joint_audit_log`). Fix:
+
+```bash
+docker compose exec backend npm run migrate
+```
+
+If migrations already ran, confirm the `/me` payload actually surfaces the new field:
+
+```bash
+curl -s -H "Authorization: Bearer <your-jwt>" https://your-domain/api/auth/me | grep joint
+```
+
+Absent `joint_enabled` means the backend didn't rebuild after the 1.11.0 pull —
+`docker compose build --no-cache backend && docker compose up -d backend`.
+
+### Joint invitation email arrives but sign-in emails do not
+
+Enterprise mail filters (Microsoft Defender for Office 365, Google Workspace
+advanced protection, Proofpoint) score sign-in-link emails much harder than
+personal-looking invitations. The 1.11.0 mailer rewrite drops the phishing-
+shape triggers (subject with "sign in", requester-IP disclosure, "if you didn't
+request this" warning language) so both emails now land through the same
+filters. If sign-in emails still don't arrive:
+
+- **Have the recipient release + report-not-junk** a stuck email in their
+  quarantine. This trains their tenant's filter and future ones go through.
+- **Set up SPF + DKIM + DMARC** for your sending domain on Resend (or
+  whichever SMTP provider). Without DKIM, sign-in mail is quarantined at
+  much higher rates than invite mail.
+
+### Joint guest sees "You do not have access to that context"
+
+Owner revoked the guest's share while they were mid-session. The frontend
+catches the 403 and reloads to the actor's own instance (or the sign-in
+screen for guest-only users with no shares left). No fix needed — the toast
+reflects the current server-side state.
+
 ### "This link must be opened on the same network it was requested from" (one-time-link)
 
 `ONE_TIME_LINK_STRICT_IP=true` is enforcing that the IP requesting the link must
@@ -1048,6 +1116,10 @@ coinvane/
 │   │   ├── microsoft-verify.js    # Microsoft ID-token verifier (multi-tenant Entra + personal MSA, JWKS-cached)
 │   │   ├── cvn-export.js          # .cvn full-instance export builder (ZIP + optional AES-256-GCM)
 │   │   ├── cvn-import.js          # .cvn restore with SHOW-COLUMNS schema-drift-proof safeInsert
+│   │   ├── joint.js               # Joint-account helpers — invitation tokens, context resolution
+│   │   │                          #   (req.contextUserId + req.contextRole), share lookup, audit
+│   │   │                          #   writer, and the reusable makeWriteGuard(kind) preHandler
+│   │   │                          #   every context-swept route registers.
 │   │   └── routes/
 │   │       ├── auth.js            # Google SSO + Microsoft SSO + One-Time-Link + WebAuthn, /me, members, role updates, test-email/push
 │   │       ├── accounts.js
@@ -1067,6 +1139,10 @@ coinvane/
 │   │       ├── backup.js          # .cvn export + import (preview + apply) + Plaid re-link auto-merge candidates
 │   │       ├── bills.js           # Recurring bill templates + cycle rollover + auto-match on Plaid sync
 │   │       ├── loans.js           # Debt payoff tracking + amortization + linked-account payment mirroring
+│   │       ├── joint.js           # Joint-account owner + guest routes — /toggle enable/disable feature,
+│   │       │                      #   /invite send invitation, /shares list, /accept redeem token,
+│   │       │                      #   /contexts list accessible contexts for the dropdown, PATCH + DELETE
+│   │       │                      #   for permissions + revoke. Every write is audit-logged.
 │   │       └── export.js          # PDF dropdown: full / monthly / yoy / budgets / bills-loans / tax-summary / register / amortization
 │   ├── vendor/                    # Optional runtime dependencies (sunriise.jar for encrypted .mny)
 │   ├── Dockerfile
@@ -1119,7 +1195,7 @@ coinvane/
 | `VITE_MICROSOFT_REDIRECT_URI` | Optional | Build-time fallback for the above. Runtime value from `/auth/public-config` wins if both are set. |
 | `ONE_TIME_LINK_ENABLED`   | Optional | `false` (default) hides the passwordless email option; `true` shows it. Requires `EMAIL_CONFIG=enabled`. See [Sign in with a one-time link](#sign-in-with-a-one-time-link-optional). |
 | `ONE_TIME_LINK_STRICT_IP` | Optional | `true` (default) enforces same-IP for link request/click and handoff-code issue/redeem. `false` records the IP for audit but doesn't enforce. Loosen if your users need cross-device flow or are on mobile networks with rotating IPv6. |
-| `ALLOWED_EMAILS`          | Recommended | Comma-separated allowlist (Google, Microsoft, and one-time-link addresses all match against this list). Used until the owner edits it in the Admin panel; after that the DB-backed allowlist takes over. Empty = anyone with a supported sign-in method can register. |
+| `ALLOWED_EMAILS`          | Recommended | Comma-separated allowlist (Google, Microsoft, and one-time-link addresses all match against this list). Used until the owner edits it in the Admin panel; after that the DB-backed allowlist takes over. Empty = anyone with a supported sign-in method can register. Addresses with an outstanding joint-account invitation are ALSO allowed through, but as `is_guest_only` users — see [Joint accounts](#joint-accounts-household-sharing). |
 | `PLAID_ENABLED`           | Optional | `false` forces manual-only mode (hides every Plaid affordance, backend 404s `/api/plaid/*`, worker skips periodic sync). Blank = derived from `PLAID_CLIENT_ID` + `PLAID_SECRET` (enabled when both set). |
 | `PLAID_CLIENT_ID` / `PLAID_SECRET` / `PLAID_ENV` | Optional | Plaid keys; env is `sandbox` or `production`. Skip these entirely to run Coinvane as a manual-only budgeting app — you still get manual entry, CSV/QIF/OFX/QFX/.mny import, and `.cvn` restore. |
 | `PLAID_REDIRECT_URI`      | Only if Plaid+production | OAuth return URL, must match Plaid dashboard exactly         |
@@ -1134,6 +1210,11 @@ coinvane/
 
 See `.env.example` for the full annotated template, or run `./bootstrap.sh` to
 generate one with strong randoms.
+
+Two feature flags are per-user (not env vars) and live in Settings:
+
+- **Sharing (joint accounts)** — opt-in per owner; when off, the whole joint-accounts surface stays hidden. See [Joint accounts](#joint-accounts-household-sharing).
+- **Include credit-card transactions in category budgets** — opt-in per user; off by default so a swipe + card payment don't double-count against the same budget. See the Budgets feature list.
 
 ---
 
