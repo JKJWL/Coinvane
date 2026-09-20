@@ -220,6 +220,11 @@ function userPayload(u) {
     // contexts and cannot create personal data.
     joint_enabled: !!u.joint_enabled,
     is_guest_only: !!u.is_guest_only,
+    // Category-budget behavior toggle. When true, credit-card
+    // transactions count toward category budgets (spent + budget-usage
+    // stats) and appear in the /:id/transactions list flagged
+    // isCredit=true so the UI can render a rose (Credit) pill.
+    include_credit_in_budgets: !!u.include_credit_in_budgets,
   };
 }
 
@@ -993,7 +998,7 @@ export default async function (app) {
         notify_budget_usage_enabled, notify_budget_usage_pct,
         push_frequency, biometric_lock_enabled,
         privacy_mode, show_cashflow_forecast, week_start, email_frequency, email_weekday,
-        joint_enabled, is_guest_only`;
+        joint_enabled, is_guest_only, include_credit_in_budgets`;
 
   app.get("/me", { preHandler: [app.authenticate] }, async (req) => {
     const u = await queryOne(`SELECT ${ME_COLUMNS} FROM users WHERE id = ?`, [req.user.id]);
@@ -1330,7 +1335,8 @@ export default async function (app) {
          week_start = COALESCE(?, week_start),
          email_frequency = COALESCE(?, email_frequency),
          email_weekday = COALESCE(?, email_weekday),
-         push_frequency = COALESCE(?, push_frequency)
+         push_frequency = COALESCE(?, push_frequency),
+         include_credit_in_budgets = COALESCE(?, include_credit_in_budgets)
        WHERE id = ?`,
       [
         b.name ?? null, b.currency ?? null, b.timezone ?? null,
@@ -1346,6 +1352,7 @@ export default async function (app) {
         int(b.week_start, 0, 6),
         freq,                           int(b.email_weekday, 0, 6),
         pushFreq,
+        bool(b.include_credit_in_budgets),
         req.user.id,
       ]
     );

@@ -26,6 +26,21 @@ import {
 
 const PERIODS = ["weekly","biweekly","semimonthly","monthly","yearly","custom"];
 
+// User setting: when true, category budgets count credit-card swipes
+// toward spent + surface them in the /:id/transactions list with a
+// rose "(Credit)" pill flag. Default false — keeps the historical
+// double-counting-avoidance behavior. Fails safe to false on any DB
+// error (fresh install pre-migrate).
+async function shouldIncludeCredit(userId) {
+  try {
+    const r = await queryOne(
+      "SELECT include_credit_in_budgets AS v FROM users WHERE id = ?",
+      [userId]
+    );
+    return !!r?.v;
+  } catch { return false; }
+}
+
 async function sumIncomeInWindow(userId, startStr, endStr) {
   // Credit-account positive entries (refunds, payments made to the card)
   // aren't real income, so they're excluded — matches the same posture
@@ -207,6 +222,9 @@ export default async function (app) {
     // `allocated`, which is just the sum of the caps. Card budgets are
     // excluded to match the allocation query (a swipe on a tracked card
     // + its matching category budget would otherwise double-count).
+    const includeCreditSummary = await shouldIncludeCredit(req.contextUserId);
+    const creditFilterSummary = includeCreditSummary
+      ? "" : "AND (a.type IS NULL OR a.type <> 'credit')";
     const spentRow = await queryOne(
       `SELECT COALESCE(SUM(ABS(t.amount)), 0) AS total
        FROM transactions t
@@ -215,7 +233,7 @@ export default async function (app) {
        LEFT JOIN accounts a ON a.id = t.account_id
        WHERE t.user_id = ? AND t.amount < 0
          AND t.date >= ? AND t.date < ?
-         AND (a.type IS NULL OR a.type <> 'credit')
+         ${creditFilterSummary}
          AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
          AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
          AND t.voided_at IS NULL`,
@@ -527,20 +545,29 @@ export default async function (app) {
         [req.contextUserId, b.account_id, startStr, endStr]
       );
     } else {
+      // Category branch. When include_credit_in_budgets is on, credit
+      // swipes are included; each row carries `isCredit` so the frontend
+      // can render the rose (Credit) pill next to it.
+      const includeCredit = await shouldIncludeCredit(req.contextUserId);
+      const creditFilter = includeCredit
+        ? "" : "AND (a.type IS NULL OR a.type <> 'credit')";
       rows = await query(
         `SELECT t.id, t.date, t.merchant, t.category, t.amount, t.pending,
-                a.name AS accountName
+                a.name AS accountName,
+                CASE WHEN a.type = 'credit' THEN 1 ELSE 0 END AS isCredit
          FROM transactions t
          LEFT JOIN accounts a ON a.id = t.account_id
          WHERE t.user_id = ? AND t.category = ? AND t.amount < 0
            AND t.date >= ? AND t.date < ?
-           AND (a.type IS NULL OR a.type <> 'credit')
+           ${creditFilter}
            AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
            AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
            AND t.voided_at IS NULL
          ORDER BY t.date DESC, t.id DESC`,
         [req.contextUserId, b.category, startStr, endStr]
       );
+      // TINYINT → boolean-shaped so JSX guards render correctly
+      rows = rows.map(r => ({ ...r, isCredit: !!r.isCredit }));
     }
     return rows;
   });

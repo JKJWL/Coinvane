@@ -990,6 +990,15 @@ const SCHEMA = [
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS is_guest_only BOOLEAN DEFAULT FALSE`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS joint_enabled BOOLEAN DEFAULT FALSE`,
 
+  // Category-budget behavior toggle. Default is FALSE — historical
+  // Coinvane behavior where credit-card transactions were excluded
+  // from category budgets to avoid double-counting swipe + payment
+  // (see routes/budgets.js header). When flipped TRUE, credit swipes
+  // count toward category-budget spent, and the /:id/transactions
+  // list surfaces them with a `is_credit_account` flag so the UI can
+  // render a rose "(Credit)" pill.
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS include_credit_in_budgets BOOLEAN DEFAULT FALSE`,
+
   // Pending invitations (email is not yet a user, or hasn't clicked
   // through to redeem). Token is sha256-hashed at rest, raw value
   // only in the invite email. 7-day expiry. Once redeemed, an

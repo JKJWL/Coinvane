@@ -168,9 +168,26 @@ export function getPastPeriods(period, periodStart, periodDays, count, nowDate, 
 }
 
 /**
+ * Read the user's include_credit_in_budgets flag. Cached briefly per
+ * call chain would be ideal, but budgets math is call-once-per-load so
+ * a plain query is fine. Returns false when the column doesn't exist
+ * yet (fresh install pre-migrate) so behavior stays historical.
+ */
+async function shouldIncludeCredit(userId) {
+  try {
+    const r = await queryOne(
+      "SELECT include_credit_in_budgets AS v FROM users WHERE id = ?",
+      [userId]
+    );
+    return !!r?.v;
+  } catch { return false; }
+}
+
+/**
  * Spent within an explicit period window. The CALLER supplies the bounds
  * (typically from getMasterPeriod). Account-scoped budgets sum that
- * account's expenses; category budgets exclude credit-card accounts.
+ * account's expenses; category budgets exclude credit-card accounts by
+ * default, but honor `users.include_credit_in_budgets` when set.
  */
 export async function spentForBudgetInWindow(userId, b, startStr, endStr) {
   // Card-usage vs category-spend branch is decided by whether the budget
@@ -194,13 +211,15 @@ export async function spentForBudgetInWindow(userId, b, startStr, endStr) {
     );
     return Number(row.spent) || 0;
   }
+  const includeCredit = await shouldIncludeCredit(userId);
+  const creditFilter = includeCredit ? "" : "AND (a.type IS NULL OR a.type <> 'credit')";
   const row = await queryOne(
     `SELECT COALESCE(SUM(ABS(t.amount)), 0) AS spent
      FROM transactions t
      LEFT JOIN accounts a ON a.id = t.account_id
      WHERE t.user_id = ? AND t.category = ? AND t.amount < 0
        AND t.date >= ? AND t.date < ?
-       AND (a.type IS NULL OR a.type <> 'credit')
+       ${creditFilter}
        AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
        AND t.voided_at IS NULL`,
     [userId, b.category, startStr, endStr]

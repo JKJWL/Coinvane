@@ -54,7 +54,7 @@ export async function generateNotifications(userId) {
             notify_cashflow_enabled, notify_cashflow_min,
             notify_budget_usage_enabled, notify_budget_usage_pct,
             notification_email, email_frequency, email_weekday,
-            push_frequency
+            push_frequency, include_credit_in_budgets
      FROM users WHERE id = ?`,
     [userId]
   ) || {};
@@ -270,6 +270,13 @@ export async function generateNotifications(userId) {
   // title so a fresh period gets a fresh notification chance without
   // re-firing every day within the same period.
   if (budgetUsageOn) {
+    // Respect the user's include_credit_in_budgets toggle — the alert
+    // math has to match what the Budgets tab shows, or the user gets
+    // a "budget usage 90%" alert while their in-app usage bar reads
+    // 60% (or vice versa).
+    const includeCreditNotif = !!prefs.include_credit_in_budgets;
+    const creditFilterNotif = includeCreditNotif
+      ? "" : "AND (a.type IS NULL OR a.type <> 'credit')";
     const spentRow = await queryOne(
       `SELECT COALESCE(SUM(ABS(t.amount)), 0) AS total
        FROM transactions t
@@ -278,7 +285,7 @@ export async function generateNotifications(userId) {
        LEFT JOIN accounts a ON a.id = t.account_id
        WHERE t.user_id = ? AND t.amount < 0
          AND t.date >= ? AND t.date < ?
-         AND (a.type IS NULL OR a.type <> 'credit')
+         ${creditFilterNotif}
          AND (t.is_transfer = 0 OR t.is_transfer IS NULL)
          AND (t.is_scheduled = 0 OR t.is_scheduled IS NULL)
          AND t.voided_at IS NULL`,

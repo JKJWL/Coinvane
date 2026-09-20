@@ -7306,6 +7306,14 @@ function BudgetCard({ b, theme, darkMode, onEdit, onDelete, reorderLocked,
                         <div className="flex items-center gap-1.5 min-w-0">
                           <div className="font-medium text-xs truncate">{t.merchant}</div>
                           <PendingPill pending={t.pending} darkMode={darkMode} size="xs" />
+                          {t.isCredit && (
+                            <span
+                              className={`flex-shrink-0 px-1.5 py-[1px] rounded-full text-[9px] font-semibold uppercase tracking-wider ${darkMode ? "bg-rose-500/20 text-rose-300" : "bg-rose-100 text-rose-600"}`}
+                              title="This row is on a credit-card account. It counts toward this budget because 'Include credit-card transactions in category budgets' is on in Settings."
+                            >
+                              Credit
+                            </span>
+                          )}
                         </div>
                         <div className={`text-[10px] ${theme.textSubtle}`}>{t.date} · <span className="private-name" tabIndex={0}>{t.accountName || "—"}</span></div>
                       </div>
@@ -8821,6 +8829,13 @@ function BudgetsTab({ theme, darkMode, toast }) {
   // Per-budget transactions expand state (Feature 1)
   const [expandedId, setExpandedId] = useState(null);
   const [budgetTxns, setBudgetTxns] = useState({}); // { [budgetId]: Transaction[] | "loading" }
+  // Invalidate cached per-budget transaction lists whenever the
+  // include_credit_in_budgets toggle flips — otherwise a user who
+  // turns it on mid-session keeps seeing the pre-toggle rows
+  // (without the rose Credit pill or the credit-account swipes).
+  useEffect(() => {
+    setBudgetTxns({});
+  }, [authUser?.include_credit_in_budgets]);
   // Budget history (read-only past periods)
   const [history, setHistory] = useState(null);      // [{periodStart, periodEnd, isCurrent, income, budgets:[...]}]
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -12651,6 +12666,10 @@ function SettingsPanel({ user, onUpdate, theme, darkMode, onToggleDark }) {
       {/* ── Custom reports ── */}
       <CustomReportsPanel theme={theme} darkMode={darkMode} toast={toast} />
 
+      {/* ── Credit-transactions-in-category-budgets toggle ──
+           Sits directly above the Sharing card per user spec. */}
+      <CreditInBudgetsToggle theme={theme} darkMode={darkMode} user={user} toast={toast} refreshUser={onUpdate} />
+
       {/* ── Sharing (joint accounts) — owner-only ── */}
       {!user?.is_guest_only && (
         <JointSharingSection theme={theme} darkMode={darkMode} user={user} toast={toast} refreshUser={onUpdate} />
@@ -13406,6 +13425,54 @@ function JointContextDropdown({ theme, darkMode, user }) {
 
 // ─── Sharing settings section (owner-only, joint_enabled gated) ───────────────
 // Owner enables the whole feature via a toggle at the top. Once
+// ─── Credit-transactions-in-category-budgets toggle ───────────────────────────
+// Historical Coinvane behavior excludes credit-card swipes from category
+// budgets so a $50 grocery swipe + the eventual $50 card payment don't
+// both hit the "Groceries" budget. When this toggle is on, credit swipes
+// DO count toward category budgets — and every credit-account row in
+// budget-transaction lists is flagged with a rose (Credit) pill so the
+// user sees which rows the toggle brought in. Sits above Joint Sharing
+// in Settings; unaffected by joint-context (both owner and guest see it
+// as their own actor preference).
+function CreditInBudgetsToggle({ theme, darkMode, user, toast, refreshUser }) {
+  const [saving, setSaving] = useState(false);
+  // useData().refreshAll is the global data-refresh so the Budgets
+  // tab's spent totals + zero-based-budget usage bar re-fetch with the
+  // new filter applied on the very next render, not just on next
+  // navigation. useAuth is separate — refreshUser() refetches /me.
+  const { refreshAll } = useData();
+  const on = !!user?.include_credit_in_budgets;
+  const flip = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      await api.updateMe({ include_credit_in_budgets: !on });
+      await refreshUser?.();
+      // Fire-and-forget — spent totals recompute from the refreshed
+      // /budgets/summary response even if this hasn't landed yet.
+      refreshAll?.();
+      toast?.(!on ? "Credit transactions now count toward category budgets" : "Credit transactions excluded from category budgets", "success");
+    } catch (e) {
+      toast?.("Failed: " + (e?.message || "unknown error"), "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div className={`${theme.surface} border ${theme.border} rounded-2xl p-5`}>
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h3 className="font-semibold">Include credit-card transactions in category budgets</h3>
+          <p className={`text-xs ${theme.textSubtle} mt-1 leading-relaxed`}>
+            When on, credit-card swipes count toward category-budget spent and appear in each budget's transaction list marked <span className={`inline-block align-middle px-1.5 py-[1px] rounded-full text-[10px] font-semibold ${darkMode ? "bg-rose-500/20 text-rose-300" : "bg-rose-100 text-rose-600"}`}>Credit</span>. Off by default so a swipe + the card payment don't both hit the same budget.
+          </p>
+        </div>
+        <Toggle checked={on} darkMode={darkMode} onChange={flip} disabled={saving} />
+      </div>
+    </div>
+  );
+}
+
 // enabled, they can invite emails, edit permissions, revoke shares,
 // and see the audit log inline. Guests never see this section.
 function JointSharingSection({ theme, darkMode, user, toast, refreshUser }) {
